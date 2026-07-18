@@ -1,20 +1,24 @@
-"""Execution context for daemon operations."""
+"""pynixd-specific construction helpers for protocol codec contexts."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from nix_daemon_protocol.context import ReadContext as ProtocolReadContext
+from nix_daemon_protocol.context import WriteContext as ProtocolWriteContext
+
+from ..exceptions import BackendError
+from .auth import Role
+
 if TYPE_CHECKING:
     from ..connection import ClientConn, Connection
     from ..proxy import DaemonProxy
-    from ..wire import NixReader, NixWriter
-    from .auth import Role
 
 
 @dataclass(frozen=True)
 class RequestContext:
-    """Context passed to operation handlers."""
+    """Daemon execution state passed to pynixd operation handlers."""
 
     proxy: DaemonProxy
     role: Role
@@ -22,19 +26,12 @@ class RequestContext:
     username: str
 
 
-@dataclass(frozen=True)
-class ReadContext:
-    """Bundles the arguments needed to deserialize a response from the wire."""
-
-    reader: NixReader
-    version: int
-    client: ClientConn | None = None
-    buffer_logs: bool = True
-    raise_on_error: bool = True
+class ReadContext(ProtocolReadContext):
+    """Protocol read context with pynixd connection convenience constructors."""
 
     @classmethod
     def from_request(cls, ctx: RequestContext) -> ReadContext:
-        return cls(reader=ctx.proxy.r, version=ctx.version)
+        return cls(reader=ctx.proxy.r, version=ctx.version, error_factory=BackendError)
 
     @classmethod
     def from_conn(
@@ -49,18 +46,15 @@ class ReadContext:
         return cls(
             reader=conn.r,
             version=conn.version,
-            client=client,
+            log_sink=client,
             buffer_logs=buffer_logs,
             raise_on_error=raise_on_error,
+            error_factory=BackendError,
         )
 
 
-@dataclass(frozen=True)
-class WriteContext:
-    """Bundles the arguments needed to serialize a request/response to the wire."""
-
-    writer: NixWriter
-    version: int
+class WriteContext(ProtocolWriteContext):
+    """Protocol write context with pynixd connection convenience constructors."""
 
     @classmethod
     def from_request(cls, ctx: RequestContext) -> WriteContext:

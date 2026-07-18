@@ -1,130 +1,88 @@
-"""Declarative binary serialization for Nix daemon protocol types."""
+"""Deprecated compatibility facade for :mod:`nix_daemon_protocol`.
 
-from .add_build_log import AddBuildLogRequest as AddBuildLogRequest
-from .add_build_log import AddBuildLogResponse as AddBuildLogResponse
-from .add_indirect_root import AddIndirectRootRequest as AddIndirectRootRequest
-from .add_indirect_root import AddIndirectRootResponse as AddIndirectRootResponse
-from .add_multiple_to_store import AddMultipleToStoreRequest as AddMultipleToStoreRequest
-from .add_multiple_to_store import AddMultipleToStoreResponse as AddMultipleToStoreResponse
-from .add_perm_root import AddPermRootRequest as AddPermRootRequest
-from .add_perm_root import AddPermRootResponse as AddPermRootResponse
-from .add_signatures import AddSignaturesRequest as AddSignaturesRequest
-from .add_signatures import AddSignaturesResponse as AddSignaturesResponse
-from .add_temp_root import AddTempRootRequest as AddTempRootRequest
-from .add_temp_root import AddTempRootResponse as AddTempRootResponse
-from .add_to_store import AddToStoreRequest as AddToStoreRequest
-from .add_to_store import AddToStoreResponse as AddToStoreResponse
-from .add_to_store_nar import AddToStoreNarRequest as AddToStoreNarRequest
-from .add_to_store_nar import AddToStoreNarResponse as AddToStoreNarResponse
+New reusable code should import standard daemon wire models from
+``nix_daemon_protocol``. pynixd-specific extension operations remain here for
+the duration of the migration.
+"""
+
+import importlib
+import sys
+
+from nix_daemon_protocol import *  # noqa: F403
+
+from ..daemon_extensions import *  # noqa: F403
+from . import _derivation_compat as _derivation_compat
 from .auth import Role as Role
-from .basic_derivation import BasicDerivation as BasicDerivation
-from .build_derivation import BuildDerivationRequest as BuildDerivationRequest
-from .build_derivation import BuildDerivationResponse as BuildDerivationResponse
-from .build_paths import BuildPathsRequest as BuildPathsRequest
-from .build_paths import BuildPathsResponse as BuildPathsResponse
-from .build_paths_with_results import BuildPathsWithResultsRequest as BuildPathsWithResultsRequest
-from .build_paths_with_results import BuildPathsWithResultsResponse as BuildPathsWithResultsResponse
-from .build_result import BuildMode as BuildMode
-from .build_result import BuildResult as BuildResult
-from .build_result import BuildResultStatus as BuildResultStatus
-from .build_result import BuiltOutput as BuiltOutput
-from .collect_garbage import CollectGarbageRequest as CollectGarbageRequest
-from .collect_garbage import CollectGarbageResponse as CollectGarbageResponse
-from .content_address import ContentAddress as ContentAddress
 from .context import ReadContext as ReadContext
 from .context import RequestContext as RequestContext
 from .context import WriteContext as WriteContext
-from .derivation_output import DerivationOutput as DerivationOutput
-from .derivation_output import OutputKind as OutputKind
-from .derived_path import DerivedPath as DerivedPath
-from .drv_output import DrvOutput as DrvOutput
-from .ensure_path import EnsurePathRequest as EnsurePathRequest
-from .ensure_path import EnsurePathResponse as EnsurePathResponse
-from .find_roots import FindRootsEntry as FindRootsEntry
-from .find_roots import FindRootsRequest as FindRootsRequest
-from .find_roots import FindRootsResponse as FindRootsResponse
-from .ids import BuildId as BuildId
-from .ids import RequestId as RequestId
-from .ids import StoreId as StoreId
-from .is_valid_path import IsValidPathRequest as IsValidPathRequest
-from .is_valid_path import IsValidPathResponse as IsValidPathResponse
-from .keyed_build_result import KeyedBuildResult as KeyedBuildResult
-from .logs import ActivityField as ActivityField
-from .logs import LogError as LogError
-from .logs import LogNext as LogNext
-from .logs import LogResult as LogResult
-from .logs import LogStartActivity as LogStartActivity
-from .logs import LogStopActivity as LogStopActivity
-from .logs import TraceLine as TraceLine
-from .logs import WireLogs as WireLogs
-from .nar_from_path import NarFromPathRequest as NarFromPathRequest
-from .nar_from_path import NarFromPathResponse as NarFromPathResponse
-from .nar_hash import NARHash as NARHash
-from .opt_microseconds import OptMicroseconds as OptMicroseconds
-from .optimise_store import OptimiseStoreRequest as OptimiseStoreRequest
-from .optimise_store import OptimiseStoreResponse as OptimiseStoreResponse
-from .path_info import UnkeyedValidPathInfo as UnkeyedValidPathInfo
-from .probe_features import ProbeFeaturesRequest as ProbeFeaturesRequest
-from .probe_features import ProbeFeaturesResponse as ProbeFeaturesResponse
-from .probe_systems import ProbeSystemsRequest as ProbeSystemsRequest
-from .probe_systems import ProbeSystemsResponse as ProbeSystemsResponse
-from .protocol import ActivityType as ActivityType
-from .protocol import FieldType as FieldType
-from .protocol import FileIngestionMethod as FileIngestionMethod
-from .protocol import GCAction as GCAction
-from .protocol import OptTrusted as OptTrusted
 from .protocol import PynixdGCAction as PynixdGCAction
-from .protocol import ResultType as ResultType
-from .protocol import Verbosity as Verbosity
-from .pynixd_collect_garbage import PynixdCollectGarbageRequest as PynixdCollectGarbageRequest
-from .pynixd_collect_garbage import PynixdCollectGarbageResponse as PynixdCollectGarbageResponse
-from .query_all_valid_paths import QueryAllValidPathsRequest as QueryAllValidPathsRequest
-from .query_all_valid_paths import QueryAllValidPathsResponse as QueryAllValidPathsResponse
-from .query_closure import QueryClosureRequest as QueryClosureRequest
-from .query_closure import QueryClosureResponse as QueryClosureResponse
-from .query_closure_with_info import QueryClosureWithInfoRequest as QueryClosureWithInfoRequest
-from .query_closure_with_info import QueryClosureWithInfoResponse as QueryClosureWithInfoResponse
-from .query_derivation_output_map import QueryDerivationOutputMapRequest as QueryDerivationOutputMapRequest
-from .query_derivation_output_map import QueryDerivationOutputMapResponse as QueryDerivationOutputMapResponse
-from .query_derivation_output_map_batch import DerivationOutputMapBatchResponse as DerivationOutputMapBatchResponse
-from .query_derivation_output_map_batch import (
-    QueryDerivationOutputMapBatchRequest as QueryDerivationOutputMapBatchRequest,
+
+_CORE_MODULES = (
+    "add_build_log",
+    "add_indirect_root",
+    "add_multiple_to_store",
+    "add_perm_root",
+    "add_signatures",
+    "add_temp_root",
+    "add_to_store",
+    "add_to_store_nar",
+    "aliases",
+    "basic_derivation",
+    "build_derivation",
+    "build_paths",
+    "build_paths_with_results",
+    "build_result",
+    "collect_garbage",
+    "content_address",
+    "derivation_output",
+    "derived_path",
+    "drv_output",
+    "ensure_path",
+    "find_roots",
+    "ids",
+    "is_valid_path",
+    "keyed_build_result",
+    "logs",
+    "nar_from_path",
+    "nar_hash",
+    "opt_microseconds",
+    "optimise_store",
+    "path_info",
+    "query_all_valid_paths",
+    "query_derivation_output_map",
+    "query_missing",
+    "query_path_from_hash_part",
+    "query_path_info",
+    "query_realisation",
+    "query_referrers",
+    "query_substitutable_paths",
+    "query_valid_derivers",
+    "query_valid_paths",
+    "realisation",
+    "register_drv_output",
+    "set_options",
+    "signature",
+    "store_path",
+    "valid_path_info",
+    "verify_store",
+    "wire_message",
+    "wire_ops",
+    "wire_string",
+    "wire_time",
 )
-from .query_missing import QueryMissingRequest as QueryMissingRequest
-from .query_missing import QueryMissingResponse as QueryMissingResponse
-from .query_path_from_hash_part import QueryPathFromHashPartRequest as QueryPathFromHashPartRequest
-from .query_path_from_hash_part import QueryPathFromHashPartResponse as QueryPathFromHashPartResponse
-from .query_path_info import QueryPathInfoRequest as QueryPathInfoRequest
-from .query_path_info import QueryPathInfoResponse as QueryPathInfoResponse
-from .query_path_infos import QueryPathInfosRequest as QueryPathInfosRequest
-from .query_path_infos import QueryPathInfosResponse as QueryPathInfosResponse
-from .query_realisation import QueryRealisationRequest as QueryRealisationRequest
-from .query_realisation import QueryRealisationResponse as QueryRealisationResponse
-from .query_referrers import QueryReferrersRequest as QueryReferrersRequest
-from .query_referrers import QueryReferrersResponse as QueryReferrersResponse
-from .query_substitutable_paths import QuerySubstitutablePathsRequest as QuerySubstitutablePathsRequest
-from .query_substitutable_paths import QuerySubstitutablePathsResponse as QuerySubstitutablePathsResponse
-from .query_valid_derivers import QueryValidDeriversRequest as QueryValidDeriversRequest
-from .query_valid_derivers import QueryValidDeriversResponse as QueryValidDeriversResponse
-from .query_valid_paths import QueryValidPathsRequest as QueryValidPathsRequest
-from .query_valid_paths import QueryValidPathsResponse as QueryValidPathsResponse
-from .realisation import Realisation as Realisation
-from .register_drv_output import RegisterDrvOutputRequest as RegisterDrvOutputRequest
-from .register_drv_output import RegisterDrvOutputResponse as RegisterDrvOutputResponse
-from .set_options import SetOptionsRequest as SetOptionsRequest
-from .set_options import SetOptionsResponse as SetOptionsResponse
-from .sign_path_info import SignPathInfoRequest as SignPathInfoRequest
-from .sign_path_info import SignPathInfoResponse as SignPathInfoResponse
-from .signature import Signature as Signature
-from .store_path import StorePath as StorePath
-from .valid_path_info import ValidPathInfo as ValidPathInfo
-from .verify_store import VerifyStoreRequest as VerifyStoreRequest
-from .verify_store import VerifyStoreResponse as VerifyStoreResponse
-from .wire_message import VersionMeta as VersionMeta
-from .wire_message import WireField as WireField
-from .wire_message import WireModel as WireModel
-from .wire_ops import WireRequest as WireRequest
-from .wire_ops import WireResponse as WireResponse
-from .wire_string import WireString as WireString
-from .wire_time import Time as Time
-from .wire_time import TimeSpan as TimeSpan
+_EXTENSION_MODULES = (
+    "probe_features",
+    "probe_systems",
+    "pynixd_collect_garbage",
+    "query_closure",
+    "query_closure_with_info",
+    "query_derivation_output_map_batch",
+    "query_path_infos",
+    "sign_path_info",
+)
+
+for _name in _CORE_MODULES:
+    sys.modules[f"{__name__}.{_name}"] = importlib.import_module(f"nix_daemon_protocol.{_name}")
+for _name in _EXTENSION_MODULES:
+    sys.modules[f"{__name__}.{_name}"] = importlib.import_module(f"pynixd.daemon_extensions.{_name}")

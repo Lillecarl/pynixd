@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from .wire_message import WireField
-from .wire_ops import WireRequest, WireResponse
+from nix_daemon_protocol.wire_message import WireField
+from nix_daemon_protocol.wire_ops import WireRequest, WireResponse
 
 
 class ProbeSystemsResponse(WireResponse):

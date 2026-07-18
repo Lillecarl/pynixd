@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from .valid_path_info import ValidPathInfo  # noqa: TC001
-from .wire_ops import WireRequest, WireResponse
+from nix_daemon_protocol.valid_path_info import ValidPathInfo  # noqa: TC001
+from nix_daemon_protocol.wire_ops import WireRequest, WireResponse
 
 
 class SignPathInfoResponse(WireResponse):
