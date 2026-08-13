@@ -7,6 +7,15 @@ name = "pynixd"
 version = "0.1.0"
 description = "Python Nix daemon protocol proxy over SSH"
 requires-python = ">=3.13"
+# PEP 639. The repository is Apache-2.0. `nanopynix-bindings` alone is
+# LGPL-2.1-or-later, because that project links libnixexpr and libnixstore,
+# and `AGENTS.md` says why the two live together without a conflict.
+#
+# The file is a copy of the one at the root of the repository, because the
+# source root of this project is this directory, and a path above it is not in
+# the sdist.
+license = "Apache-2.0"
+license-files = [ "LICENSE" ]
 dependencies = [
     "asyncssh",
     "aiohttp",
