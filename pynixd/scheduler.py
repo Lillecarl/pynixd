@@ -414,20 +414,6 @@ class Scheduler:
                     s.cpu_util.utilization,
                 )
 
-    async def validate_known_paths(self, paths: StorePathSet) -> None:
-        """Query paths against the local store via QueryValidPaths."""
-        if not paths:
-            return
-        try:
-            await self.local_store.execute(
-                QueryValidPathsRequest(
-                    paths={SerdeStorePath(path=str(path)) for path in paths},  # pyright: ignore[reportUnhashable]
-                    substitute=0,
-                ),
-            )
-        except (BackendError, OSError, ConnectionError):
-            log.exception("validate_known_paths_failed", count=len(paths))
-
     async def execute_build(self, build: QueuedBuild, store: DaemonStore) -> None:
         """Execute build on a store, handling inputs and outputs.
 
