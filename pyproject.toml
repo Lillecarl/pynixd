@@ -20,6 +20,21 @@ dependencies = [
     "uvloop",
     "anyio",
     "nix-daemon-protocol>=0.1.0",
+    # The six below were imported and not declared, and issue #131 found them.
+    # A shell built from `shell.nix` supplied each one, so no import failed in
+    # the repository this project came from. An install of the distribution
+    # alone got as far as `import pynixd` and then raised ModuleNotFoundError
+    # on `lz4`, which is what a consumer of the wheel would see.
+    #
+    # `pydantic` arrives through `nix-daemon-protocol` as well. It is here
+    # because `config.py` and one other module import it directly, and a
+    # dependency of a dependency is not a promise.
+    "brotli",
+    "lz4",
+    "pynacl",
+    "pydantic>=2",
+    "pydantic-settings",
+    "zstandard",
 ]
 
 [project.optional-dependencies]
