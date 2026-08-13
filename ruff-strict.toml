@@ -1,0 +1,109 @@
+target-version = "py313"
+line-length = 120
+
+[lint]
+select = [
+    # Pyflakes
+    "F",
+    # Pycodestyle errors & warnings
+    "E", "W",
+    # isort
+    "I",
+    # flake8-bugbear
+    "B",
+    # flake8-simplify
+    "SIM",
+    # flake8-type-checking
+    "TC",
+    # Ruff-specific
+    "RUF",
+    # flake8-comprehensions
+    "C4",
+    # commented-out code
+    "ERA",
+    # pyupgrade
+    "UP",
+    # flake8-builtins
+    "A",
+    # flake8-use-pathlib
+    "PTH",
+    # flake8-unused-arguments
+    "ARG",
+    # Perflint
+    "PERF",
+    # flake8-return
+    "RET",
+    # flake8-raise
+    "RSE",
+    # flake8-print
+    "T20",
+    # flake8-pie
+    "PIE",
+    # flake8-2020
+    "YTT",
+    # flake8-async
+    "ASYNC",
+    # tryceratops
+    "TRY",
+    # refurb
+    "FURB",
+    # flake8-tidy-imports
+    "TID",
+    # pep8-naming
+    "N",
+    # flynt
+    "FLY",
+    # flake8-quotes
+    "Q",
+    # flake8-future-annotations
+    "FA",
+    # flake8-pytest-style
+    "PT",
+    # flake8-blind-except
+    "BLE",
+    # flake8-todos
+    "TD",
+    # flake8-logging
+    "LOG",
+]
+
+ignore = [
+    # E501 line length — we use line-length=120 instead of the default 88
+    "E501",
+    # open-file-without-context-manager in http decompression generators
+    # (generator assigns the handle then wraps with `with ctx as f:`)
+    "SIM115",
+    # relative imports — pynixd uses relative imports by design within packages
+    "TID252",
+    # unused method arguments — protocol interfaces have uniform signatures
+    # (from_reader, to_writer, execute, handle) where not every param is used
+    "ARG002",
+    # long exception messages are acceptable — custom subclasses would be excessive
+    "TRY003",
+    # blind except — production code always logs before passing; AGENTS.md convention
+    "BLE001",
+]
+
+# ═══════════════════════════════════════════════════════════════
+# SHARED — keep this [lint.flake8-type-checking] section in sync
+#          between ruff.toml and ruff-strict.toml
+# ═══════════════════════════════════════════════════════════════
+#
+# WireModel.from_reader / _wire_fields / _find_reader all resolve
+# type annotations at runtime (get_type_hints + issubclass checks).
+# Without this, TC rules flag imports used only as WireModel field
+# annotations, forcing pervasive # noqa: TC001 noise.
+#
+[lint.flake8-type-checking]
+runtime-evaluated-base-classes = ["pynixd.serde.wire_message.WireModel"]
+# ═══════════════════════════════════════════════════════════════
+# END SHARED
+# ═══════════════════════════════════════════════════════════════
+
+[lint.per-file-ignores]
+"tests/**" = ["ERA001", "RUF059", "F401", "T201", "ARG001"]
+"tests/ai/**" = ["ERA001", "RUF059", "F401", "T201", "ARG001", "BLE001"]
+"tests/conftest.py" = ["ERA001", "RUF059", "F401", "T201", "ARG001", "BLE001"]
+
+[format]
+docstring-code-format = true

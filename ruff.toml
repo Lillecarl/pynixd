@@ -1,0 +1,29 @@
+target-version = "py313"
+line-length = 120
+
+[lint]
+select = [
+    "E", "W",  # pycodestyle
+    "F",       # pyflakes (real bugs)
+    "I",       # isort
+]
+
+ignore = [
+    "E501",  # line length handled by line-length setting
+]
+
+# ═══════════════════════════════════════════════════════════════
+# SHARED — keep the [lint.flake8-type-checking] section below
+#          in sync between ruff.toml and ruff-strict.toml
+# ═══════════════════════════════════════════════════════════════
+#
+# WireModel.from_reader / _wire_fields / _find_reader all resolve
+# type annotations at runtime (get_type_hints + issubclass checks).
+# Without this, TC rules flag imports used only as WireModel field
+# annotations, forcing pervasive # noqa: TC001 noise.
+#
+[lint.flake8-type-checking]
+runtime-evaluated-base-classes = ["pynixd.serde.wire_message.WireModel"]
+# ═══════════════════════════════════════════════════════════════
+# END SHARED
+# ═══════════════════════════════════════════════════════════════

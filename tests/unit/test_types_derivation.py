@@ -1,0 +1,267 @@
+"""Unit tests for pynixd.serde derivation types — OutputKind, DerivationOutput, BasicDerivation.
+
+Tests the classification logic and property accessors for derivation types.
+All tests are pure — no I/O, no wire protocol.
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from pynixd.serde import BasicDerivation, DerivationOutput, OutputKind
+from pynixd.store_path import StorePath
+from tests.test_features import TestFeatures as F
+
+
+@pytest.mark.covers(F.BUILD_TYPES)
+class TestOutputKind:
+    def test_input_addressed(self):
+        out = DerivationOutput(path="/nix/store/abc-foo", method="", hash_digest="")
+        assert out.kind == OutputKind.INPUT_ADDRESSED
+
+    def test_ca_fixed(self):
+        out = DerivationOutput(
+            path="/nix/store/abc-foo",
+            method="sha256",
+            hash_digest="abc123",
+        )
+        assert out.kind == OutputKind.CA_FIXED
+
+    def test_ca_floating(self):
+        out = DerivationOutput(path="", method="sha256", hash_digest="")
+        assert out.kind == OutputKind.CA_FLOATING
+
+    def test_deferred(self):
+        out = DerivationOutput(path="", method="", hash_digest="")
+        assert out.kind == OutputKind.DEFERRED
+
+    def test_impure(self):
+        out = DerivationOutput(path="", method="sha256", hash_digest="impure")
+        assert out.kind == OutputKind.IMPURE
+
+
+class TestDerivationOutputProperties:
+    def test_is_ca_fixed(self):
+        out = DerivationOutput(path="/nix/store/abc", method="sha256", hash_digest="xyz")
+        assert out.is_ca
+        assert out.is_fixed_ca
+        assert not out.is_floating_ca
+        assert not out.is_deferred
+        assert not out.is_impure
+
+    def test_is_ca_floating(self):
+        out = DerivationOutput(path="", method="sha256", hash_digest="")
+        assert out.is_ca
+        assert not out.is_fixed_ca
+        assert out.is_floating_ca
+        assert not out.is_deferred
+        assert not out.is_impure
+
+    def test_is_deferred(self):
+        out = DerivationOutput(path="", method="", hash_digest="")
+        assert not out.is_ca
+        assert not out.is_fixed_ca
+        assert not out.is_floating_ca
+        assert out.is_deferred
+        assert not out.is_impure
+
+    def test_is_impure(self):
+        out = DerivationOutput(path="", method="sha256", hash_digest="impure")
+        assert out.is_ca
+        assert not out.is_fixed_ca
+        assert not out.is_floating_ca
+        assert not out.is_deferred
+        assert out.is_impure
+
+    def test_is_text_hashed(self):
+        out = DerivationOutput(path="/nix/store/abc", method="text:sha256", hash_digest="xyz")
+        assert out.is_text_hashed
+
+    def test_is_not_text_hashed(self):
+        out = DerivationOutput(path="/nix/store/abc", method="sha256", hash_digest="xyz")
+        assert not out.is_text_hashed
+
+    def test_is_dynamic_output(self):
+        out = DerivationOutput(path="", method="text:sha256", hash_digest="")
+        assert out.is_dynamic_output
+
+    def test_is_not_dynamic_output(self):
+        out = DerivationOutput(path="", method="sha256", hash_digest="")
+        assert not out.is_dynamic_output
+
+
+class TestBasicDerivation:
+    def test_requires_nix_false(self):
+        """A simple input-addressed derivation should support Lix."""
+        drv = BasicDerivation(
+            outputs={"out": DerivationOutput(path="/nix/store/abc-foo")},
+            platform="x86_64-linux",
+            builder="/bin/sh",
+            args=["-c", "true"],
+        )
+        assert drv.supports_lix()
+        assert not drv.requires_nix
+
+    def test_requires_nix_true_ca(self):
+        """A CA derivation should require Nix."""
+        drv = BasicDerivation(
+            outputs={"out": DerivationOutput(path="", method="sha256", hash_digest="")},
+            platform="",
+            builder="",
+        )
+        assert drv.requires_nix
+
+    def test_requires_nix_true_deferred(self):
+        """A deferred derivation should require Nix."""
+        drv = BasicDerivation(
+            outputs={"out": DerivationOutput(path="", method="", hash_digest="")},
+            platform="",
+            builder="",
+        )
+        assert not drv.supports_lix()
+        assert drv.requires_nix
+
+    def test_dynamic_requires_nix(self):
+        """Dynamic derivations always require Nix, regardless of output types."""
+        drv = BasicDerivation(
+            outputs={"out": DerivationOutput(path="/nix/store/abc-foo")},
+            platform="",
+            builder="",
+            is_dynamic=True,
+        )
+        assert not drv.supports_lix()
+        assert drv.requires_nix
+
+    def test_build_local_true(self):
+        drv = BasicDerivation(env={"preferLocalBuild": "1"}, platform="", builder="")
+        assert drv.build_local
+
+    def test_build_local_pynixd_fast(self):
+        drv = BasicDerivation(env={"pynixd_fast": "1"}, platform="", builder="")
+        assert drv.build_local
+
+    def test_build_local_false(self):
+        drv = BasicDerivation(env={}, platform="", builder="")
+        assert not drv.build_local
+
+    def test_required_system_features_empty(self):
+        drv = BasicDerivation(env={}, platform="", builder="")
+        assert drv.required_system_features == set()
+
+    def test_required_system_features_parsed(self):
+        drv = BasicDerivation(env={"requiredSystemFeatures": "kvm big-parallel"}, platform="", builder="")
+        assert drv.required_system_features == {"kvm", "big-parallel"}
+
+    def test_output_paths(self):
+        drv = BasicDerivation(
+            outputs={
+                "out": DerivationOutput(path="/nix/store/abc-foo"),
+                "lib": DerivationOutput(path="/nix/store/abc-lib"),
+            },
+            platform="",
+            builder="",
+        )
+        paths = drv.output_paths()
+        assert paths == {
+            "out": StorePath("/nix/store/abc-foo"),
+            "lib": StorePath("/nix/store/abc-lib"),
+        }
+
+    def test_to_stats_json(self):
+        drv = BasicDerivation(
+            outputs={"out": DerivationOutput(path="/nix/store/abc-foo")},
+            platform="x86_64-linux",
+            builder="/bin/sh",
+            args=["-c", "echo hi"],
+            env={"foo": "bar", "PATH": "/bin", "NIX_STUFF": "x"},
+        )
+        result = json.loads(drv.to_stats_json())
+        assert result["builder"] == "/bin/sh"
+        assert result["outputs"] == ["out"]
+        assert result["system"] == "x86_64-linux"
+
+    def test_has_dynamic_outputs_true(self):
+        drv = BasicDerivation(
+            outputs={"out": DerivationOutput(path="", method="text:sha256", hash_digest="")},
+            platform="",
+            builder="",
+        )
+        assert drv.has_dynamic_outputs
+
+    def test_has_dynamic_outputs_false(self):
+        drv = BasicDerivation(
+            outputs={"out": DerivationOutput(path="/nix/store/abc-foo")},
+            platform="",
+            builder="",
+        )
+        assert not drv.has_dynamic_outputs
+
+    def test_has_ca_floating_true(self):
+        drv = BasicDerivation(
+            outputs={"out": DerivationOutput(path="", method="sha256", hash_digest="")},
+            platform="",
+            builder="",
+        )
+        assert drv.has_ca_floating
+
+    def test_has_ca_floating_false_for_text(self):
+        drv = BasicDerivation(
+            outputs={"out": DerivationOutput(path="", method="text:sha256", hash_digest="")},
+            platform="",
+            builder="",
+        )
+        # text:sha256 with empty hash is a dynamic output, not CA floating
+        assert not drv.has_ca_floating
+
+    def test_has_deferred_true(self):
+        drv = BasicDerivation(
+            outputs={"out": DerivationOutput(path="", method="", hash_digest="")},
+            platform="",
+            builder="",
+        )
+        assert drv.has_deferred
+
+    def test_has_impure_true(self):
+        drv = BasicDerivation(
+            outputs={"out": DerivationOutput(path="", method="sha256", hash_digest="impure")},
+            platform="",
+            builder="",
+        )
+        assert drv.has_impure
+
+    def test_has_text_hashed_true(self):
+        drv = BasicDerivation(
+            outputs={
+                "out": DerivationOutput(path="/nix/store/abc", method="text:sha256", hash_digest="xyz"),
+            },
+            platform="",
+            builder="",
+        )
+
+        assert drv.has_text_hashed
+
+    def test_effective_required_features(self):
+
+        drv = BasicDerivation(env={"requiredSystemFeatures": "kvm ca-derivations"}, platform="", builder="")
+        effective = drv.effective_required_features
+        assert "ca-derivations" in effective  # no longer stripped (Lix can't serve CA)
+        assert effective == {"kvm", "ca-derivations"}
+
+
+class TestExhaustiveOutputKind:
+    """Test all 5 branches of DerivationOutput.kind exhaustively."""
+
+    @pytest.mark.parametrize(
+        "name,out,expected",  # noqa: PT006
+        [
+            ("INPUT_ADDRESSED", DerivationOutput(path="/p", method="", hash_digest=""), OutputKind.INPUT_ADDRESSED),
+            ("CA_FIXED", DerivationOutput(path="/p", method="sha256", hash_digest="h"), OutputKind.CA_FIXED),
+            ("CA_FLOATING", DerivationOutput(path="", method="sha256", hash_digest=""), OutputKind.CA_FLOATING),
+            ("DEFERRED", DerivationOutput(path="", method="", hash_digest=""), OutputKind.DEFERRED),
+            ("IMPURE", DerivationOutput(path="", method="sha256", hash_digest="impure"), OutputKind.IMPURE),
+        ],
+    )
+    def test_kind(self, name, out, expected):
+        assert out.kind == expected, f"{name} failed"

@@ -1,0 +1,203 @@
+"""Unit tests for scheduler-owned substitution queue state."""
+
+from __future__ import annotations
+
+import asyncio
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, cast
+
+import pytest
+
+from pynixd.config import PynixdSettings
+from pynixd.serde import QueryPathInfoResponse
+from pynixd.serde.content_address import ContentAddress
+from pynixd.serde.ids import StoreId
+from pynixd.serde.nar_hash import NARHash
+from pynixd.serde.path_info import UnkeyedValidPathInfo
+from pynixd.serde.wire_time import Time
+from pynixd.store_path import StorePath
+from pynixd.substitution_queue import SubstitutionHealthLog, SubstitutionQueryResult, SubstitutionQueue
+
+if TYPE_CHECKING:
+    from pynixd.context import PynixdContext
+    from pynixd.serde.wire_ops import WireRequest
+
+
+class FakeSubstituter:
+    no_schedule = True
+
+    def __init__(
+        self,
+        store_id: str,
+        *,
+        valid: bool,
+        delay: float = 0.0,
+        nar_size: int = 10,
+        priority: float = 1.0,
+    ) -> None:
+        self.store_id = StoreId(store_id)
+        self.valid = valid
+        self.delay = delay
+        self.nar_size = nar_size
+        self.priority = priority
+        self.queries = 0
+
+    async def execute(self, request: WireRequest, **kwargs: Any) -> QueryPathInfoResponse:
+        del request, kwargs
+        self.queries += 1
+        await asyncio.sleep(self.delay)
+        if not self.valid:
+            return QueryPathInfoResponse(valid=False)
+        return QueryPathInfoResponse(
+            valid=True,
+            info=UnkeyedValidPathInfo(
+                deriver=None,
+                nar_hash=NARHash(hash="0" * 52),
+                references=set(),
+                registration_time=Time(ts=0),
+                nar_size=self.nar_size,
+                ultimate=False,
+                sigs=set(),
+                ca=ContentAddress(value=""),
+            ),
+        )
+
+
+def test_new_substitution_health_log_is_healthy_until_minimum_fill() -> None:
+    settings = PynixdSettings(
+        substitution_health_window=10,
+        substitution_health_min_fill_ratio=0.10,
+    )
+    health = SubstitutionHealthLog(settings)
+
+    assert health.is_healthy
+
+    health.record(query_succeeded=False)
+
+    assert not health.is_healthy
+
+
+def test_substitution_queue_records_positive_and_negative_results() -> None:
+    ctx = cast("PynixdContext", SimpleNamespace(settings=PynixdSettings()))
+    queue = SubstitutionQueue(ctx)
+    path = StorePath("/nix/store/00000000000000000000000000000000-example")
+    store_id = StoreId("cache")
+
+    queue.record_query_result(
+        path,
+        SubstitutionQueryResult(store_id=store_id, path_info=None, query_succeeded=True),
+    )
+
+    assert path in queue.negative
+    assert queue.negative[path][store_id].query_succeeded
+    assert queue.should_wait_for(store_id)
+
+
+@pytest.mark.anyio
+async def test_can_substitute_returns_first_positive_and_keeps_probing() -> None:
+    path = StorePath("/nix/store/00000000000000000000000000000000-example")
+    slow_missing = FakeSubstituter("slow-missing", valid=False, delay=0.05)
+    fast_hit = FakeSubstituter("fast-hit", valid=True, nar_size=123)
+    ctx = cast(
+        "PynixdContext",
+        SimpleNamespace(
+            settings=PynixdSettings(),
+            stores={
+                StoreId("local"): SimpleNamespace(no_schedule=False),
+                slow_missing.store_id: slow_missing,
+                fast_hit.store_id: fast_hit,
+            },
+        ),
+    )
+    queue = SubstitutionQueue(ctx)
+
+    availability = await queue.can_substitute(path)
+
+    assert availability.available
+    assert availability.nar_size == 123
+    assert fast_hit.queries == 1
+    await asyncio.sleep(0.06)
+    assert slow_missing.queries == 1
+
+
+@pytest.mark.anyio
+async def test_can_substitute_does_not_wait_for_unhealthy_slow_store() -> None:
+    path = StorePath("/nix/store/00000000000000000000000000000000-example")
+    slow_hit = FakeSubstituter("slow-hit", valid=True, delay=0.05)
+    fast_missing = FakeSubstituter("fast-missing", valid=False)
+    ctx = cast(
+        "PynixdContext",
+        SimpleNamespace(
+            settings=PynixdSettings(substitution_health_window=10),
+            stores={
+                StoreId("local"): SimpleNamespace(no_schedule=False),
+                slow_hit.store_id: slow_hit,
+                fast_missing.store_id: fast_missing,
+            },
+        ),
+    )
+    queue = SubstitutionQueue(ctx)
+    queue.health_for(slow_hit.store_id).record(query_succeeded=False)
+
+    availability = await queue.can_substitute(path)
+
+    assert not availability.available
+    assert fast_missing.queries == 1
+    assert slow_hit.queries == 1
+
+
+@pytest.mark.anyio
+async def test_get_substituter_selects_highest_priority_positive_store() -> None:
+    path = StorePath("/nix/store/00000000000000000000000000000000-example")
+    low_priority = FakeSubstituter("low-priority", valid=True, priority=50)
+    high_priority = FakeSubstituter("high-priority", valid=True, priority=10)
+    ctx = cast(
+        "PynixdContext",
+        SimpleNamespace(
+            settings=PynixdSettings(),
+            stores={
+                StoreId("local"): SimpleNamespace(no_schedule=False),
+                low_priority.store_id: low_priority,
+                high_priority.store_id: high_priority,
+            },
+        ),
+    )
+    queue = SubstitutionQueue(ctx)
+
+    candidate = await queue.get_substituter(path)
+
+    assert candidate is not None
+    assert candidate.store is high_priority
+
+
+@pytest.mark.anyio
+async def test_substitute_deduplicates_active_imports(monkeypatch: pytest.MonkeyPatch) -> None:
+    path = StorePath("/nix/store/00000000000000000000000000000000-example")
+    store = FakeSubstituter("cache", valid=True)
+    ctx = cast(
+        "PynixdContext",
+        SimpleNamespace(
+            settings=PynixdSettings(),
+            stores={
+                StoreId("local"): SimpleNamespace(no_schedule=False),
+                store.store_id: store,
+            },
+        ),
+    )
+    queue = SubstitutionQueue(ctx)
+    imports = 0
+
+    async def fake_import(path_arg: StorePath, candidate) -> None:
+        nonlocal imports
+        del path_arg, candidate
+        imports += 1
+        await asyncio.sleep(0.01)
+
+    monkeypatch.setattr(queue, "_import_nar", fake_import)
+
+    first, second = await asyncio.gather(queue.substitute(path), queue.substitute(path))
+
+    assert first.substituted
+    assert second.substituted
+    assert imports == 1
+    assert store.queries == 1
