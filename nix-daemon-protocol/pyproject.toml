@@ -14,7 +14,10 @@ dependencies = [
 
 [project.optional-dependencies]
 structlog = ["structlog"]
-test = ["pytest"]
+# `anyio`, because every test of this project is `async def` and the plugin
+# of anyio is what runs one. It reached the suite through pynixd until the
+# gate ran the suite against this project alone.
+test = ["pytest", "anyio"]
 benchmark = ["pyinstrument"]
 
 [tool.hatch.build.targets.wheel]
