@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -15,6 +14,7 @@ from tests.conftest import (
     CLIENT_BIN,
     SESSION_STORE_PREFIX,
     STORE_PREFIX,
+    TEST_NIX,
     make_test_spec,
     rmtree_robust,
     run_subproc,
@@ -28,7 +28,6 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
-TEST_NIX = Path("tests/nix")
 
 CA_NIX_CONFIG = for_ca_derivations(
     substituters=(

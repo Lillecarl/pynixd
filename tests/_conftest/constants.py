@@ -30,7 +30,11 @@ _covered_features_key = pytest.StashKey[TestFeatures]()
 
 STORE_PREFIX = Path("/tmp/pynixd-stores")
 SESSION_STORE_PREFIX = Path("/tmp/pynixd-session-stores")
-TEST_NIX = Path("tests/nix")
+# Anchored on this file, and not on the working directory. The suite ran
+# from `pynixd/` alone until issue #131, and `nix build --file tests/nix`
+# then resolved against the checkout root and reported that the path does
+# not exist. 30 tests failed that way, and none of them said why.
+TEST_NIX = Path(__file__).resolve().parent.parent / "nix"
 
 # ── Nix config ────────────────────────────────────────────────────
 

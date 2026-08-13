@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import anyio
@@ -19,6 +18,7 @@ from tests.conftest import (
     CLIENT_BIN,
     NIX_BIN,
     STORE_PREFIX,
+    TEST_NIX,
     make_test_spec,
     rmtree_robust,
     run_subproc,
@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 # Common test configuration
-NIX_FILE = Path("tests/nix")
+NIX_FILE = TEST_NIX
 TARGET = "parallel"
 MAX_JOBS = 20
 TEST_ENV = {

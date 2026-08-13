@@ -14,7 +14,7 @@ import anyio
 import pytest
 import structlog
 
-from tests.conftest import CLIENT_BIN, run_subproc, server_uri
+from tests.conftest import CLIENT_BIN, TEST_NIX, run_subproc, server_uri
 from tests.test_features import TestFeatures as F
 
 if TYPE_CHECKING:
@@ -25,8 +25,6 @@ if TYPE_CHECKING:
     from pynixd import Server
 
 log = structlog.get_logger(__name__)
-
-TEST_NIX = "tests/nix"
 
 
 async def _run_client_build(
