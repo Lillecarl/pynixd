@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
-from enum import Enum, auto
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlsplit
@@ -34,13 +33,6 @@ if TYPE_CHECKING:
     from aiohttp import web
 
 log = structlog.get_logger(__name__)
-
-
-class NixImplementation(Enum):
-    """Known Nix implementations for ssh-ng URI generation."""
-
-    NIX = auto()
-    LIX = auto()
 
 
 def _default_http_substituter_urls(local_store: Store) -> list[str]:
@@ -293,16 +285,9 @@ class Server:
         """Current OS user for ssh-ng URI generation."""
         return os.environ.get("USER", "root")
 
-    def uri(self, implementation: NixImplementation = NixImplementation.NIX) -> str:
+    def uri(self) -> str:
         """ssh-ng:// URI for --store."""
-        username = self.username
-        match implementation:
-            case NixImplementation.NIX:
-                return f"ssh-ng://{username}@{self.host}:{self.port}"
-            case NixImplementation.LIX:
-                return f"ssh-ng://{username}@{self.host}?port={self.port}"
-
-        return f"ssh-ng://{username}@{self.host}:{self.port}"
+        return f"ssh-ng://{self.username}@{self.host}:{self.port}"
 
     async def __aenter__(self) -> Server:
         await self.start()

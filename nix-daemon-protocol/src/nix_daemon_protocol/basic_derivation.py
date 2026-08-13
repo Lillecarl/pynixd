@@ -21,10 +21,6 @@ class BasicDerivation(WireModel):
     is_dynamic: bool = WireField(default=False, serialize=False, deserialize=False)
 
     @property
-    def requires_nix(self) -> bool:
-        return not self.supports_lix()
-
-    @property
     def build_local(self) -> bool:
         return self.env.get("pynixd_fast") == "1" or self.env.get("preferLocalBuild") == "1"
 
@@ -34,11 +30,6 @@ class BasicDerivation(WireModel):
         if not raw:
             return set()
         return set(raw.split())
-
-    def supports_lix(self) -> bool:
-        if self.is_dynamic:
-            return False
-        return all(not (output.is_ca or output.is_deferred) for output in self.outputs.values())
 
     def to_stats_json(self) -> str:
         return json.dumps(

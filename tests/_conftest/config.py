@@ -12,7 +12,6 @@ from environs import env
 
 from pynixd import Server
 from pynixd.config import LocalSocketStoreSpec
-from pynixd.instance import NixImplementation
 from pynixd.serde.ids import StoreId
 from pynixd.store.local_db import LocalDBStore
 from tests._conftest.constants import (
@@ -44,26 +43,17 @@ log = structlog.get_logger(__name__)
 # The number of tests that need a Nix binary goes down from there, so a
 # stricter answer than "the one on PATH" buys nothing.
 NIX_BIN = env.path("NIX_BIN", None) or Path(shutil.which("nix") or "nix")
-LIX_BIN = env.path("LIX_BIN", None) or NIX_BIN
-CLIENT_BIN: Path = NIX_BIN  # Overridden in pytest_configure based on --client-bin
 
-# Whether `--client-bin` chose Lix. Read this, and never compare `CLIENT_BIN`
-# against `LIX_BIN`. `LIX_BIN` falls back to `NIX_BIN` when the environment
-# names no Lix, so the two paths are the same path and every such comparison
-# answers "Lix". The URI helpers below did compare them, so they gave a Lix URI
-# to a Nix client, and Nix does not read `?port=`. Nix reported
-# `warning: unknown setting 'port'`, went to port 22, and reached the sshd of
-# the machine instead of the server under test.
-CLIENT_IS_LIX: bool = False
+# One binary, for the client, for the local store and for the builder. This
+# project supported Lix as well, through `LIX_BIN` and the `--client-bin`,
+# `--local-bin` and `--builder-bin` options, and it does not any more.
+CLIENT_BIN: Path = NIX_BIN
 
 
 # ── CLI options ───────────────────────────────────────────────────
 
 
 def pytest_addoption(parser):
-    parser.addoption("--client-bin", choices=["nix", "lix"], default="nix")
-    parser.addoption("--local-bin", choices=["nix", "lix"], default="nix")
-    parser.addoption("--builder-bin", choices=["nix", "lix"], default="nix")
     parser.addoption(
         "--no-test-subsumption",
         action="store_true",
@@ -79,10 +69,6 @@ def pytest_addoption(parser):
 
 
 def pytest_configure(config):
-    global CLIENT_BIN, CLIENT_IS_LIX
-    CLIENT_IS_LIX = config.getoption("client_bin") == "lix"
-    CLIENT_BIN = LIX_BIN if CLIENT_IS_LIX else NIX_BIN
-
     # Unregister pytest-asyncio — we use anyio for async test execution.
     asyncio_plugin = config.pluginmanager.get_plugin("asyncio")
     if asyncio_plugin is not None:
@@ -98,23 +84,17 @@ def pytest_configure(config):
 
 
 def server_uri(server: Server) -> str:
-    """Return server URI in format appropriate for the current client binary."""
-    if CLIENT_IS_LIX:
-        return server.uri(NixImplementation.LIX)
-    return server.uri(NixImplementation.NIX)
+    """Return the URI of the server."""
+    return server.uri()
 
 
 def ssh_admin_uri(server: Server) -> str:
     """Return an SSH URI for admin-user on the given server."""
-    if CLIENT_IS_LIX:
-        return f"ssh-ng://admin-user@127.0.0.1?port={server.port}"
     return f"ssh-ng://admin-user@127.0.0.1:{server.port}"
 
 
 def ssh_user_uri(server: Server) -> str:
     """Return an SSH URI for regular-user on the given server."""
-    if CLIENT_IS_LIX:
-        return f"ssh-ng://regular-user@127.0.0.1?port={server.port}"
     return f"ssh-ng://regular-user@127.0.0.1:{server.port}"
 
 
@@ -196,15 +176,12 @@ async def pynixd_server(
     rmtree_robust(builder_path)
     rmtree_robust(socket_path)
 
-    local_bin = LIX_BIN if request.config.getoption("local_bin") == "lix" else NIX_BIN
-    builder_bin = LIX_BIN if request.config.getoption("builder_bin") == "lix" else NIX_BIN
-
     local_store = LocalDBStore(
         make_test_spec(
             store_id="local",
             store_path=local_path,
             nix_config=SESSION_NIX_CONFIG,
-            nix_bin=str(local_bin),
+            nix_bin=str(NIX_BIN),
         ),
     )
     builder_store = LocalDBStore(
@@ -212,7 +189,7 @@ async def pynixd_server(
             store_id="builder",
             store_path=builder_path,
             nix_config=SESSION_NIX_CONFIG,
-            nix_bin=str(builder_bin),
+            nix_bin=str(NIX_BIN),
         ),
     )
 

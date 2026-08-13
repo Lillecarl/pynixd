@@ -27,13 +27,3 @@ test:
 # Run all checks
 precommit: check fmt test
 
-# Run Lix test matrix (all 8 combinations)
-supermegatest:
-    pytest tests/functional --client-bin=nix --local-bin=nix --builder-bin=nix
-    pytest tests/functional --client-bin=nix --local-bin=nix --builder-bin=lix
-    pytest tests/functional --client-bin=nix --local-bin=lix --builder-bin=nix
-    pytest tests/functional --client-bin=nix --local-bin=lix --builder-bin=lix
-    pytest tests/functional --client-bin=lix --local-bin=nix --builder-bin=nix
-    pytest tests/functional --client-bin=lix --local-bin=nix --builder-bin=lix
-    pytest tests/functional --client-bin=lix --local-bin=lix --builder-bin=nix
-    pytest tests/functional --client-bin=lix --local-bin=lix --builder-bin=lix

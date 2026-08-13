@@ -69,7 +69,7 @@ def pytest_terminal_summary(
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]):
-    """Wrap async tests in asyncio.timeout, sort by subsumption, handle Lix skips."""
+    """Wrap async tests in asyncio.timeout and sort by subsumption."""
 
     # Sort by descending covers-popcount so broad tests run first.
     if not config.getoption("no_test_subsumption"):
@@ -83,15 +83,6 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         ):
             item.obj = _wrap_with_asyncio_timeout(item)
             item.obj._pynixd_timeout_wrapped = True  # type: ignore[reportAttributeAccessIssue]
-
-    # Lix: skip CA/dynamic tests.
-    client_bin = config.getoption("client_bin", "nix")
-    local_bin = config.getoption("local_bin", "nix")
-    builder_bin = config.getoption("builder_bin", "nix")
-    if "lix" in (client_bin, local_bin, builder_bin):
-        for item in items:
-            if item.get_closest_marker("ca_derivations"):
-                item.add_marker(pytest.mark.skip(reason="Not supported with Lix"))
 
 
 def _wrap_with_asyncio_timeout(item: pytest.Function):

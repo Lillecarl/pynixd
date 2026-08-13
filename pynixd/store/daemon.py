@@ -176,12 +176,6 @@ class DaemonStore(Store):
         _platform_specific = frozenset({"kvm", "apple-virt"})
         return features.isdisjoint(_platform_specific)
 
-    @property
-    def is_lix(self) -> bool:
-        """Whether the connected daemon is a Lix daemon."""
-        if self.version != wire.proto(1, 35):
-            return False
-        return "lix" in self.nix_version.lower()
 
     # ── Resource metrics ────────────────────────────────────────────
 

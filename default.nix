@@ -57,7 +57,6 @@ let
         ]))
       ];
       text = ''
-        export LIX_BIN=${lib.getExe pkgs.lix}
         export NIX_BIN=${lib.getExe pkgs.nix}
         exec pytest -p no:cacheprovider --timeout=60 ${testArgs} "$@"
       '';

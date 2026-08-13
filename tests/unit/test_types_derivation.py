@@ -93,47 +93,6 @@ class TestDerivationOutputProperties:
 
 
 class TestBasicDerivation:
-    def test_requires_nix_false(self):
-        """A simple input-addressed derivation should support Lix."""
-        drv = BasicDerivation(
-            outputs={"out": DerivationOutput(path="/nix/store/abc-foo")},
-            platform="x86_64-linux",
-            builder="/bin/sh",
-            args=["-c", "true"],
-        )
-        assert drv.supports_lix()
-        assert not drv.requires_nix
-
-    def test_requires_nix_true_ca(self):
-        """A CA derivation should require Nix."""
-        drv = BasicDerivation(
-            outputs={"out": DerivationOutput(path="", method="sha256", hash_digest="")},
-            platform="",
-            builder="",
-        )
-        assert drv.requires_nix
-
-    def test_requires_nix_true_deferred(self):
-        """A deferred derivation should require Nix."""
-        drv = BasicDerivation(
-            outputs={"out": DerivationOutput(path="", method="", hash_digest="")},
-            platform="",
-            builder="",
-        )
-        assert not drv.supports_lix()
-        assert drv.requires_nix
-
-    def test_dynamic_requires_nix(self):
-        """Dynamic derivations always require Nix, regardless of output types."""
-        drv = BasicDerivation(
-            outputs={"out": DerivationOutput(path="/nix/store/abc-foo")},
-            platform="",
-            builder="",
-            is_dynamic=True,
-        )
-        assert not drv.supports_lix()
-        assert drv.requires_nix
-
     def test_build_local_true(self):
         drv = BasicDerivation(env={"preferLocalBuild": "1"}, platform="", builder="")
         assert drv.build_local
@@ -246,7 +205,8 @@ class TestBasicDerivation:
 
         drv = BasicDerivation(env={"requiredSystemFeatures": "kvm ca-derivations"}, platform="", builder="")
         effective = drv.effective_required_features
-        assert "ca-derivations" in effective  # no longer stripped (Lix can't serve CA)
+        # Not stripped: a backend that cannot serve CA must stay excluded.
+        assert "ca-derivations" in effective
         assert effective == {"kvm", "ca-derivations"}
 
 

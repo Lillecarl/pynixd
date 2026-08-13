@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from tests._conftest.config import (
     CLIENT_BIN,
-    LIX_BIN,
     NIX_BIN,
     make_test_spec,
     nix_env,
@@ -68,7 +67,6 @@ from tests._conftest.subsumption import pytest_runtest_protocol
 __all__ = [
     "CLIENT_BIN",
     "DEFAULT_SSH_OPTS",
-    "LIX_BIN",
     "NIX_BIN",
     "SESSION_HTTP_PASS",
     "SESSION_HTTP_PORT",
