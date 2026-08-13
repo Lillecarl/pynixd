@@ -19,11 +19,16 @@ class StorePath(WireScalar):
 
     @property
     def path(self) -> str:
-        """Compatibility spelling for the canonical string value."""
-        return self
+        """Compatibility spelling for the canonical string value.
 
-    def endswith(self, suffix: str) -> bool:
-        return self.path.endswith(suffix)
+        `str(self)`, and not `self`. A `WireScalar` is a `str`, so `self`
+        satisfies the annotation and reads as correct. It is not: it makes
+        `self.path.<method>()` dispatch back to this class. There was an
+        `endswith` here that did exactly that, and every call recursed until
+        the interpreter raised RecursionError. `str(self)` is a plain `str`,
+        so a method of this class can delegate to `self.path` and reach `str`.
+        """
+        return str(self)
 
     @property
     def name(self) -> str:
