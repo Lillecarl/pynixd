@@ -1,6 +1,18 @@
 target-version = "py313"
 line-length = 120
 
+# This file is the ruff configuration of this project, and the only one.
+# `pyproject.toml` beside it carried a second `[tool.ruff]` of 103 lines, with
+# 20 rule families, a `flake8-type-checking` section and three per-file-ignore
+# entries. ruff never read one line of it: a `ruff.toml` in a directory wins
+# over the `pyproject.toml` in the same directory, so the file that looked
+# like the strict configuration of this project governed nothing.
+#
+# It is deleted, rather than merged. `../ruff-strict.toml` is where this
+# repository states the strict answer, and issue #131 brings this tree to it
+# one gate at a time. `../tests/meta/test_ruff_config_is_reachable.py` stops
+# the pair from coming back.
+
 [lint]
 select = [
     "E", "W",  # pycodestyle
