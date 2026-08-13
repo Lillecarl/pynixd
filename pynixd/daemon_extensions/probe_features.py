@@ -18,6 +18,7 @@ class ProbeFeaturesRequest(WireRequest):
     """ProbeFeatures request — candidate systems and features to probe."""
 
     op: ClassVar[int] = 109
+    is_extension: ClassVar[bool] = True
     response_type = ProbeFeaturesResponse
     systems: set[str] = WireField(default_factory=set)
     system_features: set[str] = WireField(default_factory=set)
