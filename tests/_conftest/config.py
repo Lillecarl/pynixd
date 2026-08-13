@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shutil
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -33,7 +35,15 @@ log = structlog.get_logger(__name__)
 
 # ── Nix binary paths ─────────────────────────────────────────────
 
-NIX_BIN = env.path("NIX_BIN")
+# `NIX_BIN` was mandatory, and the development shell of the repository that
+# this project came from always set it. That shell is not the shell here, so
+# the whole suite failed at collection with `EnvNotSetError`. The `nix` on
+# PATH is the one that a person in this shell means, so it is the default.
+#
+# This project moves to nanopynix, which loads the Nix libraries in process.
+# The number of tests that need a Nix binary goes down from there, so a
+# stricter answer than "the one on PATH" buys nothing.
+NIX_BIN = env.path("NIX_BIN", None) or Path(shutil.which("nix") or "nix")
 LIX_BIN = env.path("LIX_BIN", None) or NIX_BIN
 CLIENT_BIN: Path = NIX_BIN  # Overridden in pytest_configure based on --client-bin
 

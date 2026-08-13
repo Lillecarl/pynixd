@@ -11,8 +11,22 @@ import json
 import pytest
 
 from pynixd.serde import BuildMode, BuildResult, BuildResultStatus, BuiltOutput
-from pynixd.store_path import StorePath
+from pynixd.serde import StorePath as SerdeStorePath
 from tests.test_features import TestFeatures as F
+
+# This repository holds two classes named `StorePath`. `pynixd.store_path`
+# holds the domain one, which strips the `/nix/store/` prefix and keeps an
+# `extrainfo` field. `pynixd.serde` re-exports the wire one, which is the
+# string that goes on the daemon socket. Neither compares equal to the other.
+#
+# `BuiltOutput.out_path` held the domain one, and the move of the protocol
+# into `nix-daemon-protocol` made it the wire one. That package cannot import
+# `pynixd`, so the wire class is the only class it can name, and the new type
+# is the correct type. This module therefore names the wire one as well.
+#
+# `tests/_conftest/helpers.py` uses the same `SerdeStorePath` spelling, and it
+# is the spelling to copy wherever the two meet.
+StorePath = SerdeStorePath
 
 
 @pytest.mark.covers(F.BUILD_TYPES)

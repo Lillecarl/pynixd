@@ -42,8 +42,16 @@ def pytest_sessionstart(session: pytest.Session) -> None:
 
     from tests._conftest.helpers import rmtree_robust_glob
 
+    # Only the directories that this project makes. `/tmp/pytest-of-lillecarl/*`
+    # was here as well, and that directory is the shared temporary root of
+    # pytest: every suite of this repository puts its `tmp_path` under it. The
+    # line therefore deleted the leftovers of another project at the start of
+    # each run, and one of those leftovers was a root-owned overlayfs work
+    # directory that no cleanup can remove.
+    #
+    # pytest keeps the last three roots of its own and removes the rest, so
+    # nothing here has to.
     rmtree_robust_glob("/tmp/pynixd-test-*")
-    rmtree_robust_glob("/tmp/pytest-of-lillecarl/*")
 
 
 def pytest_terminal_summary(
