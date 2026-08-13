@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
+import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -22,12 +22,12 @@ from pynixd.drv_parser import Derivation, parse_drv, to_basic_derivation
 from pynixd.serde import OutputKind
 from pynixd.serde import StorePath as SerdeStorePath
 from pynixd.store_path import DrvOutput, StorePath
+from tests.conftest import NIX_BIN
 from tests.test_features import TestFeatures as F
 
 if TYPE_CHECKING:
     from pynixd.serde.aliases import OutputMap
 
-NIX_BIN = os.environ.get("NIX_BIN", "nix")
 _PROBES_NIX = Path(__file__).parent.parent.parent / "tests" / "nix" / "drv-probes.nix"
 
 
@@ -46,6 +46,13 @@ def probes(drv_probes_path: Path) -> dict[str, tuple[str, str, dict[str, Any]]]:
     Returns {name: (drv_path, drv_content, canonical_derivation_show)}.
     Evaluated once per test session.
     """
+
+    # `checks.pynixd` runs this suite in a build sandbox, which holds no Nix
+    # binary, no store daemon and no network. Every test that reads a real
+    # `.drv` therefore skips there, and the manufactured edge cases below
+    # still run. Without this, 21 tests errored with `FileNotFoundError`.
+    if shutil.which(str(NIX_BIN)) is None:
+        pytest.skip(f"{NIX_BIN} is not on PATH, so no probe can be evaluated")
 
     async def _eval_all():
         # List attribute names using --apply
