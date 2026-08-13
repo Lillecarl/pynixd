@@ -6,6 +6,7 @@ import asyncio
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
+import anyio
 import pytest
 from pynixd.serde.content_address import ContentAddress
 from pynixd.serde.ids import StoreId
@@ -46,7 +47,7 @@ class FakeSubstituter:
     async def execute(self, request: WireRequest, **kwargs: Any) -> QueryPathInfoResponse:
         del request, kwargs
         self.queries += 1
-        await asyncio.sleep(self.delay)
+        await anyio.sleep(self.delay)
         if not self.valid:
             return QueryPathInfoResponse(valid=False)
         return QueryPathInfoResponse(
@@ -117,7 +118,7 @@ async def test_can_substitute_returns_first_positive_and_keeps_probing() -> None
     assert availability.available
     assert availability.nar_size == 123
     assert fast_hit.queries == 1
-    await asyncio.sleep(0.06)
+    await anyio.sleep(0.06)
     assert slow_missing.queries == 1
 
 
@@ -192,7 +193,7 @@ async def test_substitute_deduplicates_active_imports(monkeypatch: pytest.Monkey
         nonlocal imports
         del path_arg, candidate
         imports += 1
-        await asyncio.sleep(0.01)
+        await anyio.sleep(0.01)
 
     monkeypatch.setattr(queue, "_import_nar", fake_import)
 

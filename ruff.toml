@@ -6,11 +6,50 @@ select = [
     "E", "W",  # pycodestyle
     "F",       # pyflakes (real bugs)
     "I",       # isort
+    "TID",     # flake8-tidy-imports, for the banned-api table below
 ]
 
 ignore = [
     "E501",  # line length handled by line-length setting
+    "TID252",  # relative imports, which this project uses by design
 ]
+
+# ═══════════════════════════════════════════════════════════════
+# SHARED — the same names as the `banned-api` table of
+#          `../ruff-strict.toml`, kept equal by
+#          `../tests/meta/test_asyncio_ban.py`
+# ═══════════════════════════════════════════════════════════════
+#
+# The repository writes concurrency in one vocabulary, and that vocabulary is
+# anyio. This project reached the same place from the other side: it starts
+# with `anyio.run(backend="asyncio", ...)` in `__main__.py`, so an anyio
+# primitive works anywhere in it, and `scheduler.py` and `http_server.py`
+# already used one. Issue #131 ported the remaining 48 uses.
+#
+# `../ruff-strict.toml` gives the reason for each name, and the strict gate
+# does not read this tree yet. The table is here so that `checks.lint`, which
+# does read it, keeps the port. Read the reasons there, not here.
+#
+[lint.flake8-tidy-imports.banned-api]
+"asyncio.get_event_loop".msg = "Use asyncio.get_running_loop() inside async code; time.monotonic() for timestamps."
+"asyncio.set_event_loop".msg = "anyio.run() owns the event loop; do not install a process-global default underneath it."
+"asyncio.new_event_loop".msg = "Use anyio.run(), which creates and owns the loop."
+"asyncio.get_event_loop_policy".msg = "Select a backend via anyio.run(backend=...) rather than a global loop policy."
+"asyncio.set_event_loop_policy".msg = "Select a backend via anyio.run(backend=..., backend_options=...) rather than a global loop policy."
+"asyncio.to_thread".msg = "Use anyio.to_thread.run_sync(fn, *args) -- bounded by a CapacityLimiter, unlike asyncio's unbounded spawn. It does NOT forward **kwargs: wrap keyword args in functools.partial."
+"asyncio.wrap_future".msg = "Prefer anyio.to_thread / anyio.from_thread.BlockingPortal."
+"asyncio.sleep".msg = "Use anyio.sleep()."
+"asyncio.Lock".msg = "Use anyio.Lock()."
+"asyncio.Event".msg = "Use anyio.Event(). Note it has no clear(): PressureFlag in monitor.py shows how to re-arm."
+"asyncio.Semaphore".msg = "Use anyio.Semaphore(initial_value)."
+"asyncio.BoundedSemaphore".msg = "Use anyio.Semaphore(n, max_value=n)."
+"asyncio.Condition".msg = "Use anyio.Condition()."
+"asyncio.TaskGroup".msg = "Use `async with anyio.create_task_group() as tg:`, and `tg.start_soon(fn, *args)`."
+"asyncio.timeout".msg = "Use `with anyio.fail_after(seconds):` (or move_on_after to expire silently)."
+"asyncio.timeout_at".msg = "Use `with anyio.CancelScope(deadline=...):`, against anyio.current_time()."
+# ═══════════════════════════════════════════════════════════════
+# END SHARED
+# ═══════════════════════════════════════════════════════════════
 
 # ═══════════════════════════════════════════════════════════════
 # SHARED — keep the [lint.flake8-type-checking] section below

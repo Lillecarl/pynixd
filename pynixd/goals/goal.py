@@ -61,9 +61,9 @@ class ExecutionGoal(Goal[T]):
         async def run_one(index: int, child: Goal[U]) -> None:
             results[index] = await child.result()
 
-        async with asyncio.TaskGroup() as tg:
+        async with anyio.create_task_group() as tg:
             for index, child in enumerate(children):
-                tg.create_task(run_one(index, child))
+                tg.start_soon(run_one, index, child)
 
         collected: list[U] = []
         for result in results:

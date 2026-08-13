@@ -1,5 +1,4 @@
-import asyncio
-
+import anyio
 import pytest
 from pynixd.serde.ids import StoreId
 
@@ -92,7 +91,7 @@ async def test_scheduler_load_balancing():
     for _ in range(10):
         if queued_build.assigned_store_id is not None:
             break
-        await asyncio.sleep(0.01)
+        await anyio.sleep(0.01)
 
     assert queued_build.assigned_store_id == StoreId("remote1")
 
@@ -163,7 +162,7 @@ async def test_scheduler_skips_saturated_store():
     for _ in range(10):
         if queued_build.assigned_store_id is not None:
             break
-        await asyncio.sleep(0.01)
+        await anyio.sleep(0.01)
     assert queued_build.assigned_store_id == StoreId("remote1")
 
 
@@ -224,13 +223,13 @@ async def test_scheduler_proactive_transfer():
     for _ in range(10):
         if queued_build.assigned_store_id is not None:
             break
-        await asyncio.sleep(0.01)
+        await anyio.sleep(0.01)
 
     # It should be assigned to idle because busy has 0 slots
     assert queued_build.assigned_store_id == "idle"
 
     # Yield control to let execute_build (and stream_paths) finish
-    await asyncio.sleep(0.05)
+    await anyio.sleep(0.05)
 
     # Path was moved to the idle store
 
@@ -289,7 +288,7 @@ async def test_scheduler_cpu_utilization():
     for _ in range(10):
         if queued_build.assigned_store_id is not None:
             break
-        await asyncio.sleep(0.01)
+        await anyio.sleep(0.01)
 
     assert queued_build.assigned_store_id == "cold"
 
@@ -350,7 +349,7 @@ async def test_scheduler_feature_matching():
     for _ in range(10):
         if queued_build.assigned_store_id is not None:
             break
-        await asyncio.sleep(0.01)
+        await anyio.sleep(0.01)
 
     assert queued_build.assigned_store_id == "full"
 

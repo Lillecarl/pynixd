@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import anyio
 import structlog
 
 from ..derived_path import DerivedPath
@@ -57,9 +57,9 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
     async def _run(self) -> QueryMissingResponse:
         plan = QueryMissingPlan(will_build=set(), will_substitute=set(), unknown=set())
 
-        async with asyncio.TaskGroup() as tg:
+        async with anyio.create_task_group() as tg:
             for wire_path in self.request.derived_paths:
-                tg.create_task(self._classify_wire_path(wire_path.value, plan))
+                tg.start_soon(self._classify_wire_path, wire_path.value, plan)
 
         log.debug(
             "query_missing_goal_plan",

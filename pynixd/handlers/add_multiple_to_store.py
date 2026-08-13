@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, ClassVar
 
+import anyio
 import structlog
 
 from ..serde.add_multiple_to_store import (
@@ -40,15 +41,25 @@ class AddMultipleToStoreHandler(Handler):
             await conn.w.drain()
 
             # 3. Concurrently: forward payload + read daemon response
-            async def _read_response() -> AddMultipleToStoreResponse:
-                return await AddMultipleToStoreResponse.from_reader(
-                    ReadContext.from_conn(conn),
+            # An anyio task group hands back no task object, so the child
+            # records its result in this list. The group waits for the child
+            # on exit, which is what `await resp_task` did before.
+            responses: list[AddMultipleToStoreResponse] = []
+
+            async def _read_response() -> None:
+                responses.append(
+                    await AddMultipleToStoreResponse.from_reader(
+                        ReadContext.from_conn(conn),
+                    ),
                 )
 
-            async with asyncio.TaskGroup() as tg:
-                resp_task = tg.create_task(_read_response())
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(_read_response)
                 infos = await self._forward_stream(ctx.proxy.r, conn.w)
-                resp = await resp_task
+
+            if not responses:
+                raise RuntimeError("the AddMultipleToStore reader task recorded no response")
+            resp = responses[0]
 
             # Update path info cache
             ctx.proxy.local_store.add_path_infos(infos)

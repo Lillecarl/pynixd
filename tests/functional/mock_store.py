@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+import anyio
 import structlog
 from pynixd.serde.content_address import ContentAddress
 from pynixd.serde.ids import StoreId
@@ -146,7 +146,7 @@ class MockStore(DaemonStore):
         # call_handlers: Maps Request type -> async handler function
         self.call_handlers: dict[type[WireRequest], Any] = {}
 
-        self.build_blockers: dict[str, asyncio.Event] = {}
+        self.build_blockers: dict[str, anyio.Event] = {}
         self.cpu_utilization_val = cpu_utilization
 
     @property
@@ -162,9 +162,9 @@ class MockStore(DaemonStore):
     def set_cpu_utilization(self, val: float) -> None:
         self.cpu_utilization_val = val
 
-    def block_build(self, drv_path: str | StorePath, blocker: asyncio.Event | None = None) -> asyncio.Event:
+    def block_build(self, drv_path: str | StorePath, blocker: anyio.Event | None = None) -> anyio.Event:
         """Create or use an event that will block builds of this drv_path."""
-        event = blocker or asyncio.Event()
+        event = blocker or anyio.Event()
         self.build_blockers[str(drv_path)] = event
         return event
 

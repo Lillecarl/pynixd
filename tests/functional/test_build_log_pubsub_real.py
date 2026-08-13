@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
+import anyio
 import pytest
 import structlog
 
@@ -65,7 +66,7 @@ async def _run_client2_delayed(
     attr: str,
 ) -> tuple[int, str, str, str]:
     """Wait 5s then run a nix build, so the first build is still in-flight."""
-    await asyncio.sleep(5)
+    await anyio.sleep(5)
     return await _run_client_build(client_store_path, builders_uri, nix_file, attr)
 
 

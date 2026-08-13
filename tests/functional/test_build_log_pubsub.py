@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 
+import anyio
 import pytest
 from pynixd.serde.ids import BuildId, StoreId
 
@@ -96,7 +97,7 @@ async def test_build_log_pubsub_two_clients():
     # Trigger scheduling — this assigns the build and spawns execute_build.
     # The build will block on build_blocker inside MockStore.execute_mock().
     await scheduler.schedule()
-    await asyncio.sleep(0.05)
+    await anyio.sleep(0.05)
 
     # Verify the build is blocked (assigned but waiting).
     queued_build = scheduler.queue.by_id[build_id]
@@ -106,7 +107,7 @@ async def test_build_log_pubsub_two_clients():
     # In a real scenario this would be ~10s; here we use a brief delay so the
     # test stays fast while still exercising the timing-sensitive path.
     async def release_blocker():
-        await asyncio.sleep(0.2)  # Simulate build execution time
+        await anyio.sleep(0.2)  # Simulate build execution time
         build_blocker.set()
 
     release_task = asyncio.create_task(release_blocker())
@@ -236,7 +237,7 @@ async def test_client_bound_active_build_task_cancels_after_last_unsubscribe():
     for _ in range(20):
         if build.is_building:
             break
-        await asyncio.sleep(0.01)
+        await anyio.sleep(0.01)
 
     build_task = build.build_task
     assert build_task is not None
@@ -245,7 +246,7 @@ async def test_client_bound_active_build_task_cancels_after_last_unsubscribe():
     for _ in range(20):
         if build_task.done():
             break
-        await asyncio.sleep(0.01)
+        await anyio.sleep(0.01)
 
     assert build_task.done()
     assert future.done()

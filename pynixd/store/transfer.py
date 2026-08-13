@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING
 
+import anyio
 import structlog
 
 from .. import wire
@@ -17,8 +17,6 @@ from ..store_path import StorePath as RealStorePath
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
-
-    import anyio
 
     from ..serde.valid_path_info import ValidPathInfo
     from .daemon import DaemonStore
@@ -120,8 +118,10 @@ async def _stream_paths_over_conns(
         log.debug("stream_paths_response_read", dst_conn=dst_conn.id, count=len(to_transfer))
         return response
 
-    async with asyncio.TaskGroup() as tg:
-        response_task = tg.create_task(read_response())
+    async with anyio.create_task_group() as tg:
+        # The group waits for the reader on exit, which is what the
+        # `await response_task` at the end of this block used to do.
+        tg.start_soon(read_response)
         fw = dst_conn.w.framed()
         fw.write_uint64(len(to_transfer))
 
@@ -161,4 +161,3 @@ async def _stream_paths_over_conns(
 
         await fw.finalize()
         await dst_conn.w.drain()
-        await response_task

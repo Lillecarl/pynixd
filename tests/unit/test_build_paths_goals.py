@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING, Any, cast
 
 import anyio
@@ -146,7 +145,7 @@ async def test_build_paths_reports_failure_when_any_root_fails() -> None:
 async def test_build_paths_with_results_runs_root_goals_in_parallel() -> None:
     first_path = "/nix/store/11111111111111111111111111111111-first.drv!out"
     second_path = "/nix/store/22222222222222222222222222222222-second.drv!out"
-    second_started = asyncio.Event()
+    second_started = anyio.Event()
 
     async def wait_for_second() -> None:
         await second_started.wait()

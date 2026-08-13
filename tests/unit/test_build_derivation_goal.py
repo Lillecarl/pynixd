@@ -6,6 +6,7 @@ import asyncio
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 
+import anyio
 import pytest
 from pynixd.serde.ids import BuildId
 
@@ -29,7 +30,7 @@ if TYPE_CHECKING:
 
 class FakeScheduler:
     def __init__(self) -> None:
-        self.started = asyncio.Event()
+        self.started = anyio.Event()
         self.future: asyncio.Future[BuildDerivationResponse] | None = None
 
     async def build_derivation(

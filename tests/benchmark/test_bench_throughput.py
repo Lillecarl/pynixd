@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import anyio
 import pytest
 import structlog
 from pynixd.serde.ids import StoreId
@@ -101,7 +102,7 @@ async def test_throughput_daemon() -> None:
         for _ in range(100):
             if socket_path.exists():
                 break
-            await asyncio.sleep(0.05)
+            await anyio.sleep(0.05)
 
         for _ in range(50):
             try:
@@ -110,7 +111,7 @@ async def test_throughput_daemon() -> None:
                 await w.wait_closed()
                 break
             except (ConnectionRefusedError, ConnectionResetError):
-                await asyncio.sleep(0.1)
+                await anyio.sleep(0.1)
 
         remote_uri = f"unix://{socket_path}"
 

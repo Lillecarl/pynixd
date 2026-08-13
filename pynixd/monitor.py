@@ -40,13 +40,46 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 
+class PressureFlag:
+    """A flag that re-arms, over `anyio.Event`, which has no `clear()`.
+
+    anyio drops `clear()` on purpose. A waiter between its own `is_set()`
+    check and its `wait()` call misses a set-then-clear pair, and the bug
+    that follows is a task that waits forever on a flag that is set.
+
+    `clear()` here replaces the event instead of resetting it. A waiter that
+    already holds the old event therefore keeps the answer that it started
+    with, and every waiter that arrives after the call reads the new one.
+    """
+
+    def __init__(self) -> None:
+        self._event = anyio.Event()
+
+    def set(self) -> None:
+        """Let every waiter through, and every waiter that arrives later."""
+        self._event.set()
+
+    def clear(self) -> None:
+        """Hold each waiter that arrives from now until the next `set()`."""
+        if self._event.is_set():
+            self._event = anyio.Event()
+
+    def is_set(self) -> bool:
+        """Whether a waiter passes this flag now."""
+        return self._event.is_set()
+
+    async def wait(self) -> None:
+        """Wait until the flag is set."""
+        await self._event.wait()
+
+
 class ResourceGate:
     """Async synchronization primitive that gates access based on system pressure."""
 
     def __init__(self) -> None:
-        self.cpu_clear = asyncio.Event()
-        self.mem_clear = asyncio.Event()
-        self.io_clear = asyncio.Event()
+        self.cpu_clear = PressureFlag()
+        self.mem_clear = PressureFlag()
+        self.io_clear = PressureFlag()
         self.cpu_clear.set()
         self.mem_clear.set()
         self.io_clear.set()

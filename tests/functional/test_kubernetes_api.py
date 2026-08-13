@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 
 import aiohttp
+import anyio
 import pytest
 from pynixd.serde.ids import StoreId
 
@@ -73,7 +74,7 @@ async def test_dynamic_store_management():
         for _ in range(50):
             if queued_build.assigned_store_id == "remote1":
                 break
-            await asyncio.sleep(0.05)
+            await anyio.sleep(0.05)
         assert queued_build.assigned_store_id == "remote1"
         assert queued_build.is_building
 
@@ -84,7 +85,7 @@ async def test_dynamic_store_management():
         )
 
         # Wait for drain timeout to trigger hard-kill
-        await asyncio.sleep(0.2)
+        await anyio.sleep(0.2)
         await remove_task
 
         assert "remote1" not in scheduler.stores
@@ -94,7 +95,7 @@ async def test_dynamic_store_management():
         for _ in range(50):
             if queued_build.assigned_store_id == "remote2" or queued_build.is_pending:
                 break
-            await asyncio.sleep(0.05)
+            await anyio.sleep(0.05)
 
         assert queued_build.assigned_store_id != "remote1"
         assert queued_build.retries == 1

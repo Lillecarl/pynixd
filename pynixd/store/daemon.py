@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import time
 from enum import IntEnum
 from pathlib import Path
@@ -421,26 +422,32 @@ class DaemonStore(Store):
         self._probe_event.set()
 
     async def _probe_systems(self, candidates: set[str]) -> set[str]:
-        async with asyncio.TaskGroup() as tg:
-            tasks = [
-                tg.create_task(
-                    self._send_probe(
-                        f"probe-system-{system}",
-                        system,
-                        "",
-                        ["-c", f"echo {system} > $out"],
-                    )
-                )
-                for system in candidates
-            ]
+        # An anyio task group hands back no task object, so each child records
+        # its answer at its own index. `candidates` becomes a list first,
+        # because the zip below needs the same order twice.
+        ordered = sorted(candidates)
+        supported: list[bool] = [False] * len(ordered)
 
-        systems = {system for system, task in zip(candidates, tasks, strict=True) if task.result()[1]}
+        async def probe_system(index: int, system: str) -> None:
+            _, ok = await self._send_probe(
+                f"probe-system-{system}",
+                system,
+                "",
+                ["-c", f"echo {system} > $out"],
+            )
+            supported[index] = ok
+
+        async with anyio.create_task_group() as tg:
+            for index, system in enumerate(ordered):
+                tg.start_soon(probe_system, index, system)
+
+        systems = {system for system, ok in zip(ordered, supported, strict=True) if ok}
         log.info("systems_probed", store_id=self.store_id, systems=sorted(systems))
         return systems
 
     async def _probe_features(self, systems: set[str], system_features: set[str]) -> dict[str, set[str]]:
         to_probe = (system_features or set()) | KNOWN_FEATURES
-        probes = []
+        probes: list[Callable[[], Awaitable[tuple[str, bool]]]] = []
         probe_keys: list[tuple[str, str]] = []
         for system in systems:
             for feature in to_probe:
@@ -460,8 +467,12 @@ class DaemonStore(Store):
                     "NIXBUILDNET_MAX_MEM": "128",
                 }
                 probe_keys.append((system, feature))
+                # A partial, and not a coroutine object: `start_soon` takes a
+                # callable and its arguments, and it calls that callable in the
+                # child task.
                 probes.append(
-                    self._send_probe(
+                    functools.partial(
+                        self._send_probe,
                         f"probe-feature-{feature}",
                         system,
                         feature,
@@ -470,12 +481,19 @@ class DaemonStore(Store):
                     ),
                 )
 
-        async with asyncio.TaskGroup() as tg:
-            tasks = [tg.create_task(probe) for probe in probes]
+        supported: list[bool] = [False] * len(probes)
+
+        async def run_probe(index: int, probe: Callable[[], Awaitable[tuple[str, bool]]]) -> None:
+            _, ok = await probe()
+            supported[index] = ok
+
+        async with anyio.create_task_group() as tg:
+            for index, probe in enumerate(probes):
+                tg.start_soon(run_probe, index, probe)
 
         feature_matrix: dict[str, set[str]] = {system: set() for system in systems}
-        for (system, feature), task in zip(probe_keys, tasks, strict=True):
-            if task.result()[1]:
+        for (system, feature), ok in zip(probe_keys, supported, strict=True):
+            if ok:
                 feature_matrix[system].add(feature)
 
         self._feature_matrix = feature_matrix

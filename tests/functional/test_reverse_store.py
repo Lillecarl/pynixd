@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING
 
+import anyio
 import pytest
 import structlog
 from pynixd.serde.ids import StoreId
@@ -77,7 +77,7 @@ async def test_reverse_store_registration(tmp_path: Path) -> None:
             for _ in range(50):
                 if store_id in controller.stores:
                     break
-                await asyncio.sleep(0.1)
+                await anyio.sleep(0.1)
             else:
                 pytest.fail("Builder did not register within 5 seconds")
 

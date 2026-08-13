@@ -10,6 +10,7 @@ import sqlite3
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
+import anyio
 import pytest
 import structlog
 from pynixd.serde.ids import BuildId, StoreId
@@ -80,7 +81,7 @@ class StatsTestStore(LocalDBStore):
                     if isinstance(request, BuildDerivationRequest):
                         pname = request.derivation.env.get("pname", "unknown")
                         delay = self.store.build_delays.get(pname, 0.1)
-                        await asyncio.sleep(delay)
+                        await anyio.sleep(delay)
                         return BuildDerivationResponse(
                             result=BuildResult(status=BuildResultStatus.BUILT),
                         )
@@ -267,7 +268,7 @@ async def test_scheduler_local_fasttrack(tmp_path: Path) -> None:
             pending = await scheduler.queue.get_pending()
             if any(b.is_building for b in pending):
                 break
-            await asyncio.sleep(0.1)
+            await anyio.sleep(0.1)
 
         # 2. Enqueue tiny-pkg
         # It should be fast-tracked to LOCAL because remote is full
@@ -288,7 +289,7 @@ async def test_scheduler_local_fasttrack(tmp_path: Path) -> None:
             if tiny_build and tiny_build.is_building:
                 log.info("tiny_build_started", build_id=id_tiny)
                 break
-            await asyncio.sleep(0.1)
+            await anyio.sleep(0.1)
 
         assert tiny_build is not None
         assert tiny_build.is_building

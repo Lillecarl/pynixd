@@ -49,7 +49,7 @@ class ConnectionPool:
         self.factory = factory
         self.gate = gate
         self.idle_ttl = idle_ttl
-        self._slots = asyncio.Semaphore(max_connections)
+        self._slots = anyio.Semaphore(max_connections)
         self.on_connection_created = on_connection_created
 
         self.active_connections = 0

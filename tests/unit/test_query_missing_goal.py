@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
@@ -48,7 +47,7 @@ class BlockingSubstitutionQueue:
     def __init__(self, blocked_path: str, releasing_path: str) -> None:
         self.blocked_path = blocked_path
         self.releasing_path = releasing_path
-        self.releasing_path_queried = asyncio.Event()
+        self.releasing_path_queried = anyio.Event()
         self.queries: list[str] = []
 
     async def can_substitute(self, path: StorePath) -> SubstitutionAvailability:

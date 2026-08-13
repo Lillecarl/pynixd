@@ -8,6 +8,7 @@ import json
 import time
 from pathlib import Path
 
+import anyio
 import pytest
 import structlog
 
@@ -69,7 +70,7 @@ def pytest_terminal_summary(
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]):
-    """Wrap async tests in asyncio.timeout and sort by subsumption."""
+    """Wrap each async test in a deadline, and sort by subsumption."""
 
     # Sort by descending covers-popcount so broad tests run first.
     if not config.getoption("no_test_subsumption"):
@@ -81,19 +82,19 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             and asyncio.iscoroutinefunction(item.obj)
             and not getattr(item.obj, "_pynixd_timeout_wrapped", False)
         ):
-            item.obj = _wrap_with_asyncio_timeout(item)
+            item.obj = _wrap_with_timeout(item)
             item.obj._pynixd_timeout_wrapped = True  # type: ignore[reportAttributeAccessIssue]
 
 
-def _wrap_with_asyncio_timeout(item: pytest.Function):
-    """Wrap an async test function with asyncio.timeout for timeout protection."""
+def _wrap_with_timeout(item: pytest.Function):
+    """Wrap an async test function in `anyio.fail_after`, so that it cannot hang."""
     original_func = item.obj
 
     @functools.wraps(original_func)
     async def wrapped(*args, **kwargs):
         timeout = item.config.getoption("async_test_timeout")
         try:
-            async with asyncio.timeout(timeout):
+            with anyio.fail_after(timeout):
                 return await original_func(*args, **kwargs)
         except TimeoutError:
             log.exception(

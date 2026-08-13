@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING
 
+import anyio
 import asyncssh
 import pytest
 import structlog
@@ -115,7 +115,7 @@ async def test_pynixd_delegation_build(tmp_path: Path) -> None:
             for _ in range(50):
                 if "builder-b" in server_a.stores:
                     break
-                await asyncio.sleep(0.1)
+                await anyio.sleep(0.1)
             assert "builder-b" in server_a.stores
 
             # 3. Issue a 'nix build' to Server A
