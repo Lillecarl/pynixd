@@ -22,7 +22,14 @@ in
     package = lib.mkOption {
       type = lib.types.package;
       description = "The pynixd package to use.";
-      default = (import ../.. { inherit pkgs; }).package;
+      # No default. `nixosModules.pynixd` in the repository's `flake.nix`
+      # sets one, and it is the build of this repository. The old default
+      # here was `(import ../.. { inherit pkgs; }).package`, which read
+      # `pynixd/default.nix` and its own `flake.lock` -- a second pynixd,
+      # pinned separately from the one the repository tests.
+      #
+      # A person who imports this file directly, and not through the flake,
+      # states the package. That is better than a silent second build.
     };
 
     settings = lib.mkOption {
@@ -53,39 +60,40 @@ in
     };
   };
 
-  config = lib.mkMerge [
-    (lib.mkIf cfg.enable {
-      services.pynixd.settings = lib.mapAttrsRecursive (n: v: lib.mkDefault v) {
-        unix_path = "/run/pynixd/pynixd.sock";
-        ssh_port = null;
-        http_port = null;
-      };
-      environment.etc."pynixd/pynixd.json".source = configFile;
+  # One `mkIf`, and not a `mkMerge` with a branch outside it.
+  # `environment.systemPackages` sat in a second element of that merge, so
+  # importing this module installed pynixd on every system that read it,
+  # whether or not the service was enabled. A module that does something when
+  # it is disabled is a module that cannot be imported and left alone.
+  config = lib.mkIf cfg.enable {
+    services.pynixd.settings = lib.mapAttrsRecursive (n: v: lib.mkDefault v) {
+      unix_path = "/run/pynixd/pynixd.sock";
+      ssh_port = null;
+      http_port = null;
+    };
+    environment.etc."pynixd/pynixd.json".source = configFile;
 
-      systemd.services.pynixd = {
-        description = "pynixd - Python Nix daemon protocol proxy";
-        wantedBy = [ "multi-user.target" ];
-        after = [ "nix-daemon.service" ];
-        wants = [ "nix-daemon.service" ];
-        restartTriggers = [ configFile ];
+    systemd.services.pynixd = {
+      description = "pynixd - Python Nix daemon protocol proxy";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "nix-daemon.service" ];
+      wants = [ "nix-daemon.service" ];
+      restartTriggers = [ configFile ];
 
-        serviceConfig = {
-          Type = "simple";
-          ExecStart = "${lib.getExe cfg.package} daemon";
-          User = "root";
-          Group = "root";
-          RuntimeDirectory = "pynixd";
-          RuntimeDirectoryMode = "755";
-          Environment = "PYNIXD_CONFIG=${configFile}";
-          Restart = "on-failure";
-          RestartSec = "5s";
-          # PrivateTmp = true;
-          NoNewPrivileges = true;
-        };
+      serviceConfig = {
+        Type = "simple";
+        ExecStart = "${lib.getExe cfg.package} daemon";
+        User = "root";
+        Group = "root";
+        RuntimeDirectory = "pynixd";
+        RuntimeDirectoryMode = "755";
+        Environment = "PYNIXD_CONFIG=${configFile}";
+        Restart = "on-failure";
+        RestartSec = "5s";
+        NoNewPrivileges = true;
       };
-    })
-    {
-      environment.systemPackages = [ cfg.package ];
-    }
-  ];
+    };
+
+    environment.systemPackages = [ cfg.package ];
+  };
 }
