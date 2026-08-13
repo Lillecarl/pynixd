@@ -7,12 +7,12 @@ from pathlib import Path
 import asyncssh
 import pytest
 import structlog
+from pynixd.serde.ids import StoreId
+from pynixd.serde.query_path_infos import QueryPathInfosRequest
 
 from pynixd import Server
 from pynixd.config import SSHSubprocessStoreSpec
 from pynixd.serde import QueryAllValidPathsRequest
-from pynixd.serde.ids import StoreId
-from pynixd.serde.query_path_infos import QueryPathInfosRequest
 from pynixd.store import LocalSocketStore, SSHSubprocessStore
 from pynixd.store_path import StorePath
 from tests.conftest import (

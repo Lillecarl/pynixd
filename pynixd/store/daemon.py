@@ -176,7 +176,6 @@ class DaemonStore(Store):
         _platform_specific = frozenset({"kvm", "apple-virt"})
         return features.isdisjoint(_platform_specific)
 
-
     # ── Resource metrics ────────────────────────────────────────────
 
     @property

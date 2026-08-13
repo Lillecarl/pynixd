@@ -20,9 +20,10 @@ and only in a run that held both suites in one process.
 
 from __future__ import annotations
 
-import pynixd  # noqa: F401 -- the import is what registers each extension
 from nix_daemon_protocol.operations import STANDARD_OPERATIONS
 from nix_daemon_protocol.wire_ops import WIRE_REGISTRY
+
+import pynixd  # noqa: F401 -- the import is what registers each extension
 
 _STANDARD_CODES = frozenset(operation.code for operation in STANDARD_OPERATIONS)
 
@@ -30,7 +31,9 @@ _STANDARD_CODES = frozenset(operation.code for operation in STANDARD_OPERATIONS)
 def test_every_registered_operation_outside_the_manifest_is_an_extension() -> None:
     """The complement of `test_operation_manifest`, and the half that failed."""
     undeclared = sorted(
-        (code, request.name) for code, request in WIRE_REGISTRY.items() if code not in _STANDARD_CODES and not request.is_extension
+        (code, request.name)
+        for code, request in WIRE_REGISTRY.items()
+        if code not in _STANDARD_CODES and not request.is_extension
     )
     assert not undeclared, (
         f"these operations are outside STANDARD_OPERATIONS and do not set `is_extension`: {undeclared}. "
@@ -42,7 +45,9 @@ def test_every_registered_operation_outside_the_manifest_is_an_extension() -> No
 def test_no_extension_claims_a_standard_operation_code() -> None:
     """An extension on a standard code would shadow the standard request."""
     stolen = sorted(
-        (code, request.name) for code, request in WIRE_REGISTRY.items() if code in _STANDARD_CODES and request.is_extension
+        (code, request.name)
+        for code, request in WIRE_REGISTRY.items()
+        if code in _STANDARD_CODES and request.is_extension
     )
     assert not stolen, f"these extensions use a code of the standard manifest: {stolen}"
 

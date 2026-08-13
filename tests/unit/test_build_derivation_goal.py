@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 
 import pytest
+from pynixd.serde.ids import BuildId
 
 from pynixd.connection import ClientConn
 from pynixd.goals.build_derivation import BuildDerivationGoal
@@ -19,7 +20,6 @@ from pynixd.serde import (
     BuildResultStatus,
 )
 from pynixd.serde import StorePath as SerdeStorePath
-from pynixd.serde.ids import BuildId
 from pynixd.wire import BytesWriter
 
 if TYPE_CHECKING:

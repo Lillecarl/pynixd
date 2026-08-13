@@ -7,6 +7,15 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import structlog
+from pynixd.serde.content_address import ContentAddress
+from pynixd.serde.ids import StoreId
+from pynixd.serde.nar_hash import NARHash
+from pynixd.serde.path_info import UnkeyedValidPathInfo
+from pynixd.serde.query_all_valid_paths import QueryAllValidPathsRequest as SerdeQueryAllValidPathsRequest
+from pynixd.serde.query_all_valid_paths import QueryAllValidPathsResponse as SerdeQueryAllValidPathsResponse
+from pynixd.serde.valid_path_info import ValidPathInfo
+from pynixd.serde.wire_message import WireModel
+from pynixd.serde.wire_time import Time
 
 from pynixd.config import StoreSpecBase
 from pynixd.psi import CpuUtil
@@ -21,21 +30,13 @@ from pynixd.serde import (
 from pynixd.serde import (
     StorePath as SerdeStorePath,
 )
-from pynixd.serde.content_address import ContentAddress
-from pynixd.serde.ids import StoreId
-from pynixd.serde.nar_hash import NARHash
-from pynixd.serde.path_info import UnkeyedValidPathInfo
-from pynixd.serde.query_all_valid_paths import QueryAllValidPathsRequest as SerdeQueryAllValidPathsRequest
-from pynixd.serde.query_all_valid_paths import QueryAllValidPathsResponse as SerdeQueryAllValidPathsResponse
-from pynixd.serde.valid_path_info import ValidPathInfo
-from pynixd.serde.wire_message import WireModel
-from pynixd.serde.wire_time import Time
 from pynixd.store.daemon import DaemonStore
 
 if TYPE_CHECKING:
+    from pynixd.serde.wire_ops import WireRequest
+
     from pynixd.connection import ClientConn, Connection
     from pynixd.drv_parser import Derivation
-    from pynixd.serde.wire_ops import WireRequest
     from pynixd.store_path import StorePath
     from pynixd.wire import NixReader, NixWriter
 

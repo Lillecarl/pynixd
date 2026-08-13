@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import inspect
-from collections.abc import Iterator
+from typing import TYPE_CHECKING
 
 from nix_daemon_protocol import (
     ContentAddress,
@@ -18,6 +18,9 @@ from nix_daemon_protocol import (
 )
 from nix_daemon_protocol.context import ReadContext, WriteContext
 from nix_daemon_protocol.io import BytesReader, BytesWriter
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 class ScalarEnvelope(WireModel):

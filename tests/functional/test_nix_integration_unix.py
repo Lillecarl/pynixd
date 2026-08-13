@@ -4,11 +4,11 @@ import contextlib
 from pathlib import Path
 
 import pytest
+from pynixd.serde.ids import StoreId
 
 from pynixd import Server
 from pynixd.serde import IsValidPathRequest
 from pynixd.serde import StorePath as SerdeStorePath
-from pynixd.serde.ids import StoreId
 from pynixd.store import LocalSocketStore
 from tests.conftest import CLIENT_BIN, make_test_spec, run_subproc
 from tests.test_features import TestFeatures as F

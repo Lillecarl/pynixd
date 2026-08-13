@@ -9,10 +9,10 @@ from typing import TYPE_CHECKING
 
 import pytest
 import structlog
+from pynixd.serde.ids import StoreId
 
 from pynixd.config import LocalSocketStoreSpec
 from pynixd.serde import IsValidPathRequest, QueryAllValidPathsRequest, QueryPathInfoRequest
-from pynixd.serde.ids import StoreId
 from pynixd.store import LocalSocketStore, Store
 from tests.conftest import CLIENT_BIN, run_subproc
 

@@ -13,9 +13,10 @@ from tests.test_features import TestFeatures as F
 if TYPE_CHECKING:
     from pathlib import Path
 
+from pynixd.serde.ids import StoreId
+
 from pynixd import Server
 from pynixd.config import SSHSubprocessStoreSpec
-from pynixd.serde.ids import StoreId
 from pynixd.store import LocalSocketStore, SSHSubprocessStore
 from tests.conftest import (
     NIX_BIN,

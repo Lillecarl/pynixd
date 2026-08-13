@@ -36,6 +36,7 @@ async with Server(local_store=pynixd_local, stores={"builder": pynixd_builder}, 
 ```python
 from pynixd import Server
 
+
 async def test_something(pynixd_server: Server) -> None:
     uri = pynixd_server.uri()
     ...

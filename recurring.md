@@ -4,5 +4,5 @@
 Examples:
 ```python
 if TYPE_CHECKING:
-  pass
+    pass
 ```

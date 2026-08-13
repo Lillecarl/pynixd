@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 import structlog
+from pynixd.serde.ids import BuildId, StoreId
 
 from pynixd import Server
 from pynixd.build_queue import QueuedBuild
@@ -35,7 +36,6 @@ from pynixd.serde import (
     UnkeyedValidPathInfo,
     ValidPathInfo,
 )
-from pynixd.serde.ids import BuildId, StoreId
 from pynixd.store import LocalDBStore
 from pynixd.store_path import StorePath
 from tests.conftest import STORE_PREFIX, make_test_spec, rmtree_robust, serde_path

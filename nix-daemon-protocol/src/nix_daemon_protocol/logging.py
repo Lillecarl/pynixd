@@ -33,7 +33,10 @@ class _StdlibLogger:
         self._logger = stdlib_logging.getLogger(name)
 
     def exception(self, event: str, /, **fields: object) -> None:
-        self._logger.exception(event, extra={"daemon_protocol": fields})
+
+        # forwards to `logging.Logger.exception`, and each of its own callers
+        # is inside an `except` block. A method cannot be inside one.
+        self._logger.exception(event, extra={"daemon_protocol": fields})  # noqa: LOG004
 
 
 def get_logger(name: str) -> ProtocolLogger:
