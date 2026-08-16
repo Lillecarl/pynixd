@@ -40,6 +40,7 @@ from pynixd.serde import (
     DerivedPath as SerdeDerivedPath,
 )
 from pynixd.serde.ids import StoreId
+from pynixd.store.local_daemon import LocalStore
 from pynixd.store.local_db import LocalDBStore
 from tests._conftest.config import make_test_spec
 from tests.differential.conftest import DifferentialRoots
@@ -138,7 +139,13 @@ async def _build_with_pynixd(root: Path, drv_path: str, case: Case) -> Any:
         return await engine.build_paths_with_results(request)
 
 
-async def _build_with_pynixd_fleet(local_root: Path, builder_root: Path, drv_path: str, case: Case) -> Any:
+async def _build_with_pynixd_fleet(
+    local_root: Path,
+    builder_root: Path,
+    drv_path: str,
+    case: Case,
+    builder_class: type[LocalStore] = LocalDBStore,
+) -> Any:
     """Realise *drv_path* through pynixd, with the build placed on a second store.
 
     This is the shape pynixd exists for. The `local` store is the one a client
@@ -146,6 +153,12 @@ async def _build_with_pynixd_fleet(local_root: Path, builder_root: Path, drv_pat
     to place the work on `builder`. The outputs are then somebody's job to
     bring back, and whose job that is, and whether the result matches what Nix
     would have produced, is the question this arm asks.
+
+    `builder_class` chooses what kind of backend the fleet holds, and the
+    choice decides which reassembly path runs.
+    `Scheduler._direct_import_localdb_outputs` returns at its first line unless
+    *both* stores are a `LocalDBStore`, so a plain `LocalStore` backend takes
+    the other path -- the one every backend that is not a local daemon takes.
     """
     common = {"extra_env": _nix_config_env(case), "no_probe": True}
     local_spec = make_test_spec(store_id="local", store_path=local_root, no_schedule=True, **common)
@@ -153,7 +166,7 @@ async def _build_with_pynixd_fleet(local_root: Path, builder_root: Path, drv_pat
     async with Server(
         stores={
             StoreId("local"): LocalDBStore(local_spec),
-            StoreId("builder"): LocalDBStore(builder_spec),
+            StoreId("builder"): builder_class(builder_spec),
         },
         ssh_port=0,
         http_port=0,
@@ -318,3 +331,122 @@ async def test_a_distributed_build_reassembles_the_same_store(
         )
 
     _assert_stores_agree(case, added_a, delta(before_b, after_b))
+
+
+# Two cases and not the whole corpus. The question here is not which shapes a
+# goal graph gets right -- `test_both_engines_leave_the_same_store` answers
+# that. It is whether an output reaches a client at all when the build ran on a
+# backend, and one derivation plus one reference between two derivations is
+# enough to ask it.
+_FLEET_WIRE_SUBSET = tuple(case for case in CORPUS if case.name in {"single", "chain"})
+
+
+async def _copy_from_pynixd(
+    socket_path: Path,
+    local_root: Path,
+    client_root: Path,
+    paths: list[str],
+    case: Case,
+) -> None:
+    """Fetch *paths* out of a running pynixd with a real `nix` client."""
+    uri = f"unix://{socket_path}?root={local_root}"
+    process = await anyio.run_process(
+        [
+            "nix",
+            "copy",
+            "--extra-experimental-features",
+            "nix-command",
+            "--no-check-sigs",
+            "--from",
+            uri,
+            "--to",
+            f"local://?root={client_root}",
+            *paths,
+        ],
+        env=_nix_config_env(case),
+        check=False,
+    )
+    if process.returncode != 0:
+        message = process.stderr.decode(errors="replace")
+        raise AssertionError(
+            f"a client could not fetch the outputs of {case.name} from pynixd.\n"
+            f"  from: {uri}\n  paths: {paths}\n{message}"
+        )
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "a client cannot fetch a backend-built output through pynixd; see issue #160. "
+        "The build runs on the builder and `_collect_outputs` records the location, "
+        "but the client is still told the path is invalid and tries to build it."
+    ),
+)
+@pytest.mark.parametrize("case", _FLEET_WIRE_SUBSET, ids=lambda case: case.name)
+async def test_a_client_fetches_a_backend_built_output_through_pynixd(
+    case: Case,
+    differential_roots: DifferentialRoots,
+) -> None:
+    """A build that ran on a backend reaches a client, and matches Nix.
+
+    This asks the fleet question where pynixd answers it, which is the wire and
+    not the disk of the local store.
+
+    An earlier version of this test read the local store directly and called a
+    missing path a defect. It is not one. `DaemonProxy.store_for_output_path`
+    looks a path up in `ctx.output_locations`, and `QueryValidPaths` reports a
+    backend-resident output as valid on the strength of that. The local store
+    holding nothing is the design: pynixd records where an output is and serves
+    it from there, and `Scheduler._direct_import_localdb_outputs` is an
+    optimisation for the one case where both stores are a `LocalDBStore`.
+
+    So the builder here is a plain `LocalStore`, which is the path every
+    backend that is not a local daemon takes, and the client is a real `nix`
+    process copying out of pynixd over its Unix socket. What the client ends up
+    with is compared against what Nix produced.
+    """
+    roots = differential_roots
+    drv = await _instantiate_both(roots.pynixd, roots.nix, case)
+
+    # Nix first, so the paths it produced are what the client then asks pynixd
+    # for. Asking for exactly those is a sharper question than asking pynixd
+    # what it has.
+    before_b = await _read_store(roots.nix)
+    results_b = await _build_with_nix(roots.nix, drv)
+    added_b = delta(before_b, await _read_store(roots.nix))
+    wanted = sorted(added_b.paths)
+
+    common = {"extra_env": _nix_config_env(case), "no_probe": True}
+    local_spec = make_test_spec(store_id="local", store_path=roots.pynixd, no_schedule=True, **common)
+    builder_spec = make_test_spec(store_id="builder", store_path=roots.builder, **common)
+    before_builder = await _read_store(roots.builder)
+    socket_path = roots.pynixd.parent / "pynixd.sock"
+    async with Server(
+        stores={
+            StoreId("local"): LocalDBStore(local_spec),
+            StoreId("builder"): LocalStore(builder_spec),
+        },
+        ssh_port=0,
+        http_port=0,
+        unix_path=socket_path,
+    ) as server:
+        engine = GoalEngine(server.ctx)
+        response_a = await engine.build_paths_with_results(
+            BuildPathsWithResultsRequest(
+                derived_paths=cast("Any", {SerdeDerivedPath(value=f"{drv}!*")}),
+                build_mode=BuildMode.NORMAL,
+            ),
+        )
+        _assert_outcomes_agree(case, response_a, results_b)
+        await _copy_from_pynixd(socket_path, roots.pynixd, roots.client, wanted, case)
+
+    added_builder = delta(before_builder, await _read_store(roots.builder))
+    assert added_builder.paths, (
+        f"{case.name}: the builder store gained no path, so the build did not go there "
+        f"and this test is not about a fleet"
+    )
+
+    # Every path the client holds, compared against the store Nix left. The
+    # client store started empty, so its whole contents are the delta.
+    client_store = await _read_store(roots.client)
+    _assert_stores_agree(case, client_store, added_b)

@@ -12,6 +12,12 @@ from .realisation import Realisation
 from .store_path import StorePath
 from .wire_message import WireField, WireModel
 
+# The highest status byte a Nix client can decode. `buildResultStatusTable` in
+# `src/libstore/common-protocol.cc` holds 15 entries, and the reader rejects any
+# index at or above that size. `BuildResult.wire_status` is what keeps this
+# project inside it.
+MAX_WIRE_STATUS = 14
+
 
 class BuildResultStatus(IntEnum):
     """Build result status codes from nix daemon protocol."""
@@ -134,3 +140,34 @@ class BuildResult(WireModel):
 
     # Protocol 1.28 fields
     built_outputs: dict[str, Realisation] | None = WireField(default=None, min_version=proto(1, 28))
+
+    def wire_status(self) -> int:
+        """The status byte to send, which is not always the one held.
+
+        A hash mismatch is a kind of output rejection, which is the mapping Nix
+        chose and the one a client expects. Everything else out of range
+        becomes a plain failure: the detail belongs in `error_msg`, which has
+        no such limit, and a status a client cannot read carries no detail at
+        all.
+        """
+        if self.status == BuildResultStatus.HASH_MISMATCH:
+            return int(BuildResultStatus.OUTPUT_REJECTED)
+        if 0 <= self.status <= MAX_WIRE_STATUS:
+            return self.status
+        return int(BuildResultStatus.MISC_FAILURE)
+
+    def for_the_wire(self) -> BuildResult:
+        """This result, with a status a client can decode.
+
+        Call this before sending a result to a client. It is a method and not a
+        `to_writer` override on purpose: `experimental_compiled` refuses to
+        compile a model that overrides its codec (`_can_compile`), and
+        `BuildResult` is the model its own tests compile as the example. A
+        correctness fix that quietly turned off the fast path for the hottest
+        model on the wire would be a poor trade, so the knowledge of what is
+        wire-safe lives here and the caller decides when to apply it.
+        """
+        wire_status = self.wire_status()
+        if wire_status == self.status:
+            return self
+        return self.model_copy(update={"status": wire_status})

@@ -51,6 +51,40 @@ _SUN_PATH_LIMIT = 104
 _NANOPYNIX_PRESENT = importlib.util.find_spec("nanopynix") is not None
 
 
+def _mixed_trees() -> str | None:
+    """Whether `pynixd` and `nix_daemon_protocol` come from different trees.
+
+    A skip and a loud reason, like the other gates here: the suite genuinely
+    cannot answer its question in that state, and a run that answers it with a
+    stale wire package is worse than no run.
+
+    `pynixd/` sits at the root of its checkout, so a
+    `python -m pytest` from there imports it off the working copy through the
+    current directory. `nix_daemon_protocol` sits two directories further down,
+    at `nix-daemon-protocol/src/`, which is on no path by default -- so it
+    resolves to whatever is installed in the environment instead.
+
+    A run in that state tests new pynixd against an old wire package. It cost
+    a full cycle to find, and it announced itself as
+    `'BuildResult' object has no attribute 'for_the_wire'` in every test at
+    once. Put `nix-daemon-protocol/src` on `PYTHONPATH`.
+    """
+    import nix_daemon_protocol
+    import pynixd
+
+    pynixd_installed = "site-packages" in (pynixd.__file__ or "")
+    protocol_installed = "site-packages" in (nix_daemon_protocol.__file__ or "")
+    if pynixd_installed == protocol_installed:
+        return None
+    return (
+        "pynixd and nix_daemon_protocol come from different trees, so this run would "
+        "test one against a stale copy of the other.\n"
+        f"  pynixd             {pynixd.__file__}\n"
+        f"  nix_daemon_protocol {nix_daemon_protocol.__file__}\n"
+        "Put the checkout's `nix-daemon-protocol/src` on PYTHONPATH."
+    )
+
+
 def _unmet_requirement() -> str | None:
     """Why this host cannot answer the question, or `None` when it can."""
     if sys.platform != "linux":
@@ -80,7 +114,7 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     marker never reaches fixture setup at all, so the outer fixture is never
     built.
     """
-    reason = _unmet_requirement()
+    reason = _unmet_requirement() or _mixed_trees()
     for item in items:
         if "differential" not in str(item.path.parent):
             continue
@@ -101,6 +135,9 @@ class DifferentialRoots:
     pynixd: Path
     builder: Path
     nix: Path
+    client: Path
+    """Where a real `nix` client copies to, when a test asks pynixd over the
+    wire rather than reading the pynixd store off disk. Empty otherwise."""
 
 
 @pytest.fixture
@@ -123,6 +160,7 @@ async def differential_roots(request: pytest.FixtureRequest) -> AsyncGenerator[D
         pynixd=DIFFERENTIAL_PREFIX / stem / "pynixd",
         builder=DIFFERENTIAL_PREFIX / stem / "builder",
         nix=DIFFERENTIAL_PREFIX / stem / "nix",
+        client=DIFFERENTIAL_PREFIX / stem / "client",
     )
 
     # Both pynixd-side roots host a daemon, so both have to fit.
@@ -135,7 +173,7 @@ async def differential_roots(request: pytest.FixtureRequest) -> AsyncGenerator[D
                 f"or `DIFFERENTIAL_PREFIX`.\n  {socket_path}"
             )
 
-    for root in (roots.pynixd, roots.builder, roots.nix):
+    for root in (roots.pynixd, roots.builder, roots.nix, roots.client):
         rmtree_robust(root)
         root.mkdir(parents=True, exist_ok=True)
     yield roots

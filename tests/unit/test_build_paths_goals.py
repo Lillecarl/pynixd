@@ -12,6 +12,7 @@ from pynixd.goals.goal import Goal
 from pynixd.goals.requests import BuildPathsWithResultsGoal
 from pynixd.goals.results import GoalResult, goal_failure, goal_success
 from pynixd.serde import (
+    MAX_WIRE_STATUS,
     BuildMode,
     BuildPathsRequest,
     BuildPathsWithResultsRequest,
@@ -110,7 +111,16 @@ async def test_build_paths_with_results_keeps_successes_when_one_root_fails() ->
     results_by_path = {str(item.path): item.result for item in response.results}
     assert set(results_by_path) == {success_path, failure_path}
     assert BuildResultStatus(results_by_path[success_path].status).is_success
-    assert BuildResultStatus(results_by_path[failure_path].status) == BuildResultStatus.UNKNOWN
+
+    # A failure, and one a client can read. The goal above produced `UNKNOWN`,
+    # and this used to assert that value came back. It cannot: `UNKNOWN` is 102,
+    # the wire carries the status as one byte a client looks up in a table of
+    # 15, and `BuildPathsWithResultsGoal` now calls `for_the_wire()` on the way
+    # out. The subject of this test is that one failing root does not take the
+    # successful one with it, and that is unchanged.
+    failure_status = BuildResultStatus(results_by_path[failure_path].status)
+    assert not failure_status.is_success
+    assert failure_status <= MAX_WIRE_STATUS, f"{failure_status.name} cannot be written to the wire"
 
 
 @pytest.mark.anyio

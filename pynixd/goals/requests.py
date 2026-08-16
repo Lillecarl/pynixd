@@ -48,9 +48,16 @@ class BuildPathsWithResultsGoal(ExecutionGoal[BuildPathsWithResultsResponse]):
             self._root_goals.append((SerdeDerivedPath(value=str(path)), goal))
 
         root_results = await self.run_children([goal for _, goal in self._root_goals])
+        # `for_the_wire`, because this is where a goal result becomes an answer
+        # to a client. The goal system uses `BuildResultStatus.UNKNOWN`, which
+        # is 102, and the wire carries the status as one byte that a client
+        # looks up in a table of 15. Sending 102 makes `nix` raise "Invalid
+        # BuildResult status f from remote" -- `f` and not 102, because the C++
+        # format is `%d` against a `uint8_t` -- and drop the connection. A build
+        # that merely could not be realised then reads as a broken daemon.
         return BuildPathsWithResultsResponse(
             results=[
-                KeyedBuildResult(path=serde_path, result=result.result)
+                KeyedBuildResult(path=serde_path, result=result.result.for_the_wire())
                 for (serde_path, _goal), result in zip(self._root_goals, root_results, strict=True)
             ]
         )
