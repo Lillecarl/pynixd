@@ -80,6 +80,21 @@ class Migration:
 
 DERIVATION_STATS_TABLE = f"{TABLE_PREFIX}DerivationStats"
 
+PATH_ACCESS_TABLE = f"{TABLE_PREFIX}PathAccess"
+"""When each store path was last named over the daemon protocol.
+
+The key is the path text, and not the `id` of `ValidPaths`. Nix gives a row
+of `ValidPaths` an `INTEGER PRIMARY KEY`, so SQLite may hand the same number
+to a later path once the garbage collector deletes the first one. A reused
+id would move an access time from a path that is gone to a path that is new,
+and nothing would report it. The text of a store path names one thing for
+ever.
+
+A new column of pynixd follows the camelCase of the database it lives in.
+The columns of `PynixdDerivationStats` predate that rule, and a migration to
+rename them would write over a user's table to change nothing.
+"""
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version=1,
@@ -102,6 +117,20 @@ MIGRATIONS: tuple[Migration, ...] = (
             "DROP TABLE IF EXISTS DerivationStats",
         ),
         creates=(DERIVATION_STATS_TABLE,),
+    ),
+    Migration(
+        version=2,
+        name="path-access",
+        statements=(
+            f"CREATE TABLE IF NOT EXISTS {PATH_ACCESS_TABLE} ("
+            "path TEXT PRIMARY KEY, "
+            "lastReferencedAt INTEGER NOT NULL"
+            ")",
+            # The garbage collector asks for the paths nothing has referenced
+            # since a moment, which reads this column and not the key.
+            f"CREATE INDEX IF NOT EXISTS idx_pynixd_path_access_time ON {PATH_ACCESS_TABLE}(lastReferencedAt)",
+        ),
+        creates=(PATH_ACCESS_TABLE,),
     ),
 )
 

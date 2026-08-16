@@ -35,13 +35,14 @@ import structlog
 
 from .db_migrations import (
     DERIVATION_STATS_TABLE,
+    PATH_ACCESS_TABLE,
     SchemaState,
     apply_migrations,
 )
 from .store_path import StorePath
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Iterable
 
     from .serde.aliases import StorePathSet
 
@@ -50,16 +51,10 @@ log = structlog.get_logger(__name__)
 
 # ── SQL constants ─────────────────────────────────────────────────────
 
-QUERY_STALE_PATHS = """
-SELECT path FROM ValidPaths
-WHERE registrationTime > 0 AND registrationTime < ?
-"""
-
-# Lix's UpdateRegistrationTimeRecursive — walks the full closure
-UPDATE_REGTIME = """
-UPDATE ValidPaths
-SET registrationTime = unixepoch()
-WHERE id IN (
+# Lix's UpdateRegistrationTimeRecursive — walks the full closure of each seed
+# path: its references, its deriver, and the references of that deriver. The
+# parameter is a JSON array of store paths.
+_CLOSURE_OF_SEEDS = """
     WITH RECURSIVE closure(id) AS (
         SELECT id FROM ValidPaths WHERE path IN (SELECT value FROM json_each(?))
         UNION
@@ -80,7 +75,28 @@ WHERE id IN (
         WHERE current_vp.deriver IS NOT NULL
     )
     SELECT id FROM closure
-);
+"""
+
+UPDATE_REGTIME = f"""
+UPDATE ValidPaths
+SET registrationTime = unixepoch()
+WHERE id IN ({_CLOSURE_OF_SEEDS})
+"""
+
+TOUCH_PATH_ACCESS = f"""
+INSERT INTO {PATH_ACCESS_TABLE} (path, lastReferencedAt)
+SELECT path, unixepoch() FROM ValidPaths WHERE id IN ({_CLOSURE_OF_SEEDS})
+ON CONFLICT (path) DO UPDATE SET lastReferencedAt = excluded.lastReferencedAt
+"""
+
+QUERY_UNREFERENCED_SINCE = f"""
+SELECT path FROM {PATH_ACCESS_TABLE} WHERE lastReferencedAt < ?
+"""
+
+# The join the tables of pynixd get by living in Nix's own database.
+PRUNE_PATH_ACCESS = f"""
+DELETE FROM {PATH_ACCESS_TABLE}
+WHERE path NOT IN (SELECT path FROM ValidPaths)
 """
 
 INSERT_BUILD_STATS = f"""
@@ -101,7 +117,7 @@ SELECT AVG(duration_ms) FROM {DERIVATION_STATS_TABLE}
 WHERE pname = ?
 """
 
-_DEFAULT_REGTIME_FLUSH_INTERVAL = 5.0
+_DEFAULT_REFERENCE_FLUSH_INTERVAL = 5.0
 
 
 class LocalStoreDB:
@@ -118,15 +134,23 @@ class LocalStoreDB:
         db_path: Path | None,
         store_path: Path | None,
         read_only: bool,
-        regtime_flush_interval: float,
+        reference_flush_interval: float,
         max_conns: int = 8,
     ) -> None:
         self.db_path = db_path
         self.store_path = store_path
         self.read_only: bool = read_only
-        self.regtime_flush_interval = regtime_flush_interval
+        self.reference_flush_interval = reference_flush_interval
 
-        self.pending_regtime: StorePathSet = set()
+        self.pending_references: set[str] = set()
+        """Full store paths that something referenced since the last flush.
+
+        Plain strings, because two `StorePath` classes reach this set and both
+        SQL statements want the text. `pynixd.store_path.StorePath` keeps the
+        path without the `/nix/store/` prefix and adds it back in `__str__`,
+        and the wire `StorePath` is a `str` of the whole path.
+        """
+
         self.flush_task: asyncio.Task[None] | None = None
 
         self.schema = SchemaState(version=0, usable=False, reason="the schema was never checked")
@@ -147,7 +171,7 @@ class LocalStoreDB:
         cls,
         store_path: Path | None,
         *,
-        regtime_flush_interval: float = _DEFAULT_REGTIME_FLUSH_INTERVAL,
+        reference_flush_interval: float = _DEFAULT_REFERENCE_FLUSH_INTERVAL,
     ) -> LocalStoreDB:
         """An instance that answers no query, for a store with no usable database.
 
@@ -159,7 +183,7 @@ class LocalStoreDB:
             db_path=None,
             store_path=store_path,
             read_only=True,
-            regtime_flush_interval=regtime_flush_interval,
+            reference_flush_interval=reference_flush_interval,
         )
 
     @property
@@ -208,16 +232,30 @@ class LocalStoreDB:
                 row = await cursor.fetchone()
 
         For multiple queries or complex flows, use acquire_conn() directly.
+
+        The cursor is closed when the block ends, and it has to be. A caller
+        that reads one row of a query that could return more leaves the
+        statement open, and an open statement holds a shared lock on the
+        database file. The connection then goes back to the pool with that
+        lock, and in a rollback journal every writer waits behind it. Almost
+        every caller here calls `fetchone`, so almost every call left one.
         """
         async with self.acquire_conn() as conn:
             cursor = await conn.execute(query, params)
-            yield cursor
+            try:
+                yield cursor
+            finally:
+                with suppress(ValueError, aiosqlite.Error):
+                    # ValueError: aiosqlite raises it for a connection that
+                    # `close_db_pool` already closed, which `flush_references`
+                    # does when a write fails.
+                    await cursor.close()
 
     @classmethod
     async def open(
         cls,
         store_path: Path,
-        regtime_flush_interval: float = _DEFAULT_REGTIME_FLUSH_INTERVAL,
+        reference_flush_interval: float = _DEFAULT_REFERENCE_FLUSH_INTERVAL,
     ) -> LocalStoreDB:
         """Open the Nix store database. Returns an instance (possibly with no DB).
 
@@ -228,7 +266,7 @@ class LocalStoreDB:
         """
         db_path = resolve_db_path(store_path)
         if db_path is None:
-            return cls.inactive(store_path, regtime_flush_interval=regtime_flush_interval)
+            return cls.inactive(store_path, reference_flush_interval=reference_flush_interval)
 
         db_dir = db_path.parent
         can_write = os.access(db_dir, os.W_OK)
@@ -239,7 +277,7 @@ class LocalStoreDB:
                 db_path=db_path,
                 store_path=store_path,
                 read_only=read_only,
-                regtime_flush_interval=regtime_flush_interval,
+                reference_flush_interval=reference_flush_interval,
             )
 
             async with instance.acquire_conn() as db:
@@ -263,7 +301,17 @@ class LocalStoreDB:
                             journal_mode=journal_mode,
                             detail="readers and writers of this database serialise; Nix chose the mode",
                         )
-                await db.execute("SELECT 1 FROM ValidPaths LIMIT 1")
+                # `async with`, and the row is read. A cursor that stops on
+                # its first row holds a shared lock on the file until it is
+                # closed, and this connection then goes back to the pool and
+                # holds that lock for the life of the process. In a rollback
+                # journal that blocks every writer, so `apply_migrations`
+                # waited out its whole busy timeout and then reported the
+                # database as locked. WAL hid it: a reader there does not
+                # block a writer, and a Nix store is WAL unless
+                # `use-sqlite-wal` is off.
+                async with db.execute("SELECT 1 FROM ValidPaths LIMIT 1") as cursor:
+                    await cursor.fetchone()
 
         except (aiosqlite.Error, OSError) as e:
             log.warning(
@@ -271,7 +319,7 @@ class LocalStoreDB:
                 db_path=db_path,
                 error=e,
             )
-            return cls.inactive(store_path, regtime_flush_interval=regtime_flush_interval)
+            return cls.inactive(store_path, reference_flush_interval=reference_flush_interval)
 
         instance.schema = await apply_migrations(db_path, read_only=read_only)
         if not instance.schema.usable:
@@ -295,30 +343,66 @@ class LocalStoreDB:
     # These are not operation dispatches but internal helpers used by
     # non-operation code (GC, build planner, http cache).
 
-    async def query_stale_paths(self, max_age_seconds: int) -> StorePathSet | None:
-        """Find paths with registrationTime older than max_age_seconds ago."""
-        if not self.active:
+    async def query_paths_not_referenced_since(self, max_age_seconds: int) -> StorePathSet | None:
+        """The paths nothing has referenced for `max_age_seconds`, for an LRU collector.
+
+        This replaces `query_stale_paths`, which asked the same question of
+        `ValidPaths.registrationTime`. Nothing called it, and the column it
+        read answers two questions at once. `PynixdPathAccess` answers one.
+
+        A path with no row here has never been referenced through pynixd. It
+        is not reported, because "never seen" and "seen long ago" are
+        different, and only the second one is safe to collect on this
+        evidence alone.
+        """
+        if not self.active or not self.schema.usable:
             return None
         try:
             cutoff = int(time.time()) - max_age_seconds
-            async with self.execute(QUERY_STALE_PATHS, (cutoff,)) as cursor:
+            async with self.execute(QUERY_UNREFERENCED_SINCE, (cutoff,)) as cursor:
                 rows = await cursor.fetchall()
             return {StorePath(r[0]) for r in rows}
         except aiosqlite.Error:
-            log.debug("query_stale_paths_failed", exc_info=True)
+            log.debug("query_paths_not_referenced_since_failed", exc_info=True)
             return None
 
-    # ── Registration time updates ─────────────────────────────────────
+    async def prune_path_access(self) -> int:
+        """Drop the rows for paths the store no longer holds. Returns the count.
 
-    def mark_path(self, path: StorePath) -> None:
-        """Queue a path for registration time update."""
-        if self.active and not self.read_only:
-            self.pending_regtime.add(path)
+        This is the join that keeping pynixd's tables inside Nix's database
+        buys: one statement compares `PynixdPathAccess` against `ValidPaths`.
+        Without it the table grows for ever, because a path that the garbage
+        collector deletes leaves its access time behind.
+        """
+        if not self.active or self.read_only or not self.schema.usable:
+            return 0
+        try:
+            async with self.acquire_conn() as db:
+                cursor = await db.execute(PRUNE_PATH_ACCESS)
+                removed = cursor.rowcount
+                await db.commit()
+        except aiosqlite.Error:
+            log.warning("prune_path_access_failed", exc_info=True)
+            return 0
+        if removed > 0:
+            log.debug("path_access_pruned", removed=removed)
+        return max(removed, 0)
 
-    def mark_paths(self, paths: StorePathSet) -> None:
-        """Queue multiple paths for registration time update."""
+    # ── Last reference times ──────────────────────────────────────────
+
+    def mark_path(self, path: StorePath | str) -> None:
+        """Note that something referenced `path` just now."""
+        self.mark_paths((path,))
+
+    def mark_paths(self, paths: Iterable[StorePath | str]) -> None:
+        """Note that something referenced each of `paths` just now.
+
+        The write happens later. `flush_loop` drains the set every few
+        seconds, so a burst of queries over one closure costs one statement
+        and not one for each path.
+        """
         if self.active and not self.read_only:
-            self.pending_regtime.update(paths)
+            self.pending_references.update(str(path) for path in paths)
 
     async def record_build_stats(
         self,
@@ -383,27 +467,42 @@ class LocalStoreDB:
             log.debug("get_build_stats_hint_failed", pname=pname, exc_info=True)
         return None
 
-    async def flush_regtime(self) -> None:
-        """Flush pending registration time updates to SQLite."""
+    async def flush_references(self) -> None:
+        """Write the pending reference times, over the closure of each path.
+
+        Two places record the same moment, and both are wanted.
+
+        `ValidPaths.registrationTime` makes stock `nix-collect-garbage
+        --delete-older-than` collect by last use rather than by age, because
+        that command reads this column. pynixd needs no code for that, and
+        losing it would remove a feature from a program that is not pynixd.
+
+        `PynixdPathAccess` is the column that says what it means.
+        `registrationTime` claims to be when the path entered the store, and
+        `nix path-info --json` reports it as that, so one number cannot answer
+        both questions afterwards. Issue #166 has the whole argument.
+        """
         if not self.active or self.read_only:
             return
-        if not self.pending_regtime:
+        if not self.pending_references:
             return
 
-        paths = self.pending_regtime
-        self.pending_regtime = set()
+        paths = self.pending_references
+        self.pending_references = set()
 
         try:
             t0 = time.monotonic()
+            paths_json = json.dumps(sorted(paths))
             async with self.acquire_conn() as db:
-                if paths:
-                    paths_json = json.dumps([str(p) for p in paths])
-                    await db.execute(UPDATE_REGTIME, (paths_json,))
+                await db.execute(UPDATE_REGTIME, (paths_json,))
+                if self.schema.usable:
+                    await db.execute(TOUCH_PATH_ACCESS, (paths_json,))
                 await db.commit()
             elapsed = time.monotonic() - t0
             log.debug(
                 "db_flush_complete",
-                regtime_count=len(paths),
+                seed_count=len(paths),
+                path_access=self.schema.usable,
                 elapsed_ms=elapsed * 1000,
             )
         except aiosqlite.Error:
@@ -419,14 +518,14 @@ class LocalStoreDB:
     async def flush_loop(self) -> None:
         try:
             while True:
-                await anyio.sleep(self.regtime_flush_interval)
+                await anyio.sleep(self.reference_flush_interval)
                 try:
-                    await self.flush_regtime()
+                    await self.flush_references()
                 except aiosqlite.Error:
                     log.exception("db_flush_loop_iteration_failed")
         except anyio.get_cancelled_exc_class():
             with suppress(Exception):
-                await self.flush_regtime()
+                await self.flush_references()
         except Exception:
             log.exception("db_flush_loop_crashed")
 
@@ -439,7 +538,7 @@ class LocalStoreDB:
             with suppress(BaseException):
                 await self.flush_task
             self.flush_task = None
-        await self.flush_regtime()
+        await self.flush_references()
         await self.close_db_pool()
 
     async def close_db_pool(self) -> None:

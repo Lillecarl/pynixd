@@ -6,11 +6,37 @@ from pathlib import Path
 from typing import Any
 
 import structlog
+from pydantic import BaseModel
 
 from ..local_store_db import LocalStoreDB
+from ..serde import StorePath as SerdeStorePath
 from .local_daemon import LocalStore
 
 log = structlog.get_logger(__name__)
+
+
+def referenced_paths(request: object) -> set[str]:
+    """Every store path that a request names in its own fields.
+
+    The fields are the declaration, so this reads the model rather than a
+    list of operations that somebody has to keep current. A new operation
+    that carries a `StorePath` is counted on the day it is added.
+
+    Only the fields of the request itself. A nested model, such as the
+    `BasicDerivation` of a build, names the paths that the build will
+    *produce*, and a path that does not exist yet was referenced by nothing.
+    """
+    if not isinstance(request, BaseModel):
+        return set()
+    found: set[str] = set()
+    for name in type(request).model_fields:
+        value = getattr(request, name, None)
+        if isinstance(value, SerdeStorePath):
+            found.add(str(value))
+        elif isinstance(value, (set, frozenset, list, tuple)):
+            found.update(str(item) for item in value if isinstance(item, SerdeStorePath))
+    found.discard("")
+    return found
 
 
 class LocalDBStore(LocalStore):
@@ -70,6 +96,23 @@ class LocalDBStore(LocalStore):
         """Close the SQLite database and the daemon store."""
         await self.db.close()
         await super().close()
+
+    async def execute(self, request, client=None, suppress_last=False, skip_probe=False):  # type: ignore[no-untyped-def] -- the parent is untyped
+        """Note the paths of the request, then run it.
+
+        This is the one place that sees every operation, whichever route
+        answers it: a fast path over SQLite, or the wire. `LocalStoreDB`
+        collects the paths and writes them a few seconds later.
+
+        `mark_path` and `mark_paths` had no caller anywhere, in any project of
+        this repository. The set they fill was therefore always empty,
+        `flush_references` returned at its first line every time, and the
+        background task woke every five seconds to do nothing. So
+        `registrationTime` was never refreshed, and the LRU garbage collection
+        that the refresh exists for never had an input. Issue #166.
+        """
+        self.db.mark_paths(referenced_paths(request))
+        return await super().execute(request, client=client, suppress_last=suppress_last, skip_probe=skip_probe)
 
     # ── Fast-path overrides ────────────────────────────────────────
 
