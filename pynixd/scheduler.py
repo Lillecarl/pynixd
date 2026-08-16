@@ -572,32 +572,54 @@ class Scheduler:
             count=len(all_output_paths),
         )
 
+        await self._record_build_stats(build, resp)
         await self._pull_outputs(store, all_output_paths)
 
-        # Record build statistics
-        if isinstance(self.local_store, LocalDBStore):
-            pname = build.request.derivation.env.get("pname")
-            if pname:
-                started_at = build.started_at
-                if started_at is not None:
-                    duration = int((time.monotonic() - started_at) * 1000)
-                    await self.local_store.db.record_build_stats(
-                        pname=pname,
-                        platform=build.request.derivation.platform,
-                        derivation_json=build.request.derivation.to_stats_json(),
-                        cpu_user_us=resp.result.cpu_user.value if resp.result.cpu_user else None,
-                        cpu_system_us=resp.result.cpu_system.value if resp.result.cpu_system else None,
-                        duration_ms=duration,
-                    )
-                    expected = build.expected_duration
-                    log.info(
-                        "build_stats_recorded",
-                        pname=pname,
-                        platform=build.request.derivation.platform,
-                        expected_ms=expected,
-                        actual_ms=duration,
-                        error_pct=f"{(duration - expected) / expected * 100:.1f}" if expected else None,
-                    )
+    async def _record_build_stats(
+        self,
+        build: QueuedBuild,
+        resp: BuildDerivationResponse,
+    ) -> None:
+        """Write what this build cost, for the next build of the same package.
+
+        This runs before `_pull_outputs`, and both reasons are about what the
+        number means.
+
+        The scheduler reads it back through `get_build_stats_hint` to predict
+        how long a derivation takes, so the number has to measure the build
+        alone. Taken after the pull, it also held the time to copy the closure
+        from the backend to the local store, which depends on the size of the
+        outputs and on the network, and not on the builder.
+
+        A pull that fails also raises, and the statistics of a build that
+        already succeeded went with it. Issue #157 is the larger half of that:
+        the client is told the build succeeded before the pull runs.
+        """
+        if not isinstance(self.local_store, LocalDBStore):
+            return
+        pname = build.request.derivation.env.get("pname")
+        started_at = build.started_at
+        if not pname or started_at is None:
+            return
+
+        duration = int((time.monotonic() - started_at) * 1000)
+        await self.local_store.db.record_build_stats(
+            pname=pname,
+            platform=build.request.derivation.platform,
+            derivation_json=build.request.derivation.to_stats_json(),
+            cpu_user_us=resp.result.cpu_user.value if resp.result.cpu_user else None,
+            cpu_system_us=resp.result.cpu_system.value if resp.result.cpu_system else None,
+            duration_ms=duration,
+        )
+        expected = build.expected_duration
+        log.info(
+            "build_stats_recorded",
+            pname=pname,
+            platform=build.request.derivation.platform,
+            expected_ms=expected,
+            actual_ms=duration,
+            error_pct=f"{(duration - expected) / expected * 100:.1f}" if expected else None,
+        )
 
     async def _wait_for_local_paths(
         self,

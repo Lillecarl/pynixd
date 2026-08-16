@@ -146,9 +146,15 @@ class StatsTestStore(LocalDBStore):
 
 
 @pytest.mark.covers(F.BUILD_DERIVATION | F.QUERY_ALL_VALID_PATHS | F.QUERY_CLOSURE_WITH_INFO | F.STORE_LOCAL)
-@pytest.mark.xfail(reason="DB stats query returns no row")
 async def test_build_stats_recording(tmp_path: Path) -> None:
-    """Verify that build stats are recorded to the DB."""
+    """Verify that build stats are recorded to the DB.
+
+    This was `xfail`, with the reason "DB stats query returns no row". That
+    is the symptom. The cause was the order in `_collect_outputs`: the pull
+    of the outputs ran first, it raised `ConnectionRefusedError` against the
+    fake stores of this module, and the statistics of a build that had
+    already succeeded went with it.
+    """
     pynixd_local_path = STORE_PREFIX / "stats-local"
     pynixd_remote_path = STORE_PREFIX / "stats-remote"
     rmtree_robust(pynixd_local_path)
