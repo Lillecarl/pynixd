@@ -12,6 +12,7 @@ import os
 import shlex
 import signal
 import time
+from collections import deque
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -30,6 +31,11 @@ if TYPE_CHECKING:
     from ..monitor import ResourceMonitor
 
 log = structlog.get_logger(__name__)
+
+# How many lines of daemon output to keep for a start-up error message. Enough
+# to carry a Nix error and the lines around it, and bounded because a daemon
+# that runs for a week must not grow a list for a week.
+_RECENT_OUTPUT_LINES = 50
 
 
 class LocalStore(DaemonStore):
@@ -64,6 +70,13 @@ class LocalStore(DaemonStore):
         self.daemon_proc: asyncio.subprocess.Process | None = None
         self.daemon_ready: anyio.Event | None = None
         self._daemon_log_task: asyncio.Task | None = None
+        # The last lines the daemon wrote, for the error paths of
+        # `ensure_daemon`. Those used to call `daemon_proc.stderr.read()`, but
+        # `_stream_daemon_output` holds a `readline()` on that same stream from
+        # the moment the daemon starts, so the read raised "read() called while
+        # another coroutine is already waiting for incoming data" and every
+        # startup failure reported that instead of its own cause.
+        self._recent_output: deque[str] = deque(maxlen=_RECENT_OUTPUT_LINES)
         self.nix_config = spec.nix_config
         self.extra_env = spec.extra_env or {}
         self.extra_args = spec.extra_args or []
@@ -160,9 +173,7 @@ class LocalStore(DaemonStore):
             if self.socket_path.exists():
                 break
             if self.daemon_proc.returncode is not None:
-                stderr_output = ""
-                if self.daemon_proc.stderr:
-                    stderr_output = (await self.daemon_proc.stderr.read()).decode(errors="replace")
+                stderr_output = self._recent_output_text()
                 raise RuntimeError(
                     f"Managed daemon exited early with code {self.daemon_proc.returncode} "
                     f"(pid={self.daemon_proc.pid}): {stderr_output!r}",
@@ -180,9 +191,7 @@ class LocalStore(DaemonStore):
         # Socket file exists but daemon may not be listening yet — probe
         for _attempt in range(100):
             if self.daemon_proc.returncode is not None:
-                stderr_output = ""
-                if self.daemon_proc.stderr:
-                    stderr_output = (await self.daemon_proc.stderr.read()).decode(errors="replace")
+                stderr_output = self._recent_output_text()
                 raise RuntimeError(
                     f"Managed daemon exited with code {self.daemon_proc.returncode} "
                     f"(pid={self.daemon_proc.pid}): {stderr_output!r}",
@@ -194,13 +203,25 @@ class LocalStore(DaemonStore):
                 return
             await anyio.sleep(0.05)
 
-        stderr_output = ""
-        if self.daemon_proc.stderr:
-            stderr_output = (await self.daemon_proc.stderr.read()).decode(errors="replace")
+        stderr_output = self._recent_output_text()
         raise RuntimeError(
             f"Managed daemon socket not accepting connections "
             f"at {self.socket_path} within 5s (pid={self.daemon_proc.pid}): {stderr_output!r}",
         )
+
+    def _recent_output_text(self) -> str:
+        """The last lines the daemon wrote, for a start-up error message.
+
+        Read from the buffer that `_stream_daemon_output` fills, and never from
+        the stream. That forwarder holds a `readline()` on stdout and on stderr
+        for as long as the daemon lives, so a second reader of either one gets
+        `RuntimeError: read() called while another coroutine is already waiting
+        for incoming data`. Each error path below used to do exactly that, so
+        the only failure they could report was their own.
+        """
+        if not self._recent_output:
+            return "(the daemon wrote nothing)"
+        return "\n".join(self._recent_output)
 
     async def _stream_daemon_output(self) -> None:
         """Forward daemon stdout/stderr to structlog indefinitely."""
@@ -215,6 +236,7 @@ class LocalStore(DaemonStore):
                 if not line:
                     break
                 decoded = line.decode(errors="replace").rstrip()
+                self._recent_output.append(f"{label}: {decoded}")
                 if decoded.startswith("@nix "):
                     try:
                         data = json.loads(decoded[5:])
