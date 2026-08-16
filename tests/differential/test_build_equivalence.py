@@ -32,6 +32,7 @@ import pytest
 from nanopynix_testing.nix_environment import NixTestEnvironment
 
 from pynixd.goals.engine import GoalEngine
+from pynixd.goals.results import result_succeeded
 from pynixd.instance import Server
 from pynixd.serde import (
     BuildMode,
@@ -108,10 +109,19 @@ async def _read_store(root: Path) -> StoreSnapshot:
 
 async def _build_with_pynixd(root: Path, drv_path: str, case: Case) -> Any:
     """Realise every output of *drv_path* through pynixd's goal engine."""
+    # `no_probe`, because pynixd otherwise builds a `probe-system-*` and a
+    # `probe-feature-*` derivation for each system and feature while the server
+    # starts, and those land in this arm's store and in no other. The first run
+    # of this suite reported eight of them as paths "only in pynixd".
+    #
+    # They are infrastructure of the proxy and not output of a goal system, so
+    # leaving them out is the answer rather than filtering them afterwards. The
+    # static matrix that replaces them covers aarch64-linux and x86_64-linux.
     spec = make_test_spec(
         store_id="local",
         store_path=root,
         extra_env=_nix_config_env(case),
+        no_probe=True,
     )
     async with Server(
         stores={StoreId("local"): LocalDBStore(spec)},
@@ -149,14 +159,39 @@ async def test_both_engines_leave_the_same_store(case: Case, differential_roots:
     )
 
     before_a = await _read_store(root_a)
-    await _build_with_pynixd(root_a, drv_a, case)
+    response_a = await _build_with_pynixd(root_a, drv_a, case)
     after_a = await _read_store(root_a)
 
     before_b = await _read_store(root_b)
-    await _build_with_nix(root_b, drv_b)
+    results_b = await _build_with_nix(root_b, drv_b)
     after_b = await _read_store(root_b)
 
-    difference = compare(delta(before_a, after_a), delta(before_b, after_b))
+    added_a = delta(before_a, after_a)
+    added_b = delta(before_b, after_b)
+
+    # Both engines have to reach the outcome the case declares. Without this the
+    # failing cases would pass for the wrong reason: neither store gains a path
+    # when a build fails, and neither store gains a path when no build runs
+    # either. This is what separates the two.
+    pynixd_succeeded = all(result_succeeded(item.result) for item in response_a.results)
+    nix_succeeded = all(result.success for result in results_b)
+    assert pynixd_succeeded == case.expect_success, (
+        f"{case.name}: pynixd reported success={pynixd_succeeded}, and the case "
+        f"declares success={case.expect_success}.\n  {response_a.results}"
+    )
+    assert nix_succeeded == case.expect_success, (
+        f"{case.name}: Nix reported success={nix_succeeded}, and the case "
+        f"declares success={case.expect_success}.\n  {results_b}"
+    )
+
+    # A comparison of two empty sets proves nothing about a goal system. A build
+    # that is meant to succeed has to leave something behind, and saying so here
+    # is what stops this test passing because both arms did nothing.
+    if case.expect_success:
+        assert added_a.paths, f"{case.name}: pynixd reported success and added no path to its store"
+        assert added_b.paths, f"{case.name}: Nix reported success and added no path to its store"
+
+    difference = compare(added_a, added_b)
     assert not difference, (
         f"{case.name}: the two goal systems left different stores.\n"
         f"This case probes: {case.probes}\n\n"
