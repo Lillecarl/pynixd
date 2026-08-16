@@ -288,12 +288,12 @@ async def test_a_distributed_build_reassembles_the_same_store(
     arrives is what Nix would have produced -- the same NAR hash, the same
     size, the same references, the same deriver and the same addressing.
 
-    References are the part most worth watching. The scheduler reassembles by
-    copying `ValidPaths` and `Refs` rows out of the builder's SQLite database
-    (`_direct_import_localdb_outputs`), and the `Refs` copy only carries rows
-    whose referrer is one of the new outputs. A reference to a path that has
-    not arrived yet inserts nothing and reports nothing, so the `chain` and
-    `diamond` cases are the ones that would show it.
+    References are the part most worth watching, and the `chain` and `diamond`
+    cases are the ones that carry them. The scheduler used to reassemble by
+    copying `ValidPaths` and `Refs` rows out of the builder's SQLite database,
+    where a reference to a path that had not arrived yet inserted nothing and
+    reported nothing. `Scheduler._pull_outputs` streams the closure over the
+    wire now, so a reference cannot go missing -- issue #158.
     """
     roots = differential_roots
     drv = await _instantiate_both(roots.pynixd, roots.nix, case)
@@ -337,7 +337,28 @@ async def test_a_distributed_build_reassembles_the_same_store(
             f"builder never produced:\n  " + "\n  ".join(stranded)
         )
 
-    _assert_stores_agree(case, added_a, delta(before_b, after_b))
+        # A path the client received is not a path the client built, and Nix
+        # says so with `ultimate`. `newInfo.ultimate = true` is set in
+        # `unix/build/derivation-builder.cc` alone -- the local builder -- and
+        # every copy path clears it. A real `nix build --builders` therefore
+        # leaves `ultimate = false` in the store that receives the output, and
+        # pynixd has to agree.
+        #
+        # This is asserted rather than ignored. The SQLite shortcut that
+        # `_pull_outputs` replaced copied the row verbatim, so it said `true`
+        # and marked the client's store as the builder of a path it never
+        # built. Dropping the field from the comparison would let that back in
+        # unnoticed.
+        not_received = sorted(path for path, facts in added_a.paths.items() if facts.ultimate)
+        assert not not_received, (
+            f"{case.name}: the client's store calls {len(not_received)} received path(s) "
+            f"`ultimate`, which claims it built them:\n  " + "\n  ".join(not_received)
+        )
+
+    # `ultimate` is dropped from the comparison for the reason just asserted:
+    # this arm received its outputs and the Nix arm built them in place, so the
+    # field cannot agree and the assertion above pins the value instead.
+    _assert_stores_agree(case, added_a, delta(before_b, after_b), ignore_fields=("ultimate",))
 
 
 # Two cases and not the whole corpus. The question here is not which shapes a

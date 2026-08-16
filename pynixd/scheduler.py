@@ -14,15 +14,12 @@ they are pulled automatically.
 from __future__ import annotations
 
 import asyncio
-import json
-import shutil
 import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import anyio
 import structlog
-from anyio import to_thread
 
 from . import metrics
 from .allocator import BuildAllocator, RankedStore, TelemetryStoreRanker
@@ -654,10 +651,30 @@ class Scheduler:
         `ctx.output_locations` still holds, and it still answers for the
         clients that do use the wire, such as `ssh-ng://` and the HTTP cache.
         This is the transfer that path mapping cannot replace.
+
+        One route, over the wire, for every backend. A second route copied the
+        store directory and then the SQLite rows of the builder database
+        straight into the local one, when both ends were a `LocalDBStore`.
+        Issue #158 removed it, and it was wrong in four ways:
+
+        - No NAR was written and no hash was checked, so a truncated copy
+          registered as valid.
+        - The `Refs` copy carried only rows whose referrer was a new output,
+          and inserted with `INSERT OR IGNORE ... SELECT`. A reference whose
+          path had no row in the destination yet was dropped in silence.
+        - It wrote into a running daemon's database behind that daemon's back.
+        - It copied `ultimate` verbatim, which marked the local store as the
+          builder of a path it never built. Nix sets `ultimate` in
+          `unix/build/derivation-builder.cc` alone -- the local builder -- and
+          clears it on every copy. A distributed build leaves `ultimate =
+          false` in the store that receives the output, and the shortcut said
+          `true`.
+
+        `stream_paths_store_to_store` has none of those. It asks for the
+        closure, so a reference cannot go missing, and it hands each path to
+        the destination daemon, which hashes it and registers it itself.
         """
         if not paths:
-            return
-        if await self._direct_import_localdb_outputs(store, paths):
             return
         log.debug(
             "pull_outputs_streaming",
@@ -665,86 +682,3 @@ class Scheduler:
             count=len(paths),
         )
         await stream_paths_store_to_store(store, self.local_store, paths)
-
-    async def _direct_import_localdb_outputs(
-        self,
-        store: DaemonStore,
-        paths: StorePathSet,
-    ) -> bool:
-        """Copy the outputs through the file system, when both stores allow it.
-
-        Returns whether it did the work. It needs a `LocalDBStore` on both
-        ends, so it answers `False` for every backend that is not a local
-        daemon with a database pynixd can open, and `_pull_outputs` then uses
-        the wire.
-        """
-        if not paths or not isinstance(store, LocalDBStore) or not isinstance(self.local_store, LocalDBStore):
-            return False
-        if store.store_path is None or self.local_store.store_path is None:
-            return False
-
-        for path in paths:
-            src = store.store_path / str(path).lstrip("/")
-            dst = self.local_store.store_path / str(path).lstrip("/")
-            if not src.exists() and not src.is_symlink():
-                log.warning("direct_output_import_missing_source", path=str(path), store_id=store.store_id)
-                continue
-            if not dst.exists() and not dst.is_symlink():
-                await to_thread.run_sync(self._copy_store_path, src, dst)
-
-        paths_json = json.dumps([str(path) for path in paths])
-        async with store.db.acquire_conn() as src_db, self.local_store.db.acquire_conn() as dst_db:
-            rows_cursor = await src_db.execute(
-                """
-                    SELECT path, hash, registrationTime, narSize, deriver, ultimate, sigs, ca
-                    FROM ValidPaths
-                    WHERE path IN (SELECT value FROM json_each(?))
-                    """,
-                (paths_json,),
-            )
-            rows = await rows_cursor.fetchall()
-            for row in rows:
-                await dst_db.execute(
-                    """
-                        INSERT OR IGNORE INTO ValidPaths
-                            (path, hash, registrationTime, narSize, deriver, ultimate, sigs, ca)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                    row,
-                )
-
-            refs_cursor = await src_db.execute(
-                """
-                    SELECT referrer.path, reference.path
-                    FROM Refs r
-                    JOIN ValidPaths referrer ON r.referrer = referrer.id
-                    JOIN ValidPaths reference ON r.reference = reference.id
-                    WHERE referrer.path IN (SELECT value FROM json_each(?))
-                    """,
-                (paths_json,),
-            )
-            refs = await refs_cursor.fetchall()
-            for referrer, reference in refs:
-                await dst_db.execute(
-                    """
-                        INSERT OR IGNORE INTO Refs (referrer, reference)
-                        SELECT referrer.id, reference.id
-                        FROM ValidPaths referrer, ValidPaths reference
-                        WHERE referrer.path = ? AND reference.path = ?
-                        """,
-                    (referrer, reference),
-                )
-            await dst_db.commit()
-
-        log.info("direct_output_import_complete", count=len(paths), store_id=store.store_id)
-        return True
-
-    @staticmethod
-    def _copy_store_path(src, dst) -> None:
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        if src.is_symlink():
-            dst.symlink_to(src.readlink())
-        elif src.is_dir():
-            shutil.copytree(src, dst, symlinks=True)
-        else:
-            shutil.copy2(src, dst)
