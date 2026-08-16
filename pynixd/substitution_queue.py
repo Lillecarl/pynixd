@@ -13,8 +13,7 @@ import structlog
 from cachetools import TTLCache
 
 from .exceptions import OpNotImplementedError
-from .serde import AddToStoreNarRequest, NarFromPathRequest, QueryPathInfoRequest
-from .serde import StorePath as SerdeStorePath
+from .serde import AddToStoreNarRequest, NarFromPathRequest, QueryPathInfoRequest, StorePath as SerdeStorePath
 from .serde.context import ReadContext, WriteContext
 from .serde.valid_path_info import ValidPathInfo
 from .store import DaemonStore, HTTPBinaryCacheStore

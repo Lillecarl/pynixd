@@ -6,8 +6,12 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from ..derived_path import DerivedPath
-from ..serde import BuildPathsWithResultsRequest, BuildPathsWithResultsResponse, KeyedBuildResult
-from ..serde import DerivedPath as SerdeDerivedPath
+from ..serde import (
+    BuildPathsWithResultsRequest,
+    BuildPathsWithResultsResponse,
+    DerivedPath as SerdeDerivedPath,
+    KeyedBuildResult,
+)
 from .goal import ExecutionGoal
 
 if TYPE_CHECKING:

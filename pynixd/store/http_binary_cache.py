@@ -27,8 +27,8 @@ from ..serde import (
     QueryPathInfoResponse,
     QueryValidPathsRequest,
     QueryValidPathsResponse,
+    StorePath as SerdeStorePath,
 )
-from ..serde import StorePath as SerdeStorePath
 from ..serde.valid_path_info import ValidPathInfo
 from ..store_path import StorePath
 from .base import Store

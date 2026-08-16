@@ -33,8 +33,13 @@ from anyio.to_thread import run_sync
 from passlib.apache import HtpasswdFile
 
 from . import metrics
-from .serde import AddToStoreNarRequest, NarFromPathRequest, QueryPathFromHashPartRequest, QueryPathInfoRequest
-from .serde import StorePath as SerdeStorePath
+from .serde import (
+    AddToStoreNarRequest,
+    NarFromPathRequest,
+    QueryPathFromHashPartRequest,
+    QueryPathInfoRequest,
+    StorePath as SerdeStorePath,
+)
 from .serde.context import ReadContext, WriteContext
 from .serde.valid_path_info import ValidPathInfo as SerdeValidPathInfo
 from .store_path import StorePath

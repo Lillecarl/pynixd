@@ -30,17 +30,15 @@ from typing import TYPE_CHECKING, Any, cast
 import anyio
 import pytest
 from nanopynix_testing.nix_environment import NixTestEnvironment
-from pynixd.serde.ids import StoreId
 
 from pynixd.goals.engine import GoalEngine
 from pynixd.instance import Server
 from pynixd.serde import (
     BuildMode,
     BuildPathsWithResultsRequest,
-)
-from pynixd.serde import (
     DerivedPath as SerdeDerivedPath,
 )
+from pynixd.serde.ids import StoreId
 from pynixd.store.local_db import LocalDBStore
 from tests._conftest.config import make_test_spec
 from tests.differential.corpus import CA_CORPUS, CORPUS, Case

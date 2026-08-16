@@ -28,8 +28,7 @@ from . import metrics
 from .allocator import BuildAllocator, RankedStore, TelemetryStoreRanker
 from .build_queue import BuildQueue, QueuedBuild
 from .exceptions import BackendError, InfrastructureError, ResourceExhaustedError
-from .serde import LogNext, QueryValidPathsRequest
-from .serde import StorePath as SerdeStorePath
+from .serde import LogNext, QueryValidPathsRequest, StorePath as SerdeStorePath
 from .store import DaemonStore, LocalDBStore
 from .store.transfer import stream_paths_store_to_store
 from .store_path import StorePath

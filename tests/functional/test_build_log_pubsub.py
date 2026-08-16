@@ -5,7 +5,6 @@ import contextlib
 
 import anyio
 import pytest
-from pynixd.serde.ids import BuildId, StoreId
 
 from pynixd.build_queue import BuildQueue
 from pynixd.config import PynixdSettings
@@ -22,6 +21,7 @@ from pynixd.serde import (
     LogNext,
     WireLogs,
 )
+from pynixd.serde.ids import BuildId, StoreId
 from pynixd.store_path import StorePath
 from pynixd.wire import BytesWriter
 from tests.conftest import serde_path

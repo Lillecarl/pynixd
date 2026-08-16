@@ -1,6 +1,5 @@
 import anyio
 import pytest
-from pynixd.serde.ids import StoreId
 
 from pynixd.config import PynixdSettings
 from pynixd.context import PynixdContext
@@ -13,6 +12,7 @@ from pynixd.serde import (
     BuildResult,
     BuildResultStatus,
 )
+from pynixd.serde.ids import StoreId
 from pynixd.store_path import StorePath
 from tests.conftest import serde_path
 from tests.functional.mock_store import MockStore

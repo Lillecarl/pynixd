@@ -6,10 +6,8 @@ from pynixd.serde import (
     BuildResult,
     OptMicroseconds,
     Realisation,
-    WireModel,
-)
-from pynixd.serde import (
     StorePath as SerdeStorePath,
+    WireModel,
 )
 
 

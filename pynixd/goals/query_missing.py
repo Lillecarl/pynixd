@@ -9,8 +9,7 @@ import anyio
 import structlog
 
 from ..derived_path import DerivedPath
-from ..serde import IsValidPathRequest, QueryMissingRequest, QueryMissingResponse
-from ..serde import StorePath as SerdeStorePath
+from ..serde import IsValidPathRequest, QueryMissingRequest, QueryMissingResponse, StorePath as SerdeStorePath
 from ..substitution_queue import SubstitutionAvailability
 from .goal import ExecutionGoal
 

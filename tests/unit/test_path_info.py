@@ -7,13 +7,13 @@ combinations of fields. All tests are pure — no I/O.
 from __future__ import annotations
 
 import pytest
+
+from pynixd.serde import StorePath, ValidPathInfo
 from pynixd.serde.content_address import ContentAddress
 from pynixd.serde.nar_hash import NARHash
 from pynixd.serde.path_info import UnkeyedValidPathInfo
 from pynixd.serde.signature import Signature
 from pynixd.serde.wire_time import Time
-
-from pynixd.serde import StorePath, ValidPathInfo
 from tests.test_features import TestFeatures as F
 
 

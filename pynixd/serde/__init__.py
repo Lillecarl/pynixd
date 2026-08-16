@@ -13,9 +13,7 @@ from nix_daemon_protocol import *  # noqa: F403
 from ..daemon_extensions import *  # noqa: F403
 from . import _derivation_compat as _derivation_compat
 from .auth import Role as Role
-from .context import ReadContext as ReadContext
-from .context import RequestContext as RequestContext
-from .context import WriteContext as WriteContext
+from .context import ReadContext as ReadContext, RequestContext as RequestContext, WriteContext as WriteContext
 from .protocol import PynixdGCAction as PynixdGCAction
 
 _CORE_MODULES = (

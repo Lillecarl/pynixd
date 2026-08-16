@@ -8,8 +8,13 @@ from typing import TYPE_CHECKING
 import anyio
 import structlog
 
-from ..serde import BuildDerivationRequest, BuildResultStatus, IsValidPathRequest, RegisterDrvOutputRequest
-from ..serde import StorePath as SerdeStorePath
+from ..serde import (
+    BuildDerivationRequest,
+    BuildResultStatus,
+    IsValidPathRequest,
+    RegisterDrvOutputRequest,
+    StorePath as SerdeStorePath,
+)
 from ..store_path import StorePath
 from .goal import ExecutionGoal
 from .results import GoalResult, goal_failure

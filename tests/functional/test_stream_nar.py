@@ -7,8 +7,7 @@ from pathlib import Path
 import pytest
 import structlog
 
-from pynixd.serde import IsValidPathRequest
-from pynixd.serde import StorePath as SerdeStorePath
+from pynixd.serde import IsValidPathRequest, StorePath as SerdeStorePath
 from pynixd.store import LocalSocketStore
 from pynixd.store.transfer import stream_paths_store_to_store
 from pynixd.store_path import StorePath

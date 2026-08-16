@@ -5,8 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from nix_daemon_protocol.context import ReadContext as ProtocolReadContext
-from nix_daemon_protocol.context import WriteContext as ProtocolWriteContext
+from nix_daemon_protocol.context import ReadContext as ProtocolReadContext, WriteContext as ProtocolWriteContext
 
 from ..exceptions import BackendError
 from .auth import Role

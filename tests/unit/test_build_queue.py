@@ -5,8 +5,7 @@ from __future__ import annotations
 import pytest
 
 from pynixd.build_queue import BuildQueue
-from pynixd.serde import BasicDerivation, BuildDerivationRequest, BuildMode
-from pynixd.serde import StorePath as SerdeStorePath
+from pynixd.serde import BasicDerivation, BuildDerivationRequest, BuildMode, StorePath as SerdeStorePath
 from pynixd.store_path import StorePath
 
 

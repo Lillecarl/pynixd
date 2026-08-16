@@ -58,8 +58,7 @@ class LocalDBStore(LocalStore):
 
             return QueryPathInfoResponse(valid=True, info=cached.info)
 
-        from pynixd.serde import QueryPathInfoResponse
-        from pynixd.serde import StorePath as SerdeStorePath
+        from pynixd.serde import QueryPathInfoResponse, StorePath as SerdeStorePath
         from pynixd.serde.content_address import ContentAddress
         from pynixd.serde.nar_hash import NARHash
         from pynixd.serde.path_info import UnkeyedValidPathInfo as SerdeUnkeyedValidPathInfo
@@ -99,8 +98,7 @@ class LocalDBStore(LocalStore):
     async def query_all_valid_paths(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """QueryAllValidPaths — fast-path via SQLite."""
 
-        from pynixd.serde import QueryAllValidPathsResponse
-        from pynixd.serde import StorePath as SerdeStorePath
+        from pynixd.serde import QueryAllValidPathsResponse, StorePath as SerdeStorePath
 
         from .queries import QUERY_ALL_VALID_PATHS
 
@@ -114,8 +112,7 @@ class LocalDBStore(LocalStore):
 
         import json
 
-        from pynixd.serde import QueryValidPathsResponse
-        from pynixd.serde import StorePath as SerdeStorePath
+        from pynixd.serde import QueryValidPathsResponse, StorePath as SerdeStorePath
 
         from .queries import QUERY_VALID_PATHS
 
@@ -129,8 +126,7 @@ class LocalDBStore(LocalStore):
     async def query_path_from_hash_part(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """QueryPathFromHashPart — fast-path via SQLite."""
 
-        from pynixd.serde import QueryPathFromHashPartResponse
-        from pynixd.serde import StorePath as SerdeStorePath
+        from pynixd.serde import QueryPathFromHashPartResponse, StorePath as SerdeStorePath
 
         from .queries import QUERY_PATH_FROM_HASH_PART
 
@@ -148,8 +144,7 @@ class LocalDBStore(LocalStore):
 
         import json
 
-        from pynixd.serde import QueryClosureResponse
-        from pynixd.serde import StorePath as SerdeStorePath
+        from pynixd.serde import QueryClosureResponse, StorePath as SerdeStorePath
 
         from .queries import QUERY_CLOSURE
 
@@ -169,8 +164,7 @@ class LocalDBStore(LocalStore):
 
         import json
 
-        from pynixd.serde import QueryClosureWithInfoResponse
-        from pynixd.serde import StorePath as SerdeStorePath
+        from pynixd.serde import QueryClosureWithInfoResponse, StorePath as SerdeStorePath
         from pynixd.serde.content_address import ContentAddress
         from pynixd.serde.nar_hash import NARHash
         from pynixd.serde.path_info import UnkeyedValidPathInfo as SerdeUnkeyedValidPathInfo
@@ -230,8 +224,7 @@ class LocalDBStore(LocalStore):
 
         import json
 
-        from pynixd.serde import QueryPathInfosResponse
-        from pynixd.serde import StorePath as SerdeStorePath
+        from pynixd.serde import QueryPathInfosResponse, StorePath as SerdeStorePath
         from pynixd.serde.content_address import ContentAddress
         from pynixd.serde.nar_hash import NARHash
         from pynixd.serde.path_info import UnkeyedValidPathInfo as SerdeUnkeyedValidPathInfo

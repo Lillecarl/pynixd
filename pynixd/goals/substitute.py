@@ -8,8 +8,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from ..serde import BuildResultStatus, IsValidPathRequest
-from ..serde import StorePath as SerdeStorePath
+from ..serde import BuildResultStatus, IsValidPathRequest, StorePath as SerdeStorePath
 from ..store_path import StorePath
 from .goal import ExecutionGoal
 from .results import GoalResult, goal_failure, goal_success

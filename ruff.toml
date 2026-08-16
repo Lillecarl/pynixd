@@ -26,6 +26,30 @@ ignore = [
     "TID252",  # relative imports, which this project uses by design
 ]
 
+# This file is the configuration that governs `pynixd/**`, because ruff reads
+# the nearest one to each file and this is nearer than `../ruff.toml`. It had
+# `I` selected and no isort section at all, so isort sorted every absolute
+# import of this project's own modules as a third-party package.
+#
+# The three names below are the three distributions of this tree, and each one
+# needs saying for its own reason:
+#
+# - `nix_daemon_protocol` lives at `nix-daemon-protocol/src/nix_daemon_protocol`,
+#   so no directory of that name sits beside this file for ruff to find.
+# - `tests` is this project's suite. It has no `src/` layout either, and its
+#   modules import each other as `tests.something`.
+# - `pynixd` is beside this file, and ruff still sorted `pynixd.serde.ids`
+#   into the third-party block while it put `pynixd.serde` in the first-party
+#   one. `../ruff.toml` names `pynix` for the same reason: one project cannot
+#   be in two groups.
+[lint.isort]
+combine-as-imports = true
+known-first-party = [
+    "nix_daemon_protocol",
+    "pynixd",
+    "tests",
+]
+
 # ═══════════════════════════════════════════════════════════════
 # SHARED — the same names as the `banned-api` table of
 #          `../ruff-strict.toml`, kept equal by

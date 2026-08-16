@@ -11,8 +11,7 @@ import pytest
 from pynixd.drv_parser import Derivation, DrvOutput
 from pynixd.goals.engine import GoalEngine
 from pynixd.goals.query_missing import QueryMissingPlanGoal
-from pynixd.serde import DerivedPath as SerdeDerivedPath
-from pynixd.serde import IsValidPathResponse, QueryMissingRequest
+from pynixd.serde import DerivedPath as SerdeDerivedPath, IsValidPathResponse, QueryMissingRequest
 from pynixd.substitution_queue import SubstitutionAvailability
 
 if TYPE_CHECKING:

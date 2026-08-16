@@ -16,8 +16,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from pynixd.nix_config import NixConfig
-from pynixd.serde import NarFromPathRequest
-from pynixd.serde import StorePath as SerdeStorePath
+from pynixd.serde import NarFromPathRequest, StorePath as SerdeStorePath
 from pynixd.serde.context import WriteContext
 from tests._conftest.constants import DEFAULT_NIX_CONFIG, DEFAULT_SSH_OPTS
 

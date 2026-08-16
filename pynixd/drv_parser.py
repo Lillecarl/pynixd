@@ -40,8 +40,7 @@ from typing import TYPE_CHECKING, ClassVar, TypedDict
 
 import anyio
 
-from .serde import BasicDerivation, DerivationOutput, OutputKind
-from .serde import StorePath as SerdeStorePath
+from .serde import BasicDerivation, DerivationOutput, OutputKind, StorePath as SerdeStorePath
 from .store_path import DrvOutput, StorePath
 from .utils import compress_hash, nix32_encode
 

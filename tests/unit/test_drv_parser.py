@@ -19,8 +19,7 @@ import anyio
 import pytest
 
 from pynixd.drv_parser import Derivation, parse_drv, to_basic_derivation
-from pynixd.serde import OutputKind
-from pynixd.serde import StorePath as SerdeStorePath
+from pynixd.serde import OutputKind, StorePath as SerdeStorePath
 from pynixd.store_path import DrvOutput, StorePath
 from tests.conftest import NIX_BIN
 from tests.test_features import TestFeatures as F

@@ -16,8 +16,14 @@ import structlog
 from .. import wire
 from ..exceptions import BackendError
 from ..monitor import ResourceGate, ResourceMonitor
-from ..serde import BasicDerivation, BuildDerivationRequest, BuildMode, BuildResultStatus, DerivationOutput
-from ..serde import StorePath as SerdeStorePath
+from ..serde import (
+    BasicDerivation,
+    BuildDerivationRequest,
+    BuildMode,
+    BuildResultStatus,
+    DerivationOutput,
+    StorePath as SerdeStorePath,
+)
 from ..serde.context import WriteContext
 from ..serde.wire_ops import WireRequest
 from ..system_features import KNOWN_FEATURES, PROBE_SYSTEMS
@@ -26,8 +32,7 @@ from .base import Store
 from .pool import ConnectionPool
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
-    from collections.abc import Set as AbstractSet
+    from collections.abc import Awaitable, Callable, Set as AbstractSet
     from contextlib import AbstractAsyncContextManager
 
     from ..config import StoreSpecBase
@@ -850,8 +855,7 @@ class DaemonStore(Store):
 
         from ..drv_parser import parse_drv
         from ..nar import NarRegular, parse_nar
-        from ..serde import IsValidPathRequest, NarFromPathRequest, QueryPathInfoRequest
-        from ..serde import StorePath as SerdeStorePath
+        from ..serde import IsValidPathRequest, NarFromPathRequest, QueryPathInfoRequest, StorePath as SerdeStorePath
 
         sp = SerdeStorePath(path=str(drv_store_path))
 

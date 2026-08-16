@@ -10,8 +10,7 @@ import json
 
 import pytest
 
-from pynixd.serde import BuildMode, BuildResult, BuildResultStatus, BuiltOutput
-from pynixd.serde import StorePath as SerdeStorePath
+from pynixd.serde import BuildMode, BuildResult, BuildResultStatus, BuiltOutput, StorePath as SerdeStorePath
 from tests.test_features import TestFeatures as F
 
 # This repository holds two classes named `StorePath`. `pynixd.store_path`

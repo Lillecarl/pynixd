@@ -31,12 +31,10 @@ from pynixd.serde import (
     BuildDerivationRequest,
     BuildMode,
     DerivationOutput,
-    RegisterDrvOutputRequest,
-)
-from pynixd.serde import (
     QueryDerivationOutputMapRequest as QdomRequest,
+    RegisterDrvOutputRequest,
+    StorePath as SerdeStorePath,
 )
-from pynixd.serde import StorePath as SerdeStorePath
 from pynixd.store import LocalSocketStore
 from pynixd.store.transfer import stream_paths_store_to_store
 from pynixd.store_path import StorePath

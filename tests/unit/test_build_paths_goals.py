@@ -17,8 +17,8 @@ from pynixd.serde import (
     BuildPathsWithResultsRequest,
     BuildPathsWithResultsResponse,
     BuildResultStatus,
+    DerivedPath as SerdeDerivedPath,
 )
-from pynixd.serde import DerivedPath as SerdeDerivedPath
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable

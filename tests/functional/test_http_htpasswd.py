@@ -7,9 +7,9 @@ from pathlib import Path
 import aiohttp
 import pytest
 from passlib.apache import HtpasswdFile
-from pynixd.serde.ids import StoreId
 
 from pynixd import Server
+from pynixd.serde.ids import StoreId
 from pynixd.store import LocalSocketStore
 from tests.conftest import make_test_spec
 from tests.test_features import TestFeatures as F

@@ -10,8 +10,7 @@ import structlog
 
 from ..derived_path import DerivedPath, OutputsAll, OutputsNames
 from ..drv_parser import ChildMapNode, to_basic_derivation
-from ..serde import BuildDerivationRequest, BuildResultStatus, IsValidPathRequest
-from ..serde import StorePath as SerdeStorePath
+from ..serde import BuildDerivationRequest, BuildResultStatus, IsValidPathRequest, StorePath as SerdeStorePath
 from ..store_path import StorePath
 from .dependencies import DependencyGroupGoal
 from .goal import GoalHolder

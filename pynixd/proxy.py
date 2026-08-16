@@ -32,8 +32,7 @@ from .serde import (
     QueryValidPathsResponse,
 )
 from .serde.auth import Role
-from .serde.context import ReadContext, WriteContext
-from .serde.context import RequestContext as RequestContext
+from .serde.context import ReadContext, RequestContext as RequestContext, WriteContext
 from .serde.ids import StoreId
 from .serde.protocol import OptTrusted, Verbosity
 from .serde.wire_ops import WIRE_REGISTRY, WireResponse

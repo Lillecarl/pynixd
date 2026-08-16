@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING
 import anyio
 import pytest
 import structlog
-from pynixd.serde.ids import StoreId
 
 from pynixd import Server
 from pynixd.config import (
@@ -15,6 +14,7 @@ from pynixd.config import (
     ReverseAcceptorSettings,
     ReverseInitiatorSettings,
 )
+from pynixd.serde.ids import StoreId
 from pynixd.store import DaemonStore, LocalSocketStore
 from tests.conftest import STORE_PREFIX, make_test_spec, rmtree_robust
 from tests.test_features import TestFeatures as F
