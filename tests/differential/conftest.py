@@ -15,6 +15,7 @@ each one is a skip rather than a failure:
 
 from __future__ import annotations
 
+import dataclasses
 import importlib.util
 import shutil
 import sys
@@ -88,34 +89,53 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             item.add_marker(pytest.mark.skip(reason=reason))
 
 
-@pytest.fixture
-async def differential_roots(request: pytest.FixtureRequest) -> AsyncGenerator[tuple[Path, Path]]:
-    """Two empty store roots for one case: the pynixd arm and the Nix arm.
+@dataclasses.dataclass(frozen=True, slots=True)
+class DifferentialRoots:
+    """The store roots of one case.
 
-    Named after the case, so a failed run leaves two directories a person can
-    open and compare by hand.
+    `pynixd` and `nix` are the two arms that every test compares. `builder` is
+    the second store of the fleet test, and the single-store test leaves it
+    empty.
+    """
+
+    pynixd: Path
+    builder: Path
+    nix: Path
+
+
+@pytest.fixture
+async def differential_roots(request: pytest.FixtureRequest) -> AsyncGenerator[DifferentialRoots]:
+    """Empty store roots for one case.
+
+    Named after the case, so a failed run leaves directories a person can open
+    and compare by hand.
 
     The name is the parameter id and not `request.node.name`. The node name
     carries the function name too, which is 38 characters here, and the socket
-    that `LocalDaemon` puts under the pynixd root then passes 108 bytes and
-    cannot be bound. That was measured, not guessed: the first run of this
-    suite produced a 114-byte path and `AF_UNIX path too long`.
+    that `LocalDaemon` puts under a root then passes 108 bytes and cannot be
+    bound. That was measured, not guessed: the first run of this suite produced
+    a 114-byte path and `AF_UNIX path too long`.
     """
     callspec = getattr(request.node, "callspec", None)
     stem = callspec.id if callspec is not None else request.node.name
     stem = stem.replace("/", "_").replace("[", "-").replace("]", "")
-    root_a = DIFFERENTIAL_PREFIX / stem / "pynixd"
-    root_b = DIFFERENTIAL_PREFIX / stem / "nix"
+    roots = DifferentialRoots(
+        pynixd=DIFFERENTIAL_PREFIX / stem / "pynixd",
+        builder=DIFFERENTIAL_PREFIX / stem / "builder",
+        nix=DIFFERENTIAL_PREFIX / stem / "nix",
+    )
 
-    socket_path = root_a / _DAEMON_SOCKET_SUFFIX
-    if len(str(socket_path)) > _SUN_PATH_LIMIT:
-        pytest.fail(
-            f"the daemon socket of this case would be {len(str(socket_path))} bytes, "
-            f"and a Unix socket path holds {_SUN_PATH_LIMIT}. Shorten the case name "
-            f"or `DIFFERENTIAL_PREFIX`.\n  {socket_path}"
-        )
+    # Both pynixd-side roots host a daemon, so both have to fit.
+    for root in (roots.pynixd, roots.builder):
+        socket_path = root / _DAEMON_SOCKET_SUFFIX
+        if len(str(socket_path)) > _SUN_PATH_LIMIT:
+            pytest.fail(
+                f"the daemon socket of this case would be {len(str(socket_path))} bytes, "
+                f"and a Unix socket path holds {_SUN_PATH_LIMIT}. Shorten the case name "
+                f"or `DIFFERENTIAL_PREFIX`.\n  {socket_path}"
+            )
 
-    for root in (root_a, root_b):
+    for root in (roots.pynixd, roots.builder, roots.nix):
         rmtree_robust(root)
         root.mkdir(parents=True, exist_ok=True)
-    yield root_a, root_b
+    yield roots

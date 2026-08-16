@@ -42,13 +42,12 @@ from pynixd.serde import (
 from pynixd.serde.ids import StoreId
 from pynixd.store.local_db import LocalDBStore
 from tests._conftest.config import make_test_spec
+from tests.differential.conftest import DifferentialRoots
 from tests.differential.corpus import CA_CORPUS, CORPUS, Case
-from tests.differential.snapshot import compare, delta, take_snapshot
+from tests.differential.snapshot import StoreSnapshot, compare, delta, take_snapshot
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-    from tests.differential.snapshot import StoreSnapshot
 
 # The settings both arms instantiate and build under. They are the settings
 # that make an unprivileged chroot store work at all: no build users, so Nix
@@ -139,6 +138,42 @@ async def _build_with_pynixd(root: Path, drv_path: str, case: Case) -> Any:
         return await engine.build_paths_with_results(request)
 
 
+async def _build_with_pynixd_fleet(local_root: Path, builder_root: Path, drv_path: str, case: Case) -> Any:
+    """Realise *drv_path* through pynixd, with the build placed on a second store.
+
+    This is the shape pynixd exists for. The `local` store is the one a client
+    talks to, and `no_schedule` keeps every build off it, so the scheduler has
+    to place the work on `builder`. The outputs are then somebody's job to
+    bring back, and whose job that is, and whether the result matches what Nix
+    would have produced, is the question this arm asks.
+    """
+    common = {"extra_env": _nix_config_env(case), "no_probe": True}
+    local_spec = make_test_spec(store_id="local", store_path=local_root, no_schedule=True, **common)
+    builder_spec = make_test_spec(store_id="builder", store_path=builder_root, **common)
+    async with Server(
+        stores={
+            StoreId("local"): LocalDBStore(local_spec),
+            StoreId("builder"): LocalDBStore(builder_spec),
+        },
+        ssh_port=0,
+        http_port=0,
+        unix_path=local_root.parent / "pynixd.sock",
+    ) as server:
+        engine = GoalEngine(server.ctx)
+        request = BuildPathsWithResultsRequest(
+            derived_paths=cast("Any", {SerdeDerivedPath(value=f"{drv_path}!*")}),
+            build_mode=BuildMode.NORMAL,
+        )
+        # No wait for the outputs to arrive, and that is deliberate.
+        # `Scheduler.execute_build` marks a build complete before it calls
+        # `_collect_outputs`, which reads as a race, so this arm carried a two
+        # second sleep. Removing the sleep changed nothing across a full run,
+        # because `_collect_outputs` is awaited inside the same coroutine and
+        # the server teardown drains it. A workaround for a problem that will
+        # not reproduce is a workaround that hides the next one.
+        return await engine.build_paths_with_results(request)
+
+
 async def _build_with_nix(root: Path, drv_path: str) -> Any:
     """Realise every output of *drv_path* through the goal system of Nix."""
     environment = _nix_environment(root)
@@ -146,33 +181,27 @@ async def _build_with_nix(root: Path, drv_path: str) -> Any:
         return await store.build_paths_with_results([f"{drv_path}^*"])
 
 
-@pytest.mark.parametrize("case", [*CORPUS, *CA_CORPUS], ids=lambda case: case.name)
-async def test_both_engines_leave_the_same_store(case: Case, differential_roots: tuple[Path, Path]) -> None:
-    """pynixd's goal engine and Nix's goal system agree on what they built."""
-    root_a, root_b = differential_roots
+async def _instantiate_both(root_a: Path, root_b: Path, case: Case) -> str:
+    """Write the `.drv` of *case* into both stores, and return the one path.
 
+    Evaluation is deterministic, so the two have to agree. Saying so here is
+    what keeps the build the only difference between the arms.
+    """
     drv_a = await _instantiate(root_a, case)
     drv_b = await _instantiate(root_b, case)
     assert drv_a == drv_b, (
         f"the two arms instantiated {case.name} to different derivations, so the "
-        f"comparison below would say nothing: {drv_a} against {drv_b}"
+        f"comparison would say nothing: {drv_a} against {drv_b}"
     )
+    return drv_a
 
-    before_a = await _read_store(root_a)
-    response_a = await _build_with_pynixd(root_a, drv_a, case)
-    after_a = await _read_store(root_a)
 
-    before_b = await _read_store(root_b)
-    results_b = await _build_with_nix(root_b, drv_b)
-    after_b = await _read_store(root_b)
+def _assert_outcomes_agree(case: Case, response_a: Any, results_b: Any) -> None:
+    """Both engines reached the outcome the case declares.
 
-    added_a = delta(before_a, after_a)
-    added_b = delta(before_b, after_b)
-
-    # Both engines have to reach the outcome the case declares. Without this the
-    # failing cases would pass for the wrong reason: neither store gains a path
-    # when a build fails, and neither store gains a path when no build runs
-    # either. This is what separates the two.
+    Without this the failing cases pass for the wrong reason: a store gains no
+    path when a build fails, and it gains no path when no build runs either.
+    """
     pynixd_succeeded = all(result_succeeded(item.result) for item in response_a.results)
     nix_succeeded = all(result.success for result in results_b)
     assert pynixd_succeeded == case.expect_success, (
@@ -184,9 +213,13 @@ async def test_both_engines_leave_the_same_store(case: Case, differential_roots:
         f"declares success={case.expect_success}.\n  {results_b}"
     )
 
-    # A comparison of two empty sets proves nothing about a goal system. A build
-    # that is meant to succeed has to leave something behind, and saying so here
-    # is what stops this test passing because both arms did nothing.
+
+def _assert_stores_agree(case: Case, added_a: StoreSnapshot, added_b: StoreSnapshot) -> None:
+    """The two arms added the same paths, with the same facts about each.
+
+    A comparison of two empty sets proves nothing, so a case that is meant to
+    succeed has to have left something behind in both.
+    """
     if case.expect_success:
         assert added_a.paths, f"{case.name}: pynixd reported success and added no path to its store"
         assert added_b.paths, f"{case.name}: Nix reported success and added no path to its store"
@@ -197,3 +230,91 @@ async def test_both_engines_leave_the_same_store(case: Case, differential_roots:
         f"This case probes: {case.probes}\n\n"
         f"{difference.describe('pynixd', 'nix')}"
     )
+
+
+@pytest.mark.parametrize("case", [*CORPUS, *CA_CORPUS], ids=lambda case: case.name)
+async def test_both_engines_leave_the_same_store(case: Case, differential_roots: DifferentialRoots) -> None:
+    """pynixd's goal engine and Nix's goal system agree on what they built.
+
+    One store on the pynixd side, so this asks about the goal graph alone.
+    `test_a_distributed_build_reassembles_the_same_store` asks the fleet
+    question.
+    """
+    roots = differential_roots
+    drv = await _instantiate_both(roots.pynixd, roots.nix, case)
+
+    before_a = await _read_store(roots.pynixd)
+    response_a = await _build_with_pynixd(roots.pynixd, drv, case)
+    after_a = await _read_store(roots.pynixd)
+
+    before_b = await _read_store(roots.nix)
+    results_b = await _build_with_nix(roots.nix, drv)
+    after_b = await _read_store(roots.nix)
+
+    _assert_outcomes_agree(case, response_a, results_b)
+    _assert_stores_agree(case, delta(before_a, after_a), delta(before_b, after_b))
+
+
+@pytest.mark.parametrize("case", [*CORPUS, *CA_CORPUS], ids=lambda case: case.name)
+async def test_a_distributed_build_reassembles_the_same_store(
+    case: Case,
+    differential_roots: DifferentialRoots,
+) -> None:
+    """A build placed on a second store still leaves the client's store correct.
+
+    This is the question pynixd exists to answer. Every build runs on
+    `builder`, and the store a client talks to is `local`, which schedules
+    nothing. So each output has to travel, and the test asks whether what
+    arrives is what Nix would have produced -- the same NAR hash, the same
+    size, the same references, the same deriver and the same addressing.
+
+    References are the part most worth watching. The scheduler reassembles by
+    copying `ValidPaths` and `Refs` rows out of the builder's SQLite database
+    (`_direct_import_localdb_outputs`), and the `Refs` copy only carries rows
+    whose referrer is one of the new outputs. A reference to a path that has
+    not arrived yet inserts nothing and reports nothing, so the `chain` and
+    `diamond` cases are the ones that would show it.
+    """
+    roots = differential_roots
+    drv = await _instantiate_both(roots.pynixd, roots.nix, case)
+
+    before_a = await _read_store(roots.pynixd)
+    before_builder = await _read_store(roots.builder)
+    response_a = await _build_with_pynixd_fleet(roots.pynixd, roots.builder, drv, case)
+    after_a = await _read_store(roots.pynixd)
+    after_builder = await _read_store(roots.builder)
+
+    before_b = await _read_store(roots.nix)
+    results_b = await _build_with_nix(roots.nix, drv)
+    after_b = await _read_store(roots.nix)
+
+    _assert_outcomes_agree(case, response_a, results_b)
+
+    added_a = delta(before_a, after_a)
+    added_builder = delta(before_builder, after_builder)
+
+    if case.expect_success:
+        # The test is only about a fleet if the work really left the client's
+        # store. Without this, a `no_schedule` that stopped working would make
+        # this test a copy of the one above and nothing would report it.
+        assert added_builder.paths, (
+            f"{case.name}: the builder store gained no path, so the build did not "
+            f"go there. `no_schedule` on the local store is what should have "
+            f"forced it, and the scheduler placed the work somewhere else."
+        )
+        # Say where the output went. "the client store gained nothing" and
+        # "nothing was built anywhere" are different failures.
+        assert added_a.paths, (
+            f"{case.name}: pynixd reported success and the client's store gained no path, "
+            f"while the builder store gained {len(added_builder)}. The build ran and the "
+            f"outputs never travelled."
+        )
+        # Every path the client gained has to have come from the builder. This
+        # is the reassembly stated as a fact rather than assumed.
+        stranded = sorted(set(added_a.paths) - set(added_builder.paths))
+        assert not stranded, (
+            f"{case.name}: the client's store holds {len(stranded)} path(s) that the "
+            f"builder never produced:\n  " + "\n  ".join(stranded)
+        )
+
+    _assert_stores_agree(case, added_a, delta(before_b, after_b))
