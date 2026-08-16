@@ -575,12 +575,7 @@ class Scheduler:
             count=len(all_output_paths),
         )
 
-        log.debug(
-            "output_paths_left_to_frontend_daemon",
-            count=len(all_output_paths),
-            store_id=store.store_id,
-        )
-        await self._direct_import_localdb_outputs(store, all_output_paths)
+        await self._pull_outputs(store, all_output_paths)
 
         # Record build statistics
         if isinstance(self.local_store, LocalDBStore):
@@ -642,15 +637,51 @@ class Scheduler:
 
             await anyio.sleep(0.05)
 
-    async def _direct_import_localdb_outputs(
+    async def _pull_outputs(
         self,
         store: DaemonStore,
         paths: StorePathSet,
     ) -> None:
+        """Bring the outputs of a backend build into the local store.
+
+        The local store has to hold the paths, and a record of where they came
+        from is not enough. A client on a Unix socket never asks pynixd for a
+        NAR: `UDSRemoteStore::narFromPath` calls `Store::narFromPath`, which
+        reads the store directory through `LocalFSStore::getFSAccessor`. So
+        `nix copy --from unix://...` of a backend-built path reported "path
+        ... does not exist" and named the local store directory -- issue #160.
+
+        `ctx.output_locations` still holds, and it still answers for the
+        clients that do use the wire, such as `ssh-ng://` and the HTTP cache.
+        This is the transfer that path mapping cannot replace.
+        """
+        if not paths:
+            return
+        if await self._direct_import_localdb_outputs(store, paths):
+            return
+        log.debug(
+            "pull_outputs_streaming",
+            store_id=store.store_id,
+            count=len(paths),
+        )
+        await stream_paths_store_to_store(store, self.local_store, paths)
+
+    async def _direct_import_localdb_outputs(
+        self,
+        store: DaemonStore,
+        paths: StorePathSet,
+    ) -> bool:
+        """Copy the outputs through the file system, when both stores allow it.
+
+        Returns whether it did the work. It needs a `LocalDBStore` on both
+        ends, so it answers `False` for every backend that is not a local
+        daemon with a database pynixd can open, and `_pull_outputs` then uses
+        the wire.
+        """
         if not paths or not isinstance(store, LocalDBStore) or not isinstance(self.local_store, LocalDBStore):
-            return
+            return False
         if store.store_path is None or self.local_store.store_path is None:
-            return
+            return False
 
         for path in paths:
             src = store.store_path / str(path).lstrip("/")
@@ -706,6 +737,7 @@ class Scheduler:
             await dst_db.commit()
 
         log.info("direct_output_import_complete", count=len(paths), store_id=store.store_id)
+        return True
 
     @staticmethod
     def _copy_store_path(src, dst) -> None:

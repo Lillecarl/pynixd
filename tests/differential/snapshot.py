@@ -22,7 +22,7 @@ import dataclasses
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
+    from collections.abc import Collection, Iterable, Mapping
 
     from nanopynix.protocols import AsyncStore
 
@@ -150,8 +150,19 @@ def delta(before: StoreSnapshot, after: StoreSnapshot) -> StoreSnapshot:
     return StoreSnapshot(paths={path: facts for path, facts in after.paths.items() if path not in before.paths})
 
 
-def compare(left: StoreSnapshot, right: StoreSnapshot) -> StoreDifference:
-    """The difference between two snapshots."""
+def compare(
+    left: StoreSnapshot,
+    right: StoreSnapshot,
+    *,
+    ignore_fields: Collection[str] = (),
+) -> StoreDifference:
+    """The difference between two snapshots.
+
+    `ignore_fields` drops named fields from the field comparison, and from
+    that alone: a path present on one side and not the other is still a
+    difference. Pass a field only when the two sides cannot agree on it by
+    construction, and say why at the call site.
+    """
     left_paths = set(left.paths)
     right_paths = set(right.paths)
     disagreements: list[FieldDisagreement] = []
@@ -168,7 +179,7 @@ def compare(left: StoreSnapshot, right: StoreSnapshot) -> StoreDifference:
                 right=getattr(right_facts, field.name),
             )
             for field in dataclasses.fields(left_facts)
-            if getattr(left_facts, field.name) != getattr(right_facts, field.name)
+            if field.name not in ignore_fields and getattr(left_facts, field.name) != getattr(right_facts, field.name)
         )
     return StoreDifference(
         only_in_left=tuple(sorted(left_paths - right_paths)),

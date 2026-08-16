@@ -48,6 +48,7 @@ from tests.differential.corpus import CA_CORPUS, CORPUS, Case
 from tests.differential.snapshot import StoreSnapshot, compare, delta, take_snapshot
 
 if TYPE_CHECKING:
+    from collections.abc import Collection
     from pathlib import Path
 
 # The settings both arms instantiate and build under. They are the settings
@@ -227,7 +228,13 @@ def _assert_outcomes_agree(case: Case, response_a: Any, results_b: Any) -> None:
     )
 
 
-def _assert_stores_agree(case: Case, added_a: StoreSnapshot, added_b: StoreSnapshot) -> None:
+def _assert_stores_agree(
+    case: Case,
+    added_a: StoreSnapshot,
+    added_b: StoreSnapshot,
+    *,
+    ignore_fields: Collection[str] = (),
+) -> None:
     """The two arms added the same paths, with the same facts about each.
 
     A comparison of two empty sets proves nothing, so a case that is meant to
@@ -237,7 +244,7 @@ def _assert_stores_agree(case: Case, added_a: StoreSnapshot, added_b: StoreSnaps
         assert added_a.paths, f"{case.name}: pynixd reported success and added no path to its store"
         assert added_b.paths, f"{case.name}: Nix reported success and added no path to its store"
 
-    difference = compare(added_a, added_b)
+    difference = compare(added_a, added_b, ignore_fields=ignore_fields)
     assert not difference, (
         f"{case.name}: the two goal systems left different stores.\n"
         f"This case probes: {case.probes}\n\n"
@@ -374,15 +381,6 @@ async def _copy_from_pynixd(
         )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "pynixd leaves a backend-built output on the backend, and a `unix://` client reads "
-        "a NAR off the store directory rather than over the wire, so it finds nothing; "
-        "see issue #160. The goal engine half of that issue is fixed: the build succeeds "
-        "and the copy now starts."
-    ),
-)
 @pytest.mark.parametrize("case", _FLEET_WIRE_SUBSET, ids=lambda case: case.name)
 async def test_a_client_fetches_a_backend_built_output_through_pynixd(
     case: Case,
@@ -413,11 +411,12 @@ async def test_a_client_fetches_a_backend_built_output_through_pynixd(
     any of its mapping code runs. `EnsureDerivedPathGoal._ensure_opaque` asked
     the local store alone, so it failed every backend-resident path.
 
-    The second layer is why this is still `xfail`. `UDSRemoteStore::
-    narFromPath` calls `Store::narFromPath`, which reads the store **directory**
-    through `LocalFSStore::getFSAccessor`. A `unix://` client therefore never
-    sends `NarFromPath`, and `NarFromPathHandler` cannot serve it a path that
-    lives on a backend. pynixd has to put the output in the local store.
+    The second layer is why path mapping alone could not fix it.
+    `UDSRemoteStore::narFromPath` calls `Store::narFromPath`, which reads the
+    store **directory** through `LocalFSStore::getFSAccessor`. A `unix://`
+    client therefore never sends `NarFromPath`, and `NarFromPathHandler`
+    cannot serve it a path that lives on a backend. `Scheduler._pull_outputs`
+    puts the output in the local store, which is what this test proves.
     """
     roots = differential_roots
     drv = await _instantiate_both(roots.pynixd, roots.nix, case)
@@ -462,5 +461,13 @@ async def test_a_client_fetches_a_backend_built_output_through_pynixd(
 
     # Every path the client holds, compared against the store Nix left. The
     # client store started empty, so its whole contents are the delta.
+    #
+    # `ultimate` is dropped here, and only here. It marks a path the store
+    # built itself, and Nix clears it on every copy -- `Store::copyPaths`,
+    # `Store::addMultipleToStore` and `Store::copyStorePath` each set
+    # `ultimate = false` on the way in. The Nix arm built its path in place and
+    # the client received a copy of the pynixd one, so the two can never agree
+    # on this field, whatever pynixd does. The other two tests of this module
+    # compare a built store against a built store and keep it.
     client_store = await _read_store(roots.client)
-    _assert_stores_agree(case, client_store, added_b)
+    _assert_stores_agree(case, client_store, added_b, ignore_fields=("ultimate",))
