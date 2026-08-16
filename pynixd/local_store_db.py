@@ -10,6 +10,13 @@ of each seed path.
 
 If the database can't be opened (permissions, missing file, wrong schema),
 logs a warning and becomes unavailable — callers fall back to the daemon.
+
+pynixd also keeps tables of its own in this file. `db_migrations` owns their
+schema and their version, and `open` migrates them. The two answers are
+separate: `active` says that Nix's tables are readable, and `schema.usable`
+says that pynixd's tables are at the version this pynixd knows. A store can
+give the first and refuse the second, and then every fast path that reads
+`ValidPaths` still works.
 """
 
 from __future__ import annotations
@@ -26,6 +33,11 @@ import aiosqlite
 import anyio
 import structlog
 
+from .db_migrations import (
+    DERIVATION_STATS_TABLE,
+    SchemaState,
+    apply_migrations,
+)
 from .store_path import StorePath
 
 if TYPE_CHECKING:
@@ -71,21 +83,21 @@ WHERE id IN (
 );
 """
 
-INSERT_BUILD_STATS = """
-INSERT OR REPLACE INTO DerivationStats
+INSERT_BUILD_STATS = f"""
+INSERT OR REPLACE INTO {DERIVATION_STATS_TABLE}
 (pname, platform, derivation_json, cpu_user_us, cpu_system_us, duration_ms, last_built_at)
 VALUES (?, ?, ?, ?, ?, ?, unixepoch())
 """
 
-QUERY_BUILD_STATS_HINT = """
-SELECT duration_ms FROM DerivationStats
+QUERY_BUILD_STATS_HINT = f"""
+SELECT duration_ms FROM {DERIVATION_STATS_TABLE}
 WHERE pname = ? AND platform = ?
 ORDER BY last_built_at DESC
 LIMIT 1
 """
 
-QUERY_BUILD_STATS_CROSS_PLATFORM = """
-SELECT AVG(duration_ms) FROM DerivationStats
+QUERY_BUILD_STATS_CROSS_PLATFORM = f"""
+SELECT AVG(duration_ms) FROM {DERIVATION_STATS_TABLE}
 WHERE pname = ?
 """
 
@@ -116,6 +128,14 @@ class LocalStoreDB:
 
         self.pending_regtime: StorePathSet = set()
         self.flush_task: asyncio.Task[None] | None = None
+
+        self.schema = SchemaState(version=0, usable=False, reason="the schema was never checked")
+        """The state of the tables pynixd owns. `open` replaces it.
+
+        It starts unusable, so a `LocalStoreDB` built by hand answers no query
+        that needs one of those tables. `active` alone cannot say: it reports
+        that Nix's own tables are readable, which is a different question.
+        """
 
         self._all_conns: list[aiosqlite.Connection] = []
         self._idle_conns: list[aiosqlite.Connection] = []
@@ -243,22 +263,6 @@ class LocalStoreDB:
                             journal_mode=journal_mode,
                             detail="readers and writers of this database serialise; Nix chose the mode",
                         )
-                    await db.execute("DROP TABLE IF EXISTS DerivationStats")
-                    await db.execute(
-                        "CREATE TABLE DerivationStats ("
-                        "pname TEXT, "
-                        "platform TEXT, "
-                        "derivation_json TEXT, "
-                        "cpu_user_us INTEGER, "
-                        "cpu_system_us INTEGER, "
-                        "duration_ms INTEGER, "
-                        "last_built_at INTEGER, "
-                        "PRIMARY KEY (pname, platform)"
-                        ")",
-                    )
-                    await db.execute(
-                        "CREATE INDEX IF NOT EXISTS idx_drv_stats_lookup ON DerivationStats(pname, platform)",
-                    )
                 await db.execute("SELECT 1 FROM ValidPaths LIMIT 1")
 
         except (aiosqlite.Error, OSError) as e:
@@ -268,13 +272,24 @@ class LocalStoreDB:
                 error=e,
             )
             return cls.inactive(store_path, regtime_flush_interval=regtime_flush_interval)
-        else:
-            log.info(
-                "local_store_db_active",
+
+        instance.schema = await apply_migrations(db_path, read_only=read_only)
+        if not instance.schema.usable:
+            log.warning(
+                "pynixd_tables_unavailable",
                 db_path=db_path,
-                mode="read-write" if not read_only else "read-only",
+                version=instance.schema.version,
+                reason=instance.schema.reason,
+                detail="the fast paths that read Nix's own tables are not affected",
             )
-            return instance
+        log.info(
+            "local_store_db_active",
+            db_path=db_path,
+            mode="read-write" if not read_only else "read-only",
+            pynixd_schema_version=instance.schema.version,
+            pynixd_tables=instance.schema.usable,
+        )
+        return instance
 
     # ── Internal utility queries ──────────────────────────────────────
     # These are not operation dispatches but internal helpers used by
@@ -315,7 +330,7 @@ class LocalStoreDB:
         duration_ms: int,
     ) -> None:
         """Record build statistics for a derivation."""
-        if not self.active or self.read_only:
+        if not self.active or self.read_only or not self.schema.usable:
             return
         try:
             async with self.acquire_conn() as db:
@@ -344,7 +359,7 @@ class LocalStoreDB:
         Matches on pname + platform, returning the most recent duration.
         Falls back to cross-platform average if no same-platform entry exists.
         """
-        if not self.active:
+        if not self.active or not self.schema.usable:
             return None
         try:
             # 1. Most recent same-platform duration

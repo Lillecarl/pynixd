@@ -205,7 +205,7 @@ async def test_build_stats_recording(tmp_path: Path) -> None:
         # 2. Check the DB
         assert pynixd_local.db is not None
         async with pynixd_local.db.execute(
-            "SELECT pname, duration_ms FROM DerivationStats WHERE pname = 'fast-pkg'",
+            "SELECT pname, duration_ms FROM PynixdDerivationStats WHERE pname = 'fast-pkg'",
         ) as cursor:
             row = await cursor.fetchone()
             assert row is not None
