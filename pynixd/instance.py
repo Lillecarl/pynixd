@@ -351,7 +351,20 @@ class Server:
             )
         else:
             self.ctx.db = None
-            log.warning("local_store_db_disabled")
+            # Say which store it is and why. The line carried no field at all,
+            # so a reader could see that the SQLite fast path was off and not
+            # what had turned it off -- and the two ways to build a local store
+            # disagree about the answer. `PynixdSettings.to_stores` hardcodes
+            # `LocalStore`, so the shipped `pynixd daemon` always lands here;
+            # `Server.__init__` calls `spec.to_store()` and honours
+            # `use_db`, so a programmatic server and the test suite do not.
+            # Issue #163 holds the decision.
+            log.warning(
+                "local_store_db_disabled",
+                store_id=str(local_store.store_id),
+                store_type=type(local_store).__name__,
+                reason="the local store is not a LocalDBStore, so no SQLite fast path is available",
+            )
 
         if self.ctx.db:
             self.ctx.db.start()
