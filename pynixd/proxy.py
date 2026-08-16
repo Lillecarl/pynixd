@@ -331,13 +331,7 @@ class DaemonProxy:
 
     def store_for_output_path(self, path: str) -> DaemonStore | None:
         """Look up the DaemonStore that produced a given output path."""
-        store_id = self.ctx.output_locations.get(path)
-        if store_id is None:
-            return None
-        store = self.ctx._stores.get(store_id)
-        if not isinstance(store, DaemonStore):
-            return None
-        return store
+        return self.ctx.store_for_output_path(path)
 
     async def dispatch(self, op_num: int) -> WireResponse | None:
         """Route an operation to its request type's handle method."""

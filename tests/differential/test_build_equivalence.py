@@ -377,9 +377,10 @@ async def _copy_from_pynixd(
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        "a client cannot fetch a backend-built output through pynixd; see issue #160. "
-        "The build runs on the builder and `_collect_outputs` records the location, "
-        "but the client is still told the path is invalid and tries to build it."
+        "pynixd leaves a backend-built output on the backend, and a `unix://` client reads "
+        "a NAR off the store directory rather than over the wire, so it finds nothing; "
+        "see issue #160. The goal engine half of that issue is fixed: the build succeeds "
+        "and the copy now starts."
     ),
 )
 @pytest.mark.parametrize("case", _FLEET_WIRE_SUBSET, ids=lambda case: case.name)
@@ -404,6 +405,19 @@ async def test_a_client_fetches_a_backend_built_output_through_pynixd(
     backend that is not a local daemon takes, and the client is a real `nix`
     process copying out of pynixd over its Unix socket. What the client ends up
     with is compared against what Nix produced.
+
+    Issue #160 has two layers, and the first one is fixed. `nix copy`
+    realises its installables against the source store before it copies, so a
+    store path installable arrives as an opaque derived path in a `BuildPaths`
+    request -- and `DaemonProxy.execute` hands that to the goal engine before
+    any of its mapping code runs. `EnsureDerivedPathGoal._ensure_opaque` asked
+    the local store alone, so it failed every backend-resident path.
+
+    The second layer is why this is still `xfail`. `UDSRemoteStore::
+    narFromPath` calls `Store::narFromPath`, which reads the store **directory**
+    through `LocalFSStore::getFSAccessor`. A `unix://` client therefore never
+    sends `NarFromPath`, and `NarFromPathHandler` cannot serve it a path that
+    lives on a backend. pynixd has to put the output in the local store.
     """
     roots = differential_roots
     drv = await _instantiate_both(roots.pynixd, roots.nix, case)

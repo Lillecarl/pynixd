@@ -61,19 +61,44 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         return await self._ensure_flat_derivation()
 
     async def _ensure_opaque(self) -> GoalResult:
+        store_path = StorePath(self.derived_path.drv_path)
         path = SerdeStorePath(path=self.derived_path.drv_path)
         response = await self.engine.ctx.local_store.execute(IsValidPathRequest(path=path))
         if response.valid:
-            store_path = StorePath(self.derived_path.drv_path)
-            return GoalResult(
-                result=goal_success().result,
-                resolved_outputs={"out": store_path},
-                produced_paths={store_path},
+            return self._opaque_success(store_path)
+
+        # A path a backend built is available through pynixd, and it is not in
+        # the local store. `NarFromPathHandler` and `DaemonProxy` both read it
+        # from the backend that holds it, so a client that asks for it gets it.
+        #
+        # Only the local store was asked here until issue #160. A fleet build
+        # therefore succeeded, recorded its outputs in `ctx.output_locations`,
+        # and then failed the very next request for those outputs with "opaque
+        # path is not valid locally". `nix copy` asks this way: it realises its
+        # installables against the source store first, and a store path
+        # installable becomes an opaque derived path.
+        backend = self.engine.ctx.store_for_output_path(str(store_path))
+        if backend is not None:
+            log.debug(
+                "opaque_path_resident_on_backend",
+                path=str(store_path),
+                store_id=backend.store_id,
             )
-        substitute = await self._try_substitute_path(StorePath(self.derived_path.drv_path))
+            return self._opaque_success(store_path)
+
+        substitute = await self._try_substitute_path(store_path)
         if substitute is not None:
             return substitute
         return goal_failure(f"pynixd: opaque path is not valid locally: {self.derived_path}", BuildResultStatus.UNKNOWN)
+
+    @staticmethod
+    def _opaque_success(store_path: StorePath) -> GoalResult:
+        """An opaque path needs no build, so the path itself is the one output."""
+        return GoalResult(
+            result=goal_success().result,
+            resolved_outputs={"out": store_path},
+            produced_paths={store_path},
+        )
 
     async def _ensure_nested(self) -> GoalResult:
         outer_goal = await self.engine.get_ensure_derived_path_goal(
