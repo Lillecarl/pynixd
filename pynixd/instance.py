@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlsplit
@@ -33,6 +34,15 @@ if TYPE_CHECKING:
     from aiohttp import web
 
 log = structlog.get_logger(__name__)
+
+# The size of `sun_path` in `struct sockaddr_un`, per platform. The kernel
+# copies the path into that array, so a longer one cannot be bound at all.
+# `sys.platform` and not a `uname` call, because the value is a property of
+# the C library this process was built against.
+_SUN_PATH_LIMIT = {"linux": 108, "darwin": 104}
+_SUN_PATH_LIMIT_DEFAULT = 104
+"""The smaller of the two, for a platform this table does not name. A path
+that a stricter limit accepts is bindable everywhere."""
 
 
 def _default_http_substituter_urls(local_store: Store) -> list[str]:
@@ -166,6 +176,7 @@ class Server:
 
     @staticmethod
     def _ensure_unix_socket_parent(socket_path: Path) -> None:
+        Server._check_unix_socket_length(socket_path)
         parent = socket_path.parent
         try:
             parent.mkdir(parents=True, exist_ok=True)
@@ -175,6 +186,26 @@ class Server:
             raise RuntimeError(f"Unix socket parent is not a directory: {parent}")
         if not os.access(parent, os.W_OK):
             raise RuntimeError(f"Unix socket directory is not writable: {parent}")
+
+    @staticmethod
+    def _check_unix_socket_length(socket_path: Path) -> None:
+        """Refuse a socket path the operating system cannot bind.
+
+        `sun_path` is `char[108]` on Linux and `char[104]` on darwin, and a
+        path over the limit fails at `bind`. The failure arrives late and from
+        the wrong place: the directory is made, the server starts, and uvloop
+        raises `OSError: AF_UNIX path too long` with no path in the message.
+
+        The check is here, beside the directory check, so the error names the
+        path and the limit before anything is created.
+        """
+        limit = _SUN_PATH_LIMIT.get(sys.platform, _SUN_PATH_LIMIT_DEFAULT)
+        encoded = len(os.fsencode(socket_path))
+        if encoded > limit:
+            raise RuntimeError(
+                f"Unix socket path is {encoded} bytes, and {sys.platform} allows {limit}: {socket_path}. "
+                f"Shorten `unix_path`."
+            )
 
     @property
     def local_store(self) -> LocalStore:
