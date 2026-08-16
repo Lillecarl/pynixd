@@ -5,24 +5,65 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import structlog
+
 from ..local_store_db import LocalStoreDB
 from .local_daemon import LocalStore
+
+log = structlog.get_logger(__name__)
 
 
 class LocalDBStore(LocalStore):
     """LocalStore with SQLite database for fast-path query optimizations.
 
-    The database is always present — it is created unconditionally
-    during start().  All executor methods use SQLite fast-paths
-    exclusively; there is no fallthrough to wire delegation.
+    Each executor method answers from SQLite when the database is open, and
+    returns `None` when it is not. `DaemonStore.execute` treats a falsy result
+    as "no fast path" and calls the wire, so a database pynixd cannot open
+    costs correctness nothing.
+
+    **The fast paths are valid for a plain local store only. A
+    `local-overlay-store` must not use this class.** They read one database,
+    and an overlay store keeps its lower store's paths in a second one:
+    `LocalOverlayStore::isValidPathUncached` asks `LocalStore` first, then
+    `lowerStore`, and only then copies the lower path's info up with
+    `LocalStore::registerValidPath`. Reading the upper database alone would
+    report a valid lower path as invalid *and* skip the sync that would have
+    made it valid. The same applies to `queryPathInfoUncached`,
+    `queryReferrers`, `queryValidPaths` and `queryPathFromHashPart`, each of
+    which overlay overrides for the same reason.
+
+    `_refuses_a_database` is what keeps that from happening quietly.
     """
 
     db: LocalStoreDB
 
+    def _refuses_a_database(self) -> str | None:
+        """Why this store must not use SQLite, or `None` when it may.
+
+        Only the store URI can answer this, and pynixd builds the managed
+        daemon's URI itself -- `LocalStore.ensure_daemon` passes `--store
+        <store_path>`, which is always a plain local store. `extra_args` is
+        the one way a different store reaches the daemon, because it is
+        appended after that flag and a later `--store` wins.
+        """
+        overlay = next((arg for arg in self.extra_args if "local-overlay" in arg), None)
+        if overlay is not None:
+            return (
+                f"the daemon is started with {overlay!r}, and the SQLite fast paths read one "
+                f"database. An overlay store keeps its lower paths in another one, so a fast "
+                f"path would call a valid path invalid."
+            )
+        return None
+
     async def start(self, sync_paths: bool = True) -> None:
         """Initialise the SQLite database and start the daemon store."""
         await self.ensure_daemon()
-        self.db = await LocalStoreDB.open(self.store_path or Path("/"))
+        refusal = self._refuses_a_database()
+        if refusal is not None:
+            log.warning("local_store_db_refused", store_id=str(self.store_id), reason=refusal)
+            self.db = LocalStoreDB.inactive(self.store_path or Path("/"))
+        else:
+            self.db = await LocalStoreDB.open(self.store_path or Path("/"))
         await super().start(sync_paths=sync_paths)
 
     async def close(self) -> None:

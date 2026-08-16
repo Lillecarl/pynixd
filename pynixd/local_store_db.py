@@ -122,6 +122,26 @@ class LocalStoreDB:
         self._pool_lock = anyio.Lock()
         self._sem = anyio.Semaphore(max_conns)
 
+    @classmethod
+    def inactive(
+        cls,
+        store_path: Path | None,
+        *,
+        regtime_flush_interval: float = _DEFAULT_REGTIME_FLUSH_INTERVAL,
+    ) -> LocalStoreDB:
+        """An instance that answers no query, for a store with no usable database.
+
+        Three callers want this and each built it by hand: no database file,
+        a database that would not open, and a store this class must not read
+        at all (`LocalDBStore._refuses_a_database`).
+        """
+        return cls(
+            db_path=None,
+            store_path=store_path,
+            read_only=True,
+            regtime_flush_interval=regtime_flush_interval,
+        )
+
     @property
     def active(self) -> bool:
         return self.db_path is not None
@@ -179,15 +199,16 @@ class LocalStoreDB:
         store_path: Path,
         regtime_flush_interval: float = _DEFAULT_REGTIME_FLUSH_INTERVAL,
     ) -> LocalStoreDB:
-        """Open the Nix store database. Returns an instance (possibly with no DB)."""
+        """Open the Nix store database. Returns an instance (possibly with no DB).
+
+        This never raises. A store whose database pynixd cannot read gets an
+        inactive instance, every fast path of `LocalDBStore` declines, and
+        `DaemonStore.execute` uses the wire. That is what lets `use_db` default
+        to true.
+        """
         db_path = resolve_db_path(store_path)
         if db_path is None:
-            return cls(
-                db_path=None,
-                store_path=store_path,
-                read_only=True,
-                regtime_flush_interval=regtime_flush_interval,
-            )
+            return cls.inactive(store_path, regtime_flush_interval=regtime_flush_interval)
 
         db_dir = db_path.parent
         can_write = os.access(db_dir, os.W_OK)
@@ -203,7 +224,25 @@ class LocalStoreDB:
 
             async with instance.acquire_conn() as db:
                 if not read_only:
-                    await db.execute("PRAGMA journal_mode=WAL")
+                    # The journal mode is Nix's to choose, and this used to set
+                    # WAL unconditionally. Nix picks it from `use-sqlite-wal`
+                    # (`settings.useSQLiteWAL ? "wal" : "truncate"`) and rewrites
+                    # the mode on every `LocalStore` open when it differs, so
+                    # forcing it here made the two flip the file back and forth.
+                    # The setting defaults to true, so nothing changes on a
+                    # normal machine; where it is false -- WSL1, or a store a
+                    # person put on a network filesystem -- it is false for a
+                    # reason and pynixd must not overrule it.
+                    async with db.execute("PRAGMA main.journal_mode") as cursor:
+                        row = await cursor.fetchone()
+                    journal_mode = str(row[0]).lower() if row else "unknown"
+                    if journal_mode != "wal":
+                        log.info(
+                            "nix_db_journal_mode_not_wal",
+                            db_path=db_path,
+                            journal_mode=journal_mode,
+                            detail="readers and writers of this database serialise; Nix chose the mode",
+                        )
                     await db.execute("DROP TABLE IF EXISTS DerivationStats")
                     await db.execute(
                         "CREATE TABLE DerivationStats ("
@@ -228,12 +267,7 @@ class LocalStoreDB:
                 db_path=db_path,
                 error=e,
             )
-            return cls(
-                db_path=None,
-                store_path=store_path,
-                read_only=True,
-                regtime_flush_interval=regtime_flush_interval,
-            )
+            return cls.inactive(store_path, regtime_flush_interval=regtime_flush_interval)
         else:
             log.info(
                 "local_store_db_active",
@@ -404,12 +438,41 @@ class LocalStoreDB:
 
 
 def resolve_db_path(store_path: Path) -> Path | None:
-    """Compute path to db.sqlite for a given store root."""
+    """The `db.sqlite` of a store root, or `None` when there is none to use.
+
+    Returns `None` rather than raising. `LocalStoreDB.open` is what decides
+    whether the SQLite fast paths are available, and `use_db` defaults to
+    true, so a store pynixd cannot read has to degrade and not stop the
+    daemon.
+
+    This used to `mkdir(parents=True)` the database directory whenever the
+    file was missing, and let the `OSError` out. Two things went wrong with
+    that. A store root pynixd may not write -- a read-only file system, or a
+    store owned by another user -- raised straight out of `open` and took the
+    daemon's startup with it. And a path that holds no Nix store at all got
+    `nix/var/nix/db/` created inside it by a function named "resolve".
+
+    The directory is still created, because a managed daemon writes its
+    database there and `LocalDBStore.start` calls `ensure_daemon` first, so
+    the usual case is a directory that already exists. A failure to create it
+    now means the fast paths are off, and nothing more.
+    """
     if store_path == Path("/") or not store_path:
         db_path = Path("/nix/var/nix/db/db.sqlite")
     else:
         db_path = store_path / "nix" / "var" / "nix" / "db" / "db.sqlite"
 
-    if not db_path.exists():
+    if db_path.exists():
+        return db_path
+
+    try:
         db_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        log.warning(
+            "nix_db_directory_unavailable",
+            db_path=str(db_path),
+            error=str(exc),
+            detail="the SQLite fast paths are off for this store; every query uses the wire",
+        )
+        return None
     return db_path

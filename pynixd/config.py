@@ -413,8 +413,6 @@ class PynixdSettings(BaseSettings):
 
     def to_stores(self) -> dict[StoreId, Store]:
         """Convert all store specs to live Store instances."""
-        from .store import LocalStore
-
         stores: dict[StoreId, Store] = {}
         for key, spec in self.stores.items():
             spec.settings = self
@@ -427,7 +425,20 @@ class PynixdSettings(BaseSettings):
                 monitor=False,
                 settings=self,
             )
-            stores[StoreId("local")] = LocalStore(spec)
+            # `spec.to_store`, so the implicit local store honours `use_db`
+            # like a configured one. This line read `LocalStore(spec)`, which
+            # ignored the option and hardcoded the answer. `use_db` defaults to
+            # true, and a configured `stores.local` already reached the loop
+            # above and got a `LocalDBStore` -- so the SQLite fast paths were
+            # on for anyone who wrote the store out and off for everyone who
+            # did not, including every deployment of `pynixd daemon`.
+            #
+            # `LocalStoreDB.open` degrades on its own when it cannot open the
+            # database: it returns an inactive instance, every fast path of
+            # `LocalDBStore` returns `None` for that, and `DaemonStore.execute`
+            # falls through to the wire. So "on by default" costs a store that
+            # cannot read the database nothing but one warning.
+            stores[StoreId("local")] = spec.to_store(store_id=str(StoreId("local")))
 
         return stores
 
