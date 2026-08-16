@@ -105,6 +105,7 @@ class DaemonStore(Store):
             gate=self.gate,
             idle_ttl=self.idle_ttl,
             on_connection_created=self._on_connection_created,
+            on_pool_empty=self._on_pool_empty,
         )
 
         self.monitor: ResourceMonitor | None = None
@@ -349,6 +350,16 @@ class DaemonStore(Store):
         return await self.call(request, client=client, suppress_last=suppress_last)
 
     # ── Probing ─────────────────────────────────────────────────────
+
+    async def _on_pool_empty(self) -> None:
+        """Release whatever this store holds under the pool. Nothing, by default.
+
+        A store whose connections ride on a transport of its own overrides
+        this. `SSHStore` does: its `asyncssh` connection outlives every
+        channel, and holding it open keeps a builder that starts on demand
+        awake for as long as pynixd runs.
+        """
+        return None
 
     def _on_connection_created(self, conn: Connection) -> None:
         self.version = conn.version

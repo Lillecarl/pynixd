@@ -42,6 +42,7 @@ class ConnectionPool:
         idle_ttl: float = 10.0,
         max_connections: int = 64,
         on_connection_created: Callable[[Connection], None] | None = None,
+        on_pool_empty: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         """Configure pool with connection factory, memory gate, and concurrency limits."""
 
@@ -51,6 +52,13 @@ class ConnectionPool:
         self.idle_ttl = idle_ttl
         self._slots = anyio.Semaphore(max_connections)
         self.on_connection_created = on_connection_created
+        self.on_pool_empty = on_pool_empty
+        """Called once the pool holds no connection at all, active or idle.
+
+        A store that owns a transport under the pool releases it here. An SSH
+        store holds one `asyncssh` connection for every channel it opens, and
+        nothing above the pool knows when the last one goes away.
+        """
 
         self.active_connections = 0
         self.idle_conns: list[tuple[Connection, float]] = []
@@ -104,6 +112,26 @@ class ConnectionPool:
                 )
                 with suppress(Exception):
                     await conn.close()
+
+            await self._notify_if_empty()
+
+    async def _notify_if_empty(self) -> None:
+        """Tell the owner when the last connection has gone.
+
+        Checked after the sweep closes what expired, which is the only place
+        the pool can reach zero without someone about to use it again.
+        """
+        if self.on_pool_empty is None:
+            return
+        if self.active_connections or self.idle_conns or self.all_conns:
+            return
+        log.debug("pool_empty", store_id=self.store_id)
+        try:
+            await self.on_pool_empty()
+        except Exception:
+            # The owner's teardown is not this sweep's business to fail on,
+            # and the sweep task has nobody to report to.
+            log.exception("pool_empty_callback_failed", store_id=self.store_id)
 
     async def get_or_create_conn(self) -> Connection:
         """Return a reusable idle connection, or create a new one."""

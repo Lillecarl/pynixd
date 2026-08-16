@@ -61,8 +61,19 @@ class SSHStore(DaemonStore):
         monitor_enabled: bool = True,
         client_keys: list[str | Path | asyncssh.SSHKey] | None = None,
         settings: PynixdSettings | None = None,
+        persistent_connection: bool = True,
     ) -> None:
         """Initialise SSH connection state, backoff, and resource monitor settings."""
+        self.persistent_connection = persistent_connection
+        if not persistent_connection and monitor_enabled:
+            # The monitor polls over this store's own SSH connection, so it
+            # would hold the builder awake by itself and undo the whole point
+            # of turning the persistent connection off.
+            log.warning(
+                "ssh_monitor_holds_connection",
+                store_id=self.store_id,
+                detail="persistent_connection is off but monitor is on; set monitor = false",
+            )
         self.conn = None
         self.ssh_lock = anyio.Lock()
         self._bg_tasks = set()
@@ -75,9 +86,44 @@ class SSHStore(DaemonStore):
         self.monitor: ResourceMonitor | None = None
 
     async def start(self, sync_paths: bool = True) -> None:
-        """Establish SSH connection and initialize the store."""
-        await self.ensure_ssh()
+        """Connect, unless this store is configured not to hold a connection.
+
+        Connecting here is the default and is deliberate: the connection's
+        state is the health of the store. The reconnect loop, the backoff and
+        the circuit breaker all read it, and the resource monitor polls over
+        it, so a builder that is up looks up because the socket is there.
+
+        `persistent_connection = false` gives that up on purpose, for a
+        builder that starts on demand. `create_conn` already calls
+        `ensure_ssh()`, so the connection is then made by the first thing that
+        needs it, and `_on_pool_empty` drops it once the last channel closes.
+        Issue #164.
+        """
+        if self.persistent_connection:
+            await self.ensure_ssh()
+        else:
+            log.info(
+                "ssh_connect_deferred",
+                store_id=self.store_id,
+                host=self.host,
+                detail="persistent_connection is off; this store connects on first use",
+            )
         await super().start(sync_paths=sync_paths)
+
+    async def _on_pool_empty(self) -> None:
+        """Drop the SSH connection once no channel is left on it.
+
+        Only when this store does not hold one on purpose. The pool reaps the
+        daemon channels, and the `asyncssh` connection underneath them belongs
+        to this store, so nothing else can close it -- which is why removing
+        the eager connect alone was not enough. The first build would pin an
+        on-demand builder awake for the lifetime of pynixd, the same defect
+        and half as visible.
+        """
+        if self.persistent_connection or self.conn is None:
+            return
+        log.info("ssh_disconnecting_idle", store_id=self.store_id, host=self.host)
+        await self.close_ssh()
 
     def start_psi_polling(self, sftp: asyncssh.SFTPClient) -> None:
         """Start resource pressure polling over SFTP using the GenericResourcePoller."""
@@ -258,6 +304,7 @@ class SSHSubprocessStore(SSHStore):
             monitor_enabled=spec.monitor,
             client_keys=list(spec.client_keys) if spec.client_keys else None,
             settings=spec.settings,
+            persistent_connection=spec.persistent_connection,
         )
         self.ssh_processes: list[asyncssh.SSHClientProcess] = []
 
@@ -323,6 +370,7 @@ class SSHSocketStore(SSHStore):
             monitor_enabled=spec.monitor,
             client_keys=list(spec.client_keys) if spec.client_keys else None,
             settings=spec.settings,
+            persistent_connection=spec.persistent_connection,
         )
 
     async def create_conn(self) -> Connection:

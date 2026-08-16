@@ -230,6 +230,26 @@ class SSHSubprocessStoreSpec(StoreSpecBase):
     store_path: Path = Path("/")
     monitor: bool = True
     client_keys: list[Any] = Field(default_factory=list)
+    persistent_connection: bool = True
+    """Whether to hold one SSH connection open for the life of the store.
+
+    True, the default, is what a normal remote builder wants. The connection
+    is opened at startup and kept, so its state *is* the health of the store:
+    the reconnect loop, the backoff and the circuit breaker all read it, and
+    the resource monitor polls over it. A builder that is up looks up because
+    the socket is there.
+
+    False suits a builder that starts on demand -- a local VM behind a
+    socket-activated unit, with a watchdog that stops it once the last
+    connection closes. pynixd then connects on first use and drops the
+    transport once its pool holds nothing, so the builder is free to go away.
+    The cost is the measurement above: with no connection there is nothing to
+    read the store's health from, and pynixd learns a backend is down by
+    failing to reach it.
+
+    Set `monitor = false` alongside it. The monitor polls over the same
+    connection, so it would hold the builder awake by itself. Issue #164.
+    """
 
     def to_store(self, store_id: str) -> SSHSubprocessStore:
         """Build an ``SSHSubprocessStore`` from this spec."""
@@ -254,6 +274,26 @@ class SSHSocketStoreSpec(StoreSpecBase):
     socket_path: Path = Path("/nix/var/nix/daemon-socket/socket")
     monitor: bool = True
     client_keys: list[Any] = Field(default_factory=list)
+    persistent_connection: bool = True
+    """Whether to hold one SSH connection open for the life of the store.
+
+    True, the default, is what a normal remote builder wants. The connection
+    is opened at startup and kept, so its state *is* the health of the store:
+    the reconnect loop, the backoff and the circuit breaker all read it, and
+    the resource monitor polls over it. A builder that is up looks up because
+    the socket is there.
+
+    False suits a builder that starts on demand -- a local VM behind a
+    socket-activated unit, with a watchdog that stops it once the last
+    connection closes. pynixd then connects on first use and drops the
+    transport once its pool holds nothing, so the builder is free to go away.
+    The cost is the measurement above: with no connection there is nothing to
+    read the store's health from, and pynixd learns a backend is down by
+    failing to reach it.
+
+    Set `monitor = false` alongside it. The monitor polls over the same
+    connection, so it would hold the builder awake by itself. Issue #164.
+    """
 
     def to_store(self, store_id: str) -> SSHSocketStore:
         """Build an ``SSHSocketStore`` from this spec."""
