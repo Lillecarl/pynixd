@@ -44,6 +44,11 @@ insert_after() {
 
 rm -rf "${WORK:?}"
 mkdir -p "$WORK"
+# Nix refuses a store when a parent directory of it is a symbolic link, and it
+# says so: "the path ... is a symlink; this is not allowed for the Nix store
+# and its parent directories". The store of each test is under this directory,
+# so the name must hold no link. `/scratch` of the build machine is one.
+WORK=$(readlink -f "$WORK")
 # `tests/functional/.version` and `tests/functional/nix-meson-build-support`
 # are symbolic links to `../../`, so the whole source must come across.
 cp -r "$NIX_SRC/." "$WORK/src"

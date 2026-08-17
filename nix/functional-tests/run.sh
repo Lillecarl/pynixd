@@ -12,12 +12,18 @@
 set -euo pipefail
 
 WORK=${WORK:-/scratch/nixft}
-export TMPDIR=${TMPDIR_ROOT:-/scratch/nixft-tmp}
 
 if [[ ! -d "$WORK/build" ]]; then
     echo "run.sh: no build directory at $WORK/build. Run setup.sh first." >&2
     exit 2
 fi
+
+# `setup.sh` resolved this name, and the store of each test must hold no
+# symbolic link in any parent. See the comment there.
+WORK=$(readlink -f "$WORK")
+# The store of each test goes under here. It stays inside the work directory,
+# so one version of Nix cannot reach the stores of another.
+export TMPDIR=${TMPDIR_ROOT:-$WORK/tmp}
 
 # A store path holds no write permission, so a plain `rm -rf` of the previous
 # run fails, and `set -e` then ends this script before one test starts.
@@ -34,7 +40,7 @@ export NIX_REMOTE_=daemon
 
 # `vars.sh` reads NIX_STORE under `set -u`, so the name must exist. It must
 # also be empty. A builder reads NIX_STORE to find the store directory, and
-# each test has its own store at `$TEST_ROOT/store`. Nix's NixOS functional
+# each test has its own store at `$TEST_ROOT/nix/store`. Nix's NixOS functional
 # test sets `/nix/store`, because there the store really is `/nix/store`.
 export NIX_STORE=
 
@@ -84,3 +90,11 @@ echo "=== SUMMARY ==="
 jq -r '.result' "$WORK/build/meson-logs/testlog.json" | sort | uniq -c | sort -rn
 echo "=== FAILURES ==="
 jq -r 'select(.result == "FAIL") | .name' "$WORK/build/meson-logs/testlog.json"
+
+# Keep the log of this run. The next `meson test` writes over the file, and a
+# comparison of two runs needs both. `compare.py` beside this script reads two
+# of these and states which tests the second run alone fails.
+if [[ -n "${SAVE_LOG:-}" ]]; then
+    cp "$WORK/build/meson-logs/testlog.json" "$SAVE_LOG"
+    echo "run.sh: log saved at $SAVE_LOG"
+fi

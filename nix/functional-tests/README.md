@@ -26,106 +26,120 @@ each patch names its reason in the file.
 
 ## Run it
 
-`setup.sh` and `run.sh` need `meson`, `ninja`, `jq`, `git` and `nix` on PATH.
-The tests build derivations, so run this on Linux.
+**`nixFunctionalTests` in `default.nix` builds one program for each supported
+Nix version, and that program is the way to run this.** It carries its Nix,
+the test scripts of that Nix, pynixd, and every tool the scripts need. Nothing
+comes off the PATH of the machine.
 
 ```sh
-# The source of the tests. The binary cache holds the built suite as well, at
-# pkgs.nixVersions.nixComponents_2_34.nix-functional-tests.
-NIX_SRC=$(nix build --file . pkgs.nixVersions.nix_2_34.src --no-link --print-out-paths)
-
-NIX_SRC=$NIX_SRC ./setup.sh
-./run.sh                    # every suite
-./run.sh --suite ca         # one suite
-./run.sh gc fetchurl        # named tests
+nix build --file . nixFunctionalTests.nix_2_34 --out-link result
+./result/bin/nanopynix-nixft-nix_2_34 all
 ```
 
+`nix_2_34`, `nix_2_35` and `git` are the versions, and they are the versions
+that `supportedNixFloor` in `default.nix` selects. The commands are:
+
+| command   | what it does                                           |
+| --------- | ------------------------------------------------------ |
+| `setup`   | prepare the suite. Run it first. It wipes the work dir. |
+| `control` | run the suite against a plain `nix daemon`              |
+| `pynixd`  | run the suite against pynixd                            |
+| `compare` | state which tests pynixd alone fails                    |
+| `all`     | all four, in that order                                 |
+
+Each further argument goes to `meson test`, so `control --suite ca` runs one
+suite and `control gc fetchurl` runs two tests.
+
+`NIXFT_WORK` names the work directory, and `JOBS` gives the number of tests at
+a time. The default is one.
+
 **Match the version of the daemon to the version of the tests.** The scripts
-travel with the *client*, so the suite states the version of the client, and
-`NIX_DAEMON_PACKAGE` is the free one. Use the same version for both until a
-reason to differ appears. `supportedNixFloor` is 2.34, and 2.34 is what the
-measurement below used.
+travel with the *client*, so the suite states the version of the client. Each
+program above holds one Nix and uses it for both, which is why the version is
+in its name.
 
-## Test pynixd
-
-`run.sh` reads `NIX_DAEMON_PACKAGE`, which is the hook Nix already has for
-this: `tests/functional/package.nix` takes a `test-daemon` argument, and Nix
-builds `nix-daemon-compat-tests` from it. Give a package whose `bin/nix`
-sends `daemon` to pynixd, and every other command to the real Nix.
-`db-migration.sh` and `user-envs-migration.sh` call
-`$NIX_DAEMON_PACKAGE/bin/nix` for ordinary commands, and `isDaemonNewer` calls
-it for `daemon --version`, so a shim that answers `daemon` alone is not
-enough.
-
-**Compare against the control.** Run the suite with a plain `nix daemon`
-first. A test that fails in both runs is not a defect of pynixd. Only a test
-that passes the control and fails through pynixd is one.
-
-### In the Linux virtual machine of a Darwin host
-
-The tests build derivations, so they need Linux. The store is shared with the
-host, and `/scratch` belongs to the machine.
+**The tests build derivations, so they need Linux.** On a Darwin host, build
+the program in the Linux machine and then run the same store path there. The
+store is shared, so one build serves both.
 
 ```sh
 # On the host. `source.nix` filters the checkout into the shared store.
 SRC=$(nix eval --raw --impure --expr \
     '(import ./nix/source.nix { lib = (import <nixpkgs> {}).lib; })')
 
-# In the machine. The tools live in the writable store of the machine, so a
-# rebuild of the machine removes them, and this command makes them again.
-nix build --no-link --print-out-paths \
-    nixpkgs#meson nixpkgs#ninja nixpkgs#jq nixpkgs#git nixpkgs#busybox
-
 # In the machine. FLAKE_COMPATISH_DISABLE_OVERRIDES makes this agree with a
 # flake evaluation, as every CI workflow does.
-FLAKE_COMPATISH_DISABLE_OVERRIDES=1 \
-    nix build --file "$SRC" pynixd --no-link --print-out-paths
+vzrun env FLAKE_COMPATISH_DISABLE_OVERRIDES=1 \
+    nix build --file "$SRC" nixFunctionalTests.nix_2_34 --no-link --print-out-paths
+
+# `/scratch` of the machine is on a disk. `/` is a tmpfs, and the stores of the
+# tests do not fit in it.
+vzrun env NIXFT_WORK=/scratch/nixft-2.34 \
+    /nix/store/...-nanopynix-nixft-nix_2_34/bin/nanopynix-nixft-nix_2_34 all
 ```
 
-Put `busybox` last on PATH. Before it, `meson` finds `ls` there rather than in
-coreutils, and it then states the wrong directory for `coreutils`.
+## How pynixd takes the place of the daemon
+
+`run.sh` reads `NIX_DAEMON_PACKAGE`, which is the hook Nix already has for
+this: `tests/functional/package.nix` takes a `test-daemon` argument, and Nix
+builds `nix-daemon-compat-tests` from it. `make-shim.sh` builds a package
+whose `bin/nix` sends `daemon` to pynixd, and every other command to the real
+Nix. `db-migration.sh` and `user-envs-migration.sh` call
+`$NIX_DAEMON_PACKAGE/bin/nix` for ordinary commands, and `isDaemonNewer` calls
+it for `daemon --version`, so a shim that answers `daemon` alone is not
+enough.
+
+**A passing test proves nothing until pynixd was in the path.** Three defects
+in that one decision made the whole suite report success while the shim sent
+every daemon to the real Nix. pynixd writes `pynixd-test-config.json` beside
+each test store, so the `pynixd` command counts those files and fails when it
+finds none.
+
+**Compare against the control.** A test that fails in both runs is not a
+defect of pynixd. Only a test that passes the control and fails through pynixd
+is one. `compare.py` states that difference, and `compare` calls it.
 
 ## The control measurement
 
-Client, scripts and daemon all Nix 2.34.8. One serial run, on Linux:
+Client, scripts and daemon all Nix 2.34.8. One serial run, on Linux, with the
+chroot store layout of patch 5:
 
 ```
-149 OK    36 SKIP    18 FAIL     (203 total)
-
-suite                 OK   SKIP   FAIL
-main                  92     19     15
-flakes                30      1      0
-ca                    18      4      1
-dyn-drv                5      1      2
-local-overlay-store    0     11      0
-git-hashing            3      0      0
-git                    1      0      0
+151 OK    36 SKIP    20 FAIL     (207 total)
 ```
 
-The 18 failures:
+The 20 failures:
 
 - **8 `build-remote-*`** need a remote builder.
 - **4 recursive-nix** — `recursive`, `ca/recursive`,
   `dyn-drv/recursive-mod-json` and `dyn-drv/dep-built-drv-2`. The `nix` inside
-  the build does not learn that the store is at `$TEST_ROOT/store`, and it
-  answers `path "..." is not in the Nix store`. Not yet understood.
+  the build does not learn where the store is, and it answers
+  `path "..." is not in the Nix store`. Not yet understood.
 - **1 `db-migration`** — the script states its own condition: "This assumes
   that the `daemon` package is older than the `client` one". Both are 2.34.8
   here.
-- **5 others** — `chroot-store`, `structured-attrs` (it wants a flake
-  registry), `shell`, `formatter`, `nix-profile`.
+- **7 others** — `chroot-store`, `structured-attrs` (it wants a flake
+  registry), `shell`, `formatter`, `nix-profile`, `nix-channel`,
+  `nested-sandboxing`. The last two arrived with patch 5, and neither is
+  explained yet.
 
-## What pynixd needs first
+**A failure here is a failure of Nix or of this harness, and not of pynixd.**
+`compare` puts these under "FAILS IN BOTH" and keeps them out of the answer.
+Report a genuine defect of Nix to `github/lillecarl/nix`.
+
+## Why each test gets a chroot store
 
 **pynixd serves a chroot store only.** `LocalSocketStoreSpec` holds one
 `store_path`, and the managed daemon gets `--store <store_path>`.
 `local-fs-store.hh:54-70` of Nix states that this gives `$root/nix/store` and
-`$root/nix/var/nix`. The suite uses `$TEST_ROOT/store` and `$TEST_ROOT/var/nix`,
-which is a relocated store and not a chroot store.
+`$root/nix/var/nix`. The suite puts the store at `$TEST_ROOT/store` and the
+state at `$TEST_ROOT/var/nix`, which is a relocated store and not a chroot
+store.
 
-Change `common/vars.sh` to a chroot layout first, because that changes no
-pynixd code, and a failure then names pynixd and nothing else. Only 2 of the
-203 scripts name the main store directly: `read-only-store.sh:40` and
+Patch 5 changes the layout of the suite, and not pynixd, so a failure then
+names pynixd and nothing else. The control run takes the same patch, because a
+comparison of two runs must change the daemon and nothing else. Only 2 of the
+207 scripts name the main store directly: `read-only-store.sh:40` and
 `binary-cache.sh:33`. Every other `$TEST_ROOT/store*` is a second store that
 the test makes for itself.
 
