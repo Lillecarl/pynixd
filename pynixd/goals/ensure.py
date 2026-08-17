@@ -15,21 +15,24 @@ from ..serde import (
     BuildDerivationRequest,
     BuildResult,
     BuildResultStatus,
+    DrvOutput,
     IsValidPathRequest,
     Realisation,
+    RegisterDrvOutputRequest,
     StorePath as SerdeStorePath,
 )
 from ..store_path import StorePath
 from .dependencies import DependencyGroupGoal
 from .goal import GoalHolder
-from .resolution import resolve_derivation, resolve_dynamic_derivation
+from .resolution import _nix_drv_name, resolve_derivation, resolve_dynamic_derivation, unparse_basic_derivation
 from .results import GoalResult, goal_failure, goal_success, result_succeeded
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterable, Mapping
 
     from ..connection import ClientConn
     from ..drv_parser import Derivation
+    from ..serde import BasicDerivation
     from .build_derivation import BuildDerivationGoal
     from .engine import GoalEngine
     from .results import DynamicPathMap
@@ -183,12 +186,14 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         # (#183), and it missed a fixed-output derivation with a
         # content-addressed input, which carries a placeholder as well.
         domain_drv_path = StorePath(str(drv_path))
+        resolved = True
         if parsed.dynamic_input_drvs and dynamic_paths:
             basic = resolve_dynamic_derivation(parsed, domain_drv_path, dynamic_paths)
         elif parsed.input_drvs:
             basic = resolve_derivation(parsed, domain_drv_path, await self._input_paths(parsed, dynamic_paths))
         else:
             basic = await to_basic_derivation(parsed, store_path)
+            resolved = False
 
         # **Every output of the derivation goes on the wire, and the wanted
         # ones alone do not.** `BuildDerivation` carries no set of wanted
@@ -207,8 +212,9 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             substituted = await self._say_what_it_produced(substituted, parsed, selected_outputs)
             return substituted.with_dynamic_outputs(self.derived_path.base_store_path())
 
+        build_drv_path = await self._path_of_what_it_builds(basic, drv_path) if resolved else drv_path
         request = BuildDerivationRequest(
-            drv_path=drv_path,
+            drv_path=build_drv_path,
             derivation=basic,
             build_mode=self.build_mode,
         )
@@ -221,8 +227,117 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             await build_goal.subscribe(client)
         result = await self.run_child(build_goal)
         result = result.with_dynamic_outputs(self.derived_path.base_store_path())
+        result = await self._under_the_original_id(result, parsed)
         result.result = _only_wanted_outputs(result.result, selected_outputs)
         return result
+
+    async def _under_the_original_id(self, result: GoalResult, parsed: Derivation) -> GoalResult:
+        """Give each realisation the id that the original derivation makes, and register it.
+
+        pynixd resolves a derivation before it sends it, so the daemon builds
+        a different ATerm. `staticOutputHashes` of the daemon therefore answers
+        a different hash, and the daemon registers each realisation under that
+        hash. The client holds the original derivation and queries
+        `DrvOutput{staticOutputHashes(original)[name], name}`, at
+        `Store::queryPartialDerivationOutputMap` in `store-api.cc:406`. It
+        found no realisation, and `nix-build.cc:730` and `built-path.cc:122`
+        both stop the program with an assertion.
+
+        Nix makes the same correction. `DerivationGoal` builds the resolved
+        derivation and then re-registers each output under the hash of the
+        original one, at `derivation-goal.cc:193-236`. The signatures go,
+        because a signature covers the id. Issue #182.
+
+        This goal makes the correction, and the build goal does not, because
+        this goal is the one that holds the original derivation. Issue #184
+        gave the build goal the path of the resolved derivation, so the build
+        goal can no longer read the original one. A build goal is also shared
+        between the clients that ask for it, and each one holds its own
+        original derivation.
+        """
+        built = result.result.built_outputs
+        if not built:
+            return result
+
+        hashes = await output_hashes(parsed, self.engine.ctx.local_store.read_derivation)
+        answer: dict[str, Realisation] = {}
+        changed = False
+        for key, realisation in built.items():
+            output_name = _realisation_output_name(key, realisation)
+            digest = None if hashes is None else hashes.get(output_name)
+            wanted = f"sha256:{digest}!{output_name}"
+            if digest is None or wanted == key:
+                answer[key] = realisation
+                continue
+            changed = True
+            answer[wanted] = realisation.model_copy(update={"id": DrvOutput(wanted), "signatures": []})
+            log.debug(
+                "realisation_rekeyed",
+                drv_path=self.derived_path.drv_path,
+                output=output_name,
+                sent=key,
+                original=wanted,
+            )
+
+        if _needs_realisations(parsed):
+            await self._register_realisations(answer.values())
+        if changed:
+            result.result = result.result.model_copy(update={"built_outputs": answer})
+        return result
+
+    async def _register_realisations(self, realisations: Iterable[Realisation]) -> None:
+        """Put each realisation in the local store, under the id it now carries."""
+        for realisation in realisations:
+            if realisation.out_path is None:
+                continue
+            # `Realisation` carries the bare `<hash>-<name>`, which is
+            # `StorePath::to_string` of Nix. `StorePath` of pynixd puts the
+            # store directory in front of it again, and `IsValidPath` needs
+            # the whole path.
+            out_path = StorePath(str(realisation.out_path))
+            valid = await self.engine.ctx.local_store.execute(
+                IsValidPathRequest(path=SerdeStorePath(path=str(out_path))),
+            )
+            if not valid.valid:
+                continue
+            try:
+                await self.engine.ctx.local_store.execute(RegisterDrvOutputRequest(realisation=realisation))
+            except Exception:
+                log.warning("register_drv_output_failed", drv_output=str(realisation.id), exc_info=True)
+
+    async def _path_of_what_it_builds(
+        self,
+        basic: BasicDerivation,
+        original: SerdeStorePath,
+    ) -> SerdeStorePath:
+        """Put the resolved derivation in the store, and answer its path.
+
+        **The daemon reads the derivation on the disk, and not the one that
+        `BuildDerivation` carries.** `queryPartialDerivationOutputMap` at
+        `derivation-building-goal.cc:1239` takes the store copy whenever
+        `drvPath` is valid there, and the client put the original derivation
+        in the store when it instantiated it. So a resolved derivation sent
+        under the original path answered every question about its outputs from
+        the unresolved one: a deferred output had no path, the builder got a
+        fallback scratch path, and the build failed with "failed to produce
+        output path".
+
+        Nix writes the resolved derivation to the store and builds that path,
+        at `derivation-resolution-goal.cc`. This does the same. Issue #184.
+
+        A store that cannot take a text file keeps the original path, which is
+        what pynixd did before.
+        """
+        name = f"{_nix_drv_name(StorePath(str(original)))}.drv"
+        text = unparse_basic_derivation(basic)
+        references = {str(path) for path in basic.input_srcs}
+        try:
+            path = await self.engine.ctx.local_store.add_text_to_store(name, text, references)
+        except Exception:
+            log.warning("resolved_derivation_not_stored", drv_path=str(original), exc_info=True)
+            return original
+        log.debug("resolved_derivation_stored", original=str(original), resolved=path)
+        return SerdeStorePath(path=path)
 
     async def _input_paths(self, parsed: Derivation, dynamic_paths: DynamicPathMap) -> DynamicPathMap:
         """Name the store path of each output of each input derivation.
@@ -366,6 +481,14 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         an empty map, so `nix build --json` wrote no `outputs` key at all:
         `BuiltPath::Built::toJSON` writes that key once for each output.
         Issue #179.
+
+        **The realisation also goes into the store.**
+        `DerivationGoal::checkPathValidity` at `derivation-goal.cc:445` does
+        that: the output path is valid, and no realisation names it, so it
+        writes one. A client then reads the path back through
+        `queryPartialDerivationOutputMap`. `ca:build` needs it, at the second
+        build of `dependentNonCA`: that build is a cut-off, so nothing is
+        built and this answer is the whole answer. Issue #184.
         """
         if result.result.built_outputs:
             return result
@@ -385,6 +508,9 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             built[key] = Realisation(id=key, out_path=SerdeStorePath(path=PurePath(str(path)).name))
         if not built:
             return result
+
+        if _needs_realisations(parsed):
+            await self._register_realisations(built.values())
 
         answer = result.copy()
         answer.result = answer.result.model_copy(update={"built_outputs": built})
@@ -421,6 +547,32 @@ def _child_map_to_derived_paths(drv_path: StorePath, node: ChildMapNode) -> list
 
     walk(node, ())
     return results
+
+
+def _needs_realisations(parsed: Derivation) -> bool:
+    """True when the derivation names the path of no output, so a realisation says it.
+
+    Nix registers a realisation for every output of every derivation while
+    `ca-derivations` is on, at `derivation-builder.cc:1994` and again at
+    `derivation-goal.cc:236`. It asks the setting, and pynixd cannot: a daemon
+    with the feature off answers "experimental Nix feature 'ca-derivations' is
+    disabled" to `RegisterDrvOutput`, and pynixd then discards a good
+    connection as dirty.
+
+    So this asks the derivation instead. An output with no path is the one
+    case that needs the feature, and no such derivation exists while the
+    feature is off. A floating content-addressed output names no path, and a
+    deferred output names none either. An input-addressed output and a
+    fixed-output one both name theirs.
+
+    **The question is about the original derivation, and not the resolved
+    one.** pynixd fills in a deferred output before it sends the derivation,
+    so the resolved one names every path and answers no. The client holds the
+    original, and `queryPartialDerivationOutputMap` at `store-api.cc:406`
+    reads a realisation for each output that the original leaves open.
+    `ca:build` builds `dependentNonCA`, which is that derivation.
+    """
+    return any(not output.path for output in parsed.outputs)
 
 
 def _realisation_output_name(key: str, realisation) -> str:

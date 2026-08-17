@@ -143,6 +143,16 @@ def _make_output_path(
     return _make_store_path(f"output:{output_id}", hash_modulo, name, store_dir)
 
 
+def unparse_basic_derivation(drv: BasicDerivation) -> str:
+    """Serialize a BasicDerivation to ATerm format, the way a `.drv` file holds it.
+
+    `Derivation::unparse` of Nix with `maskOutputs` false. A resolved
+    derivation has no input derivation, so the form is `Derive(` and never
+    `DrvWithVersion(`.
+    """
+    return _unparse_basic_derivation(drv, mask_outputs=False)
+
+
 def _unparse_basic_derivation(drv: BasicDerivation, mask_outputs: bool = True) -> str:
     """Serialize a BasicDerivation to ATerm format, optionally masking output paths."""
     parts: list[str] = ["Derive("]

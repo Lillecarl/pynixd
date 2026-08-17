@@ -191,6 +191,34 @@ class Connection:
             ),
         )
 
+    async def call_with_payload(
+        self,
+        request: WireRequest,
+        payload: bytes,
+        client: ClientConn | None = None,
+        suppress_last: bool = False,
+    ) -> Any:
+        """Send an operation whose header is followed by framed bytes.
+
+        `AddToStore` is the operation that needs this: it writes the header,
+        and then the file itself in the framed form that `FramedSource` of Nix
+        reads. `AddToStoreHandler` forwards those frames from a client, and
+        this sends frames that pynixd made.
+        """
+        if not self.connected:
+            raise RuntimeError(f"Connection {self.id!r} not connected")
+
+        self.op_log.append(type(request).__name__)
+
+        await request.to_writer(WriteContext.from_conn(self))
+        framed = self.w.framed()
+        framed.write(payload)
+        await framed.finalize()
+        resp_cls = type(request).response_type
+        return await resp_cls.from_reader(
+            ReadContext.from_conn(self, client=client, buffer_logs=not suppress_last),
+        )
+
     # ── Handshake ───────────────────────────────────────────────────
 
     async def handshake(

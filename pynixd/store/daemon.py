@@ -19,10 +19,12 @@ from .. import wire
 from ..exceptions import BackendError
 from ..monitor import ResourceGate, ResourceMonitor
 from ..serde import (
+    AddToStoreRequest,
     BasicDerivation,
     BuildDerivationRequest,
     BuildMode,
     BuildResultStatus,
+    ContentAddress,
     DerivationOutput,
     StorePath as SerdeStorePath,
 )
@@ -231,6 +233,30 @@ class DaemonStore(Store):
     def transfer_conn(self) -> AbstractAsyncContextManager[Connection]:
         """Acquire a connection for transfer operations."""
         return self.pool.acquire("transfer")
+
+    async def add_text_to_store(self, name: str, text: str, references: AbstractSet[str]) -> str:
+        """Put a text file in the store of the daemon, and answer the path it took.
+
+        `AddToStore` with `text:sha256` is what `Store::addTextToStore` of Nix
+        sends. The ingestion method is flat, so the framed body is the file
+        itself and not a NAR, at `daemon.cc:436`.
+
+        The daemon computes the path. pynixd could compute it as well, and
+        then two implementations of one formula would have to agree; the
+        answer of the daemon is the path that the daemon will read.
+        """
+        request = AddToStoreRequest(
+            path_name=name,
+            cam=ContentAddress("text:sha256"),
+            references={SerdeStorePath(path=str(ref)) for ref in references},  # pyright: ignore[reportUnhashable]
+            repair=0,
+        )
+        await self.probe()
+        async with self.transfer_conn() as conn:
+            response = await conn.call_with_payload(request, text.encode())
+        info = response.info
+        self.add_path_info(info)
+        return str(info.path)
 
     async def _create_conn_with_counter(self) -> Connection:
         self.conn_counter += 1

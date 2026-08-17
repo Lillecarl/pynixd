@@ -15,7 +15,7 @@ import structlog
 from cachetools import TTLCache
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
+    from collections.abc import Iterable, Mapping, Set as AbstractSet
 
     from ..config import StoreSpecBase
     from ..connection import ClientConn, Connection
@@ -131,6 +131,15 @@ class Store(ABC):
     async def read_derivation(self, drv_store_path: StorePath | str) -> Derivation | None:
         """Fetch and parse a .drv file from this store."""
         ...
+
+    async def add_text_to_store(self, name: str, text: str, references: AbstractSet[str]) -> str:
+        """Put a text file in this store, and answer the path it took.
+
+        `Store::addTextToStore` of Nix, which `writeDerivation` uses to put a
+        resolved derivation in the store. A store that cannot do this raises,
+        and the caller then keeps the derivation it has.
+        """
+        raise NotImplementedError(f"{type(self).__name__} cannot add a text file to its store")
 
     # ── Signing ─────────────────────────────────────────────────────
 
