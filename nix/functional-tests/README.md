@@ -199,18 +199,36 @@ with the relocated store layout that the suite itself sets.
 | run     | OK  | FAIL | SKIP |
 | ------- | --- | ---- | ---- |
 | control | 149 | 22   | 36   |
-| pynixd  | 134 | 37   | 36   |
+| pynixd  | 140 | 31   | 36   |
 
-**15 regressions**: a test that the control passes and pynixd fails. 5 in the
-`ca` suite, 1 in `flakes`, 2 in `dyn-drv`, and 7 in `main`.
+**9 regressions**: a test that the control passes and pynixd fails. 5 in the
+`ca` suite and 4 in `main`.
+
+| test                 | why                                             |
+| -------------------- | ----------------------------------------------- |
+| `ca:build-cache`     | #187, the substituters that a client names       |
+| `ca:issue-13247`     | #187                                             |
+| `ca:new-build-cmd`   | #187                                             |
+| `ca:post-hook`       | #192, an option that reaches one connection      |
+| `ca:signatures`      | #192                                             |
+| `main:build`         | #190, `max-jobs` and `keep-going`                |
+| `main:multiple-outputs` | #174, a temporary root of a pooled connection |
+| `main:signing`       | #192                                             |
+| `main:store-info`    | permanent, and the next section gives the reason |
+
+`main:post-hook` moved to OK in this run and failed in the run before it.
+#192 gives the reason it varies: the option of the client landed on whichever
+connection the pool gave, so the hook ran for the derivations that pynixd
+built on that connection. The correction of #192 is in, and the next run
+measures it.
 
 Removing the layout patch of #176 moved `nix-channel` from FAIL to OK in the
 control run, so that patch was breaking a test of Nix on its own.
 `nested-sandboxing` still fails, and its cause is not the layout.
 
 The count was 40 before issues #178, #179, #180, #182, #183, #184 and #185.
-Issues #174 and #175 then took it from 29 to 15, in three steps: 29, 19, 15.
-Each one is below.
+Issues #174 and #175 then took it from 29 to 9, in five steps: 29, 19, 15,
+11, 9. Each one is below.
 
 `compare` reports no "other change" now. Three tests moved from SKIP to FAIL
 in an earlier run -- `local-overlay-store:delete-duplicate`,
