@@ -46,6 +46,10 @@ quote-annotations = true
 [tool.ruff.lint.per-file-ignores]
 "src/nix_daemon_protocol/**" = ["TC001"]
 "benchmarks/**" = ["T201"]
+# A `__main__.py` is a command-line program, and a command-line program
+# writes to the terminal. `structlog` is the rule everywhere else in this
+# package, because everywhere else the reader is a log.
+"src/nix_daemon_protocol/**/__main__.py" = ["T201"]
 
 [tool.pyright]
 pythonVersion = "3.13"
