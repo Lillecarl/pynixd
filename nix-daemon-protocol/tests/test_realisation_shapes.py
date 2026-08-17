@@ -26,7 +26,9 @@ from nix_daemon_protocol import (
     BuildResult,
     KeyedDrvOutput,
     OptMicroseconds,
+    QueryRealisationResponse,
     Realisation,
+    RegisterDrvOutputRequest,
     Signature,
     StorePath,
     UnkeyedRealisation,
@@ -174,3 +176,96 @@ async def test_a_build_result_reads_back_the_shape_it_wrote() -> None:
     assert read.built_outputs is None
     assert read.built_outputs_by_name is not None
     assert read.built_outputs_by_name["out"].out_path == OUT_PATH
+
+
+@pytest.mark.anyio
+async def test_a_query_realisation_answer_is_an_option_under_the_feature() -> None:
+    """`daemon.cc:1024` writes a tag, and the body only when the tag is 1.
+
+    The fields are read in the order they are declared, so `present` holds
+    its value before the gate on `realisation` runs.
+    """
+    features = frozenset({FEATURE_REALISATION_WITH_PATH})
+    answer = QueryRealisationResponse(
+        present=1,
+        realisation=UnkeyedRealisation(out_path=StorePath(OUT_PATH)),
+    )
+
+    writer = BytesWriter("test")
+    await answer.to_writer(WriteContext(writer=writer, version=PROTOCOL_VERSION, features=features))
+    read = await QueryRealisationResponse.from_reader(
+        ReadContext(reader=BytesReader(writer.get_bytes()), version=PROTOCOL_VERSION, features=features),
+    )
+
+    assert read.present == 1
+    assert read.realisation is not None
+    assert read.realisation.out_path == OUT_PATH
+    assert read.realisations == []
+
+
+@pytest.mark.anyio
+async def test_a_query_realisation_answer_of_none_carries_no_body() -> None:
+    """A tag of 0 and nothing after it. A body here would desync the wire."""
+    features = frozenset({FEATURE_REALISATION_WITH_PATH})
+
+    writer = BytesWriter("test")
+    await QueryRealisationResponse(present=0).to_writer(
+        WriteContext(writer=writer, version=PROTOCOL_VERSION, features=features),
+    )
+
+    # Eight bytes for the end of the stderr stream that every `WireResponse`
+    # writes first, and eight for the tag. Nothing follows the tag.
+    assert len(writer.get_bytes()) == 16
+    read = await QueryRealisationResponse.from_reader(
+        ReadContext(reader=BytesReader(writer.get_bytes()), version=PROTOCOL_VERSION, features=features),
+    )
+    assert read.realisation is None
+
+
+@pytest.mark.anyio
+async def test_a_registered_realisation_is_the_id_and_then_the_body() -> None:
+    """`Serialise<Realisation>::write` at `worker-protocol.cc:582` writes that order."""
+    features = frozenset({FEATURE_REALISATION_WITH_PATH})
+    request = RegisterDrvOutputRequest(
+        keyed_drv_output=KeyedDrvOutput(drv_path=StorePath(DRV_PATH), output_name="out"),
+        unkeyed_realisation=UnkeyedRealisation(out_path=StorePath(OUT_PATH)),
+    )
+
+    writer = BytesWriter("test")
+    await request.to_writer(WriteContext(writer=writer, version=PROTOCOL_VERSION, features=features))
+    raw = writer.get_bytes()
+
+    # The derivation path comes before the output path.
+    assert raw.index(DRV_PATH.encode()) < raw.index(OUT_PATH.encode())
+
+    # `WireRequest.to_writer` writes the operation number first, and
+    # `from_reader` reads the body alone because the dispatcher consumed it.
+    read = await RegisterDrvOutputRequest.from_reader(
+        ReadContext(reader=BytesReader(raw[8:]), version=PROTOCOL_VERSION, features=features),
+    )
+    assert read.realisation is None
+    assert read.keyed_drv_output is not None
+    assert read.keyed_drv_output.output_name == "out"
+    assert read.unkeyed_realisation is not None
+    assert read.unkeyed_realisation.out_path == OUT_PATH
+
+
+@pytest.mark.anyio
+async def test_the_floor_shape_of_both_operations_is_unchanged() -> None:
+    """With no feature, the bytes are the ones Nix 2.34 reads.
+
+    This is the guard on the whole change: nothing claims the feature yet, so
+    every real connection takes this road.
+    """
+    request = RegisterDrvOutputRequest(realisation=Realisation(out_path=StorePath(OUT_PATH)))
+    writer = BytesWriter("test")
+    await request.to_writer(WriteContext(writer=writer, version=PROTOCOL_VERSION))
+
+    # One JSON string, and nothing else.
+    assert b"outPath" in writer.get_bytes()
+    read = await RegisterDrvOutputRequest.from_reader(
+        ReadContext(reader=BytesReader(writer.get_bytes()[8:]), version=PROTOCOL_VERSION),
+    )
+    assert read.realisation is not None
+    assert read.keyed_drv_output is None
+    assert read.unkeyed_realisation is None
