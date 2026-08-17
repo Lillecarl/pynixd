@@ -39,6 +39,25 @@ log = structlog.get_logger(__name__)
 # that runs for a week must not grow a list for a week.
 _RECENT_OUTPUT_LINES = 50
 
+_DAEMON_START_TIMEOUT = 30.0
+"""Seconds to wait for a managed `nix-daemon` to bind and then accept.
+
+**One budget for both steps, and it is generous.** The two waits had 10 s and
+5 s, and the harder of the two had the shorter one: a socket file appears as
+soon as `bind` returns, and `accept` needs the daemon to have finished its own
+start-up. `main:multiple-outputs-substitute-failure` of the Nix functional
+suite failed on the 5 s one while the rest of the suite loaded the machine,
+and the test then reported nothing about its own subject. Issue #199.
+
+A daemon that starts in the ordinary way binds and listens in milliseconds, so
+a larger number costs nothing in the case that works. The loop leaves as soon
+as the process dies, so a daemon that fails to start is still reported at
+once, and not after the whole budget.
+"""
+
+_DAEMON_POLL_INTERVAL = 0.05
+"""Seconds between two checks. It is the granularity, and not the budget."""
+
 
 class LocalStore(DaemonStore):
     """Connects to a local nix-daemon via Unix socket.
@@ -187,28 +206,29 @@ class LocalStore(DaemonStore):
                 name="daemon-log-forwarder",
             )
 
-        # Wait for socket file to appear
-        for _ in range(100):
-            if self.socket_path.exists():
-                break
+        # Wait for the socket file to appear.
+        deadline = time.monotonic() + _DAEMON_START_TIMEOUT
+        while not self.socket_path.exists():
             if self.daemon_proc.returncode is not None:
                 stderr_output = self._recent_output_text()
                 raise RuntimeError(
                     f"Managed daemon exited early with code {self.daemon_proc.returncode} "
                     f"(pid={self.daemon_proc.pid}): {stderr_output!r}",
                 )
-            await anyio.sleep(0.1)
-        else:
-            raise RuntimeError(
-                f"Managed daemon did not create socket at {self.socket_path} within 10s (pid={self.daemon_proc.pid})",
-            )
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"Managed daemon did not create socket at {self.socket_path} "
+                    f"within {_DAEMON_START_TIMEOUT:g}s (pid={self.daemon_proc.pid})",
+                )
+            await anyio.sleep(_DAEMON_POLL_INTERVAL)
 
         daemon_ready = self.daemon_ready
         if daemon_ready is None:
             raise RuntimeError("daemon_ready event was not initialized")
 
-        # Socket file exists but daemon may not be listening yet — probe
-        for _attempt in range(100):
+        # The socket file is there, and the daemon may not be listening yet.
+        deadline = time.monotonic() + _DAEMON_START_TIMEOUT
+        while True:
             if self.daemon_proc.returncode is not None:
                 stderr_output = self._recent_output_text()
                 raise RuntimeError(
@@ -217,15 +237,17 @@ class LocalStore(DaemonStore):
                 )
             if await self._probe_socket():
                 log.info("daemon_socket_ready", socket_path=str(self.socket_path))
-                await anyio.sleep(0.1)
+                await anyio.sleep(_DAEMON_POLL_INTERVAL)
                 daemon_ready.set()
                 return
-            await anyio.sleep(0.05)
+            if time.monotonic() >= deadline:
+                break
+            await anyio.sleep(_DAEMON_POLL_INTERVAL)
 
         stderr_output = self._recent_output_text()
         raise RuntimeError(
-            f"Managed daemon socket not accepting connections "
-            f"at {self.socket_path} within 5s (pid={self.daemon_proc.pid}): {stderr_output!r}",
+            f"Managed daemon socket not accepting connections at {self.socket_path} "
+            f"within {_DAEMON_START_TIMEOUT:g}s (pid={self.daemon_proc.pid}): {stderr_output!r}",
         )
 
     def _recent_output_text(self) -> str:
