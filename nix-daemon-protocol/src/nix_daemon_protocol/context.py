@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Final, Protocol
 
 from .exceptions import DaemonProtocolError
 
@@ -20,6 +20,15 @@ class LogSink(Protocol):
     async def send(self, message: object, /) -> None: ...
 
 
+_NO_FEATURES: Final[frozenset[str]] = frozenset()
+"""The feature set of a peer that named none, which is every peer below 1.38.
+
+It is also what Nix 2.34 names at 1.38, so it is the ordinary case and not a
+fallback. `WireField` reads it, and `nix_daemon_protocol.constants` gives the
+whole rule.
+"""
+
+
 @dataclass(frozen=True)
 class ReadContext:
     """Bundles the arguments needed to deserialize a response from the wire."""
@@ -31,6 +40,13 @@ class ReadContext:
     raise_on_error: bool = True
     error_factory: Callable[[str], Exception] = DaemonProtocolError
     logger: ProtocolLogger | None = None
+    features: frozenset[str] = _NO_FEATURES
+    """The features that the two peers negotiated, and not the ones one named.
+
+    `intersectFeatures` at `worker-protocol-connection.cc:148` of Nix builds
+    it. A field with `needs_features` or `unless_features` reads this set.
+    Issue #162.
+    """
 
 
 @dataclass(frozen=True)
@@ -39,3 +55,5 @@ class WriteContext:
 
     writer: NixWriter
     version: int
+    features: frozenset[str] = _NO_FEATURES
+    """The features that the two peers negotiated. See `ReadContext.features`."""

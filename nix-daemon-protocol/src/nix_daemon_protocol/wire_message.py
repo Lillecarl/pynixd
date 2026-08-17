@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import types
-from collections.abc import Callable  # noqa: TC003
+from collections.abc import Callable, Iterable  # noqa: TC003
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Any, ClassVar, get_args, get_origin, get_type_hints
@@ -30,7 +30,7 @@ from .wire_scalar import WireScalar
 
 
 @functools.lru_cache(maxsize=256)
-def _find_reader(ann: type, version: int = 0) -> Any:
+def _find_reader(ann: type, version: int = 0, features: frozenset[str] = frozenset()) -> Any:
     """Look up a reader for a wire type."""
     from .wire_string import WireString  # lazy: break circular import
 
@@ -64,11 +64,11 @@ def _find_reader(ann: type, version: int = 0) -> Any:
     if origin is types.UnionType:
         non_none = tuple(a for a in args if a is not type(None))
         if len(non_none) == 1:
-            return _find_reader(non_none[0], version)
+            return _find_reader(non_none[0], version, features)
 
     # -- list generics --
     if origin is list:
-        elem = _find_reader(args[0], version)
+        elem = _find_reader(args[0], version, features)
 
         async def _read_list(r):
             n = await r.read_uint64()
@@ -78,7 +78,7 @@ def _find_reader(ann: type, version: int = 0) -> Any:
 
     # -- set generics --
     if origin is set:
-        elem = _find_reader(args[0], version)
+        elem = _find_reader(args[0], version, features)
 
         async def _read_set(r):
             n = await r.read_uint64()
@@ -88,8 +88,8 @@ def _find_reader(ann: type, version: int = 0) -> Any:
 
     # -- dict generics --
     if origin is dict:
-        k_reader = _find_reader(args[0], version)
-        v_reader = _find_reader(args[1], version)
+        k_reader = _find_reader(args[0], version, features)
+        v_reader = _find_reader(args[1], version, features)
 
         async def _read_dict(r):
             n = await r.read_uint64()
@@ -146,7 +146,7 @@ def _find_reader(ann: type, version: int = 0) -> Any:
     if isinstance(ann, type) and issubclass(ann, WireModel):
 
         async def _read_nested(r):
-            return await ann.from_reader(ReadContext(reader=r, version=version))
+            return await ann.from_reader(ReadContext(reader=r, version=version, features=features))
 
         return _read_nested
 
@@ -248,13 +248,15 @@ async def _write_value(val: Any, ann: type, ctx: WriteContext) -> None:
 
 @dataclass(frozen=True)
 class VersionMeta:
-    """Protocol version constraint for a wire field."""
+    """Protocol version and feature constraint for a wire field."""
 
     min_version: int | None = None
     max_version: int | None = None
     serialize: bool | None = None
     deserialize: bool | None = None
     wire_depends_on: Callable | None = None
+    needs_features: frozenset[str] | None = None
+    unless_features: frozenset[str] | None = None
 
 
 def WireField(  # noqa: N802
@@ -266,14 +268,35 @@ def WireField(  # noqa: N802
     serialize: bool | None = None,
     deserialize: bool | None = None,
     wire_depends_on: Callable | None = None,
+    needs_features: Iterable[str] | None = None,
+    unless_features: Iterable[str] | None = None,
     **kwargs: Any,
 ) -> Any:
-    """A Pydantic Field with Nix protocol version requirements.
+    """A Pydantic Field with Nix protocol version and feature requirements.
 
     Usage::
 
         times_built: int = WireField(default=0, min_version=proto(1, 29))
         legacy_field: str = WireField(default="", max_version=proto(1, 27))
+
+    **The version number stopped at 1.38, and a new capability is a feature.**
+    `worker-protocol.hh:105` of Nix says so. Both sides send a set of names in
+    the handshake, and the negotiated set is the intersection, so a version
+    number alone no longer says what shape a field has.
+
+    Nix writes that choice as an if/else over the negotiated set, and these
+    two arguments are its two halves. `worker-protocol.cc:268` is the
+    example: `BuildResult.builtOutputs` is a map of `UnkeyedRealisation` when
+    `realisation-with-path-not-hash` is on, and a map of JSON strings when it
+    is off::
+
+        built_outputs_new: ... = WireField(needs_features=[FEATURE_REALISATION_WITH_PATH])
+        built_outputs_old: ... = WireField(unless_features=[FEATURE_REALISATION_WITH_PATH])
+
+    `needs_features` keeps the field when the negotiated set holds **every**
+    name. `unless_features` keeps it when the set holds **none** of them. A
+    field with neither is there whatever the peers agreed, which is every
+    field of the Nix 2.34 shape. Issue #162.
     """
     if default is not PydanticUndefined:
         kwargs.setdefault("default", default)
@@ -281,7 +304,17 @@ def WireField(  # noqa: N802
         kwargs["default_factory"] = default_factory
 
     field_info = PydanticField(**kwargs)
-    field_info.metadata.append(VersionMeta(min_version, max_version, serialize, deserialize, wire_depends_on))
+    field_info.metadata.append(
+        VersionMeta(
+            min_version,
+            max_version,
+            serialize,
+            deserialize,
+            wire_depends_on,
+            None if needs_features is None else frozenset(needs_features),
+            None if unless_features is None else frozenset(unless_features),
+        )
+    )
     return field_info
 
 
@@ -289,7 +322,11 @@ def WireField(  # noqa: N802
 
 
 @functools.lru_cache(maxsize=256)
-def _wire_fields(cls: type[BaseModel], version: int = 0) -> list[tuple[str, type, Callable | None, bool, bool]]:
+def _wire_fields(
+    cls: type[BaseModel],
+    version: int = 0,
+    features: frozenset[str] = frozenset(),
+) -> list[tuple[str, type, Callable | None, bool, bool]]:
     """Return (name, raw_annotation, wire_depends_on, serialize, deserialize) tuples.
 
     ClassVar fields default to serialize=False, deserialize=False unless
@@ -297,6 +334,11 @@ def _wire_fields(cls: type[BaseModel], version: int = 0) -> list[tuple[str, type
 
     Fields with ``min_version`` or ``max_version`` constraints are filtered
     against the provided ``version``.  ``version=0`` means no filtering.
+
+    Fields with ``needs_features`` or ``unless_features`` are filtered against
+    *features*, which is the set the two peers negotiated. That filter runs
+    whatever the version is, because an empty set is a real answer: it is what
+    Nix 2.34 offers, and what a peer below 1.38 can say at all.
     """
     hints = get_type_hints(cls, include_extras=True)
     result = []
@@ -309,6 +351,15 @@ def _wire_fields(cls: type[BaseModel], version: int = 0) -> list[tuple[str, type
             if version_meta.min_version is not None and version < version_meta.min_version:
                 continue
             if version_meta.max_version is not None and version > version_meta.max_version:
+                continue
+
+        # Feature-gating. No `if features:` guard: the empty set decides as
+        # much as any other set, and a field behind `unless_features` is
+        # exactly the one that the empty set keeps.
+        if version_meta is not None:
+            if version_meta.needs_features is not None and not version_meta.needs_features <= features:
+                continue
+            if version_meta.unless_features is not None and version_meta.unless_features & features:
                 continue
 
         ann = hints.get(name)
@@ -357,7 +408,9 @@ class WireModel(BaseModel):
 
     async def to_writer(self, ctx: WriteContext) -> None:
         """Write all non-ClassVar fields in declaration order."""
-        for name, ann, wire_depends_on, serialize, _deserialize in _wire_fields(type(self), version=ctx.version):
+        for name, ann, wire_depends_on, serialize, _deserialize in _wire_fields(
+            type(self), version=ctx.version, features=ctx.features
+        ):
             if not serialize:
                 continue
             if wire_depends_on is not None and not wire_depends_on(self):
@@ -382,13 +435,15 @@ class WireModel(BaseModel):
                 elif field.default_factory is not None:
                     object.__setattr__(obj, name, field.default_factory())  # pyright: ignore[reportCallIssue]
 
-            for name, ann, wire_depends_on, _serialize, deserialize in _wire_fields(cls, version=ctx.version):
+            for name, ann, wire_depends_on, _serialize, deserialize in _wire_fields(
+                cls, version=ctx.version, features=ctx.features
+            ):
                 if not deserialize:
                     continue
                 if wire_depends_on is not None and not wire_depends_on(obj):
                     continue
 
-                reader = _find_reader(ann, version=ctx.version)
+                reader = _find_reader(ann, version=ctx.version, features=ctx.features)
                 object.__setattr__(obj, name, await reader(ctx.reader))
                 obj.__pydantic_fields_set__.add(name)
 
