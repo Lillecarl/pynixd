@@ -8,9 +8,12 @@ from typing import TYPE_CHECKING
 import anyio
 import structlog
 
+from nix_daemon_protocol.exceptions import DaemonProtocolError
+
 from ..derived_path import DerivedPath
 from ..serde import (
     ContentAddress,
+    DerivedPath as SerdeDerivedPath,
     IsValidPathRequest,
     LogNext,
     QueryMissingRequest,
@@ -235,6 +238,8 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
         unnamed = [name for name, path in output_paths.items() if not str(path)]
         realised = await self._realised_paths(parsed, unnamed) if unnamed else {}
         if realised is None:
+            if await self._substituter_holds_a_realisation(derived_path, walk):
+                return
             self._must_build(drv_path, parsed, walk)
             return
 
@@ -245,6 +250,61 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
                 needs_build = True
         if needs_build:
             self._must_build(drv_path, parsed, walk)
+
+    async def _substituter_holds_a_realisation(self, derived_path: DerivedPath, walk: _Walk) -> bool:
+        """Ask the daemon behind pynixd whether a substituter can realise this.
+
+        **Nix asks the substituters for a realisation, and it asks them in the
+        plan.** `Store::queryMissing` at `misc.cc:250` loops over
+        `getDefaultSubstituters()` and calls `sub->queryRealisation({drvPath,
+        outputName})` for each wanted output. When every one answers,
+        `knownOutputPaths` becomes true again and the outputs take the
+        substitution road; when one does not, the derivation is
+        `mustBuildDrv`.
+
+        pynixd has no substituter of its own, so it cannot run that loop. The
+        daemon behind it has them all, and `QueryMissing` upstream with the
+        option set of the client makes that daemon run the loop over the
+        substituters that the client named.
+
+        **The plan and the work have to give the same answer.**
+        `_try_realise_upstream` of `goals/ensure.py` now substitutes such an
+        output through the same daemon, and a plan that still said "will be
+        built" made pynixd announce a build that never happened.
+        `build-cache.sh:39` reads exactly that: it greps the output of
+        `nix build` for the absence of ` will be built:`. Issues #187 and
+        #198.
+
+        Answers True when the upstream plan does not name this derivation as
+        one to build, and it then merges what that plan says. Answers False
+        for a client that named no substituter, for an upstream error, and
+        for an upstream plan that agrees the derivation must be built.
+        """
+        if not client_names_a_substituter(self.client):
+            return False
+        wire_path = SerdeDerivedPath(value=str(derived_path))
+        try:
+            response = await self.engine.ctx.local_store.execute(
+                QueryMissingRequest(derived_paths={wire_path}),
+                client=self.client,
+            )
+        except (DaemonProtocolError, OSError, EOFError) as ex:
+            # The plan is a question, and a question that fails is not a
+            # failure of the request. The build road stays open.
+            log.debug("upstream_plan_miss", derived_path=str(derived_path), reason=str(ex))
+            return False
+
+        drv_path = SerdeStorePath(path=str(derived_path.base_store_path()))
+        if drv_path in response.will_build:
+            return False
+        walk.plan.will_substitute.update(response.will_substitute)
+        walk.plan.unknown.update(response.unknown)
+        log.debug(
+            "upstream_plan_substitutes",
+            derived_path=str(derived_path),
+            will_substitute=len(response.will_substitute),
+        )
+        return True
 
     async def _realised_paths(self, parsed: Derivation, wanted: list[str]) -> dict[str, StorePath] | None:
         """The path of each output that the derivation does not name.
