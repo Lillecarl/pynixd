@@ -221,10 +221,26 @@ class QueuedBuild:
         return self._log_writer.get_bytes()[before:]
 
     async def _send_raw_safe(self, sub: ClientConn, raw: bytes) -> ClientConn | None:
-        """Send raw bytes to a subscriber, removing it on failure."""
+        """Send raw bytes to a subscriber, removing it on failure.
+
+        **A write to a transport that is already closed raises
+        `RuntimeError`, and not `OSError`.** uvloop says "unable to perform
+        operation on <UnixTransport closed=True reading=False ...>; the
+        handler is closed". `BrokenPipeError` and `ConnectionResetError` come
+        from a peer that goes away during the write, and this is the other
+        case: the write starts after the loop dropped the transport.
+
+        A build of pynixd outlives the request that asked for it, so this is
+        the ordinary end of a build whose client left. `ca:new-build-cmd`
+        measured it: `slow` of the `cancelled-builds` fixture sleeps 10 s, the
+        test kills the daemon while it runs, and the exception left
+        `Scheduler.execute_build` through its own error path. Nothing
+        retrieves the exception of that task, so asyncio reported it as one
+        that was never retrieved and no client learned anything. Issue #196.
+        """
         try:
             await sub.send_raw(raw)
-        except (OSError, BrokenPipeError, ConnectionResetError):
+        except (OSError, RuntimeError):
             return sub
         else:
             return None

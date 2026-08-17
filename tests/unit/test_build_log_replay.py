@@ -27,10 +27,13 @@ if TYPE_CHECKING:
 class FakeClient:
     """A client that keeps every block of bytes that the build sends it."""
 
-    def __init__(self) -> None:
+    def __init__(self, raises: BaseException | None = None) -> None:
         self.blocks: list[bytes] = []
+        self.raises = raises
 
     async def send_raw(self, raw: bytes) -> None:
+        if self.raises is not None:
+            raise self.raises
         self.blocks.append(raw)
 
 
@@ -83,6 +86,39 @@ async def test_the_client_appears_once_in_the_fan_out_list() -> None:
     await build.add_subscriber(cast("ClientConn", client))
 
     assert build.subscribers == [client]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "error",
+    [
+        # uvloop, for a write that starts after the loop dropped the transport.
+        RuntimeError("unable to perform operation on <UnixTransport closed=True>; the handler is closed"),
+        # A peer that goes away during the write. Both are subclasses of OSError.
+        BrokenPipeError(32, "Broken pipe"),
+        ConnectionResetError(104, "Connection reset by peer"),
+    ],
+    ids=["closed-transport", "broken-pipe", "reset"],
+)
+async def test_a_client_that_is_gone_drops_out_of_the_fan_out(error: BaseException) -> None:
+    """A build outlives its client, so the fan-out meets a closed transport.
+
+    `RuntimeError` was not in the caught set, so it left the task group of
+    `post_log_bytes` as an `ExceptionGroup`, then left
+    `Scheduler.execute_build` through its own error path. Nothing retrieves
+    the exception of that task. Issue #196.
+    """
+    build = _build()
+    good: Any = FakeClient()
+    gone: Any = FakeClient(raises=error)
+    await build.add_subscriber(cast("ClientConn", good))
+    build.subscribers.append(gone)
+    build._subscriber_refs[gone] = 1  # noqa: SLF001 -- the fan-out reads this, and the replay is not the subject
+
+    await build.post_log_bytes(b"building\n")
+
+    assert good.blocks == [b"building\n"]
+    assert build.subscribers == [good]
 
 
 @pytest.mark.anyio
