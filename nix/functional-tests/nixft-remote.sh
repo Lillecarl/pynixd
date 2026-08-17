@@ -17,6 +17,8 @@
 #   GIT_CACHE    a store path that holds `tarball-cache-v2`, or `-`
 #   FETCH_CACHE  a store path that holds `fetcher-cache-v4.sqlite`, or `-`
 #   LOG_LEVEL    the log level of pynixd, or `-` for the default
+#   DUMP         files to write to stdout after the command, `:` between
+#                them, or `-`. A relative name goes under the work directory.
 #   ...          the arguments of the runner, for example `pynixd --suite ca`
 #
 # The last line it writes is `NIXFT-DONE <code>`. The host reads that line to
@@ -29,7 +31,8 @@ WORK=$2
 GIT_CACHE=$3
 FETCH_CACHE=$4
 LOG_LEVEL=$5
-shift 5
+DUMP=$6
+shift 6
 
 # **`WARNING` is the default, and a debug run is how a goal question gets an
 # answer.** `build_waits_for_a_local_slot` and `build_assigned_to_store` are
@@ -193,5 +196,26 @@ fi
 # ── The command ─────────────────────────────────────────────────────
 NIXFT_WORK="$WORK" "$runner_bin" "$@"
 code=$?
+
+# ── The files the host asked for ────────────────────────────────────
+#
+# **A file leaves the builder now or never.** The next invocation gets a new
+# disk, so a debug line that this run wrote is readable in this run alone.
+# Each file goes between two markers, so the host can find where one ends.
+if [[ "$DUMP" != "-" ]]; then
+    IFS=: read -r -a dump_paths <<< "$DUMP"
+    for name in "${dump_paths[@]}"; do
+        [[ -z "$name" ]] && continue
+        [[ "$name" == /* ]] || name=$WORK/$name
+        echo "=== NIXFT-DUMP $name ==="
+        if [[ -f "$name" ]]; then
+            cat "$name"
+        else
+            echo "(no such file)"
+        fi
+        echo "=== NIXFT-DUMP-END $name ==="
+    done
+fi
+
 echo "NIXFT-DONE $code"
 exit 0

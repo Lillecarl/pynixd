@@ -40,6 +40,18 @@
 #                 `WARNING`, which is what the daemon uses. Several answers
 #                 about the scheduler are `log.debug` lines, so a question
 #                 about which road a build took needs `DEBUG`.
+#   --dump PATH   write this file of the builder to the terminal after the
+#                 command. Give the option again for a second file. A path
+#                 with no leading `/` is relative to the work directory.
+#
+# **`--dump` is how a debug line of pynixd reaches this host.**
+# `meson test --print-errorlogs` prints the tail of the log of a failed test
+# and not the whole of it, so a `log.debug` line that a request writes at its
+# start does not survive to the terminal. The whole log is at
+# `build/meson-logs/testlog.txt` in the builder, and no directory of the
+# builder survives the run, so the file has to leave in the same invocation:
+#
+#   ./nixft.sh --log-level DEBUG --dump build/meson-logs/testlog.txt pynixd build
 set -euo pipefail
 
 # `-` and not a path with `$HOME` in it. The home directory of the builder is
@@ -48,6 +60,9 @@ set -euo pipefail
 WORK=-
 TRIES=3
 LOG_LEVEL=-
+# A colon separates the names, because the list travels as one argument and a
+# path of the builder holds no colon.
+DUMP=-
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 
 while (( $# > 0 )); do
@@ -56,6 +71,7 @@ while (( $# > 0 )); do
         --tries) TRIES=$2; shift 2 ;;
         --repo) REPO=$2; shift 2 ;;
         --log-level) LOG_LEVEL=$2; shift 2 ;;
+        --dump) if [[ "$DUMP" == "-" ]]; then DUMP=$2; else DUMP=$DUMP:$2; fi; shift 2 ;;
         --) shift; break ;;
         *) break ;;
     esac
@@ -108,7 +124,7 @@ for (( attempt = 1; attempt <= TRIES; attempt++ )); do
     say "attempt $attempt of $TRIES: $*"
     # `|| true`, because the exit code of the transport says only whether the
     # command reached the end. The sentinel below is the answer.
-    vzrun bash "$remote" "$src" "$WORK" "$git_cache" "$fetch_cache" "$LOG_LEVEL" "$@" \
+    vzrun bash "$remote" "$src" "$WORK" "$git_cache" "$fetch_cache" "$LOG_LEVEL" "$DUMP" "$@" \
         2>&1 | tee "$log" || true
 
     sentinel=$(grep -E '^NIXFT-DONE [0-9]+$' "$log" | tail -1 || true)
