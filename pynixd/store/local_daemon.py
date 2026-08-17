@@ -149,9 +149,12 @@ class LocalStore(DaemonStore):
         env = os.environ.copy()
         env.update(self.extra_env)
         env["NIX_DAEMON_SOCKET_PATH"] = str(self.socket_path)
-        env["NIX_DATA_DIR"] = str(self.store_path / "share")
-        env["NIX_LOG_DIR"] = str(self.store_path / "var/log/nix")
-        env["NIX_STATE_DIR"] = str(self.store_path / "var/nix")
+        # NIX_DATA_DIR, NIX_LOG_DIR and NIX_STATE_DIR were set here, and Nix
+        # read none of them. `--store <root>` above gives the store a rootDir,
+        # and `local-fs-store.hh:54-70` then builds `<root>/nix/var/nix` and
+        # `<root>/nix/var/log/nix` from that root and ignores the three names.
+        # The values were wrong as well: they said `<root>/var/nix`, without
+        # the `nix` element that Nix puts there. Issue #171.
 
         self.daemon_proc = await asyncio.create_subprocess_exec(
             *cmd,
