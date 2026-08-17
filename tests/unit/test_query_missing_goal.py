@@ -376,3 +376,95 @@ async def test_query_missing_classifies_roots_in_parallel() -> None:
 
     assert {str(path) for path in response.unknown} == {blocked_path, releasing_path}
     assert set(substitution_queue.queries) == {blocked_path, releasing_path}
+
+
+@pytest.mark.anyio
+async def test_query_missing_walks_the_input_derivations() -> None:
+    """`mustBuildDrv` at `misc.cc:139` enqueues each input of what it builds.
+
+    `nix build` prints "these N derivations will be built" from this answer.
+    pynixd classified the derived paths of the request alone, so the list held
+    the top derivation and none of the inputs under it.
+
+    The chain is `top` -> `middle` -> `bottom`, and no output is valid, so
+    every one of the three must build.
+    """
+    top = "/nix/store/11111111111111111111111111111111-top.drv"
+    middle = "/nix/store/22222222222222222222222222222222-middle.drv"
+    bottom = "/nix/store/33333333333333333333333333333333-bottom.drv"
+
+    def _with_input(output: str, input_drv: str | None) -> Derivation:
+        return Derivation(
+            outputs=[DrvOutput(output_name="out", path=output, hash_algo="", hash_value="")],
+            input_drvs={input_drv: ["out"]} if input_drv else {},  # pyright: ignore[reportArgumentType] -- a plain str
+        )
+
+    ctx = cast(
+        "PynixdContext",
+        SimpleNamespace(
+            local_store=FakeLocalStore(
+                valid_paths=set(),
+                derivations={
+                    top: _with_input("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-top", middle),
+                    middle: _with_input("/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-middle", bottom),
+                    bottom: _with_input("/nix/store/cccccccccccccccccccccccccccccccc-bottom", None),
+                },
+            ),
+            scheduler=SimpleNamespace(substitution_queue=FakeSubstitutionQueue({})),
+        ),
+    )
+    request = QueryMissingRequest(derived_paths=_derived_path_set(f"{top}!out"))
+
+    response = await QueryMissingPlanGoal(GoalEngine(ctx), request).result()
+
+    assert {str(path) for path in response.will_build} == {top, middle, bottom}
+    assert not response.unknown
+
+
+@pytest.mark.anyio
+async def test_query_missing_reads_a_shared_input_once() -> None:
+    """`doPath` keeps a `done` set of derived paths, at `misc.cc:188`.
+
+    Two derivations that share one input give the same derived path twice, and
+    the walk must read the derivation of that input once.
+    """
+    left = "/nix/store/11111111111111111111111111111111-left.drv"
+    right = "/nix/store/22222222222222222222222222222222-right.drv"
+    shared = "/nix/store/33333333333333333333333333333333-shared.drv"
+
+    def _with_input(output: str, input_drv: str | None) -> Derivation:
+        return Derivation(
+            outputs=[DrvOutput(output_name="out", path=output, hash_algo="", hash_value="")],
+            input_drvs={input_drv: ["out"]} if input_drv else {},  # pyright: ignore[reportArgumentType] -- a plain str
+        )
+
+    store = FakeLocalStore(
+        valid_paths=set(),
+        derivations={
+            left: _with_input("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-left", shared),
+            right: _with_input("/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-right", shared),
+            shared: _with_input("/nix/store/cccccccccccccccccccccccccccccccc-shared", None),
+        },
+    )
+    reads: list[str] = []
+    original = store.read_derivation
+
+    async def _counting(drv_store_path: StorePath | str) -> Derivation | None:
+        reads.append(str(drv_store_path))
+        return await original(drv_store_path)
+
+    store.read_derivation = _counting  # pyright: ignore[reportAttributeAccessIssue] -- a fake, for the count alone
+
+    ctx = cast(
+        "PynixdContext",
+        SimpleNamespace(
+            local_store=store,
+            scheduler=SimpleNamespace(substitution_queue=FakeSubstitutionQueue({})),
+        ),
+    )
+    request = QueryMissingRequest(derived_paths=_derived_paths({f"{left}!out", f"{right}!out"}))
+
+    response = await QueryMissingPlanGoal(GoalEngine(ctx), request).result()
+
+    assert {str(path) for path in response.will_build} == {left, right, shared}
+    assert reads.count(shared) == 1

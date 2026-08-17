@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import anyio
@@ -16,6 +16,8 @@ from .goal import ExecutionGoal
 from .realisations import realisations_of
 
 if TYPE_CHECKING:
+    from anyio.abc import TaskGroup
+
     from ..drv_parser import Derivation
     from .engine import GoalEngine
 
@@ -40,12 +42,31 @@ class QueryMissingPlan:
 
 
 @dataclass
+class _Walk:
+    """The state of one walk over the derived paths of a request.
+
+    `Store::queryMissing` runs a thread pool over a work list, and each item
+    may add more. This holds the same three things: the answer, the set of
+    derived paths that the walk already read, and the group that runs a task
+    for each new one.
+    """
+
+    plan: QueryMissingPlan
+    task_group: TaskGroup
+    seen: set[str] = field(default_factory=set)
+
+
+@dataclass
 class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
     """Read-only root goal for QueryMissing.
 
-    This preserves the current limited classification behavior while moving it
-    behind the goal-system read-only entrypoint. Later slices should teach this
-    planner about substituter availability and dependency walking.
+    `Store::queryMissing` at `misc.cc:102` is what this answers. It walks the
+    input derivations of each derivation that must be built, and it walks the
+    references of each path that a substituter holds.
+
+    One part is missing: the substituters that the client names. pynixd reads
+    the backends of its own configuration alone, so a path in a cache that
+    `--substituters` names reads as `willBuild`. Issue #187.
     """
 
     engine: GoalEngine
@@ -58,8 +79,9 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
         plan = QueryMissingPlan(will_build=set(), will_substitute=set(), unknown=set())
 
         async with anyio.create_task_group() as tg:
+            walk = _Walk(plan=plan, task_group=tg)
             for wire_path in self.request.derived_paths:
-                tg.start_soon(self._classify_wire_path, wire_path.value, plan)
+                self._enqueue(walk, wire_path.value)
 
         log.debug(
             "query_missing_goal_plan",
@@ -76,7 +98,22 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
             nar_size=plan.nar_size,
         )
 
-    async def _classify_wire_path(self, wire_path: str, plan: QueryMissingPlan) -> None:
+    def _enqueue(self, walk: _Walk, wire_path: str) -> None:
+        """Classify one derived path, unless the walk did that already.
+
+        `doPath` of `Store::queryMissing` keeps a `done` set of the string form
+        of each derived path, at `misc.cc:188`. A closure that reaches one
+        derivation by two roads then reads it once.
+
+        The check and the insertion take no await between them, so two tasks
+        cannot both pass it.
+        """
+        if wire_path in walk.seen:
+            return
+        walk.seen.add(wire_path)
+        walk.task_group.start_soon(self._classify_wire_path, wire_path, walk)
+
+    async def _classify_wire_path(self, wire_path: str, walk: _Walk) -> None:
         derived_path = DerivedPath(wire_path)
         base_path = derived_path.base_store_path()
         # **The question is the shape of the derived path, and not the name of
@@ -84,43 +121,66 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
         # two cases of `DerivedPath` apart, and the opaque case asks about the
         # path alone. A `.drv` name in an opaque path means nothing there.
         if not derived_path.is_opaque:
-            await self._classify_derivation(derived_path, plan)
+            await self._classify_derivation(derived_path, walk)
             return
 
-        await self._classify_opaque_path(base_path, plan)
+        await self._classify_opaque_path(base_path, walk.plan)
 
-    async def _classify_derivation(self, derived_path: DerivedPath, plan: QueryMissingPlan) -> None:
+    def _must_build(self, drv_path: StorePath, parsed: Derivation | None, walk: _Walk) -> None:
+        """The derivation builds, and so does each input that it needs.
+
+        `mustBuildDrv` at `misc.cc:139` puts the derivation in `willBuild` and
+        then enqueues each input derivation with the outputs that this one
+        wants. pynixd classified the derived paths of the request alone, so
+        `nix build` printed one derivation where `nix-daemon` printed the
+        whole list. `impure-derivations.sh` is where that showed: the daemon
+        named `impure.drv` and `impure-on-impure.drv`, and pynixd named the
+        second one only.
+
+        A dynamic input takes no part. `doPath` at `misc.cc:198` warns
+        "Ignoring dynamic derivation %s while querying missing paths" and
+        returns, so the answer of Nix holds nothing for one either.
+        """
+        walk.plan.will_build.add(SerdeStorePath(path=str(drv_path)))
+        if parsed is None:
+            return
+        for input_drv_path, output_names in parsed.input_drvs.items():
+            if not output_names:
+                continue
+            self._enqueue(walk, f"{input_drv_path}!{','.join(sorted(output_names))}")
+
+    async def _classify_derivation(self, derived_path: DerivedPath, walk: _Walk) -> None:
         drv_path = derived_path.base_store_path()
         if derived_path.is_nested:
-            plan.will_build.add(SerdeStorePath(path=str(drv_path)))
+            self._must_build(drv_path, None, walk)
             return
 
         parsed = await self.engine.ctx.local_store.read_derivation(str(drv_path))
         if parsed is None:
-            plan.unknown.add(SerdeStorePath(path=str(drv_path)))
+            walk.plan.unknown.add(SerdeStorePath(path=str(drv_path)))
             return
         if parsed.is_dynamic:
-            plan.will_build.add(SerdeStorePath(path=str(drv_path)))
+            self._must_build(drv_path, parsed, walk)
             return
 
         output_paths = parsed.selected_output_paths(derived_path.output_names)
         if not output_paths:
-            plan.will_build.add(SerdeStorePath(path=str(drv_path)))
+            self._must_build(drv_path, parsed, walk)
             return
 
         unnamed = [name for name, path in output_paths.items() if not str(path)]
         realised = await self._realised_paths(parsed, unnamed) if unnamed else {}
         if realised is None:
-            plan.will_build.add(SerdeStorePath(path=str(drv_path)))
+            self._must_build(drv_path, parsed, walk)
             return
 
         needs_build = False
         for output_name, output_path in output_paths.items():
             path = output_path if str(output_path) else realised[output_name]
-            if not await self._classify_output_path(path, plan):
+            if not await self._classify_output_path(path, walk.plan):
                 needs_build = True
         if needs_build:
-            plan.will_build.add(SerdeStorePath(path=str(drv_path)))
+            self._must_build(drv_path, parsed, walk)
 
     async def _realised_paths(self, parsed: Derivation, wanted: list[str]) -> dict[str, StorePath] | None:
         """The path of each output that the derivation does not name.

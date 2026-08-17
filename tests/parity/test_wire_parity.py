@@ -176,6 +176,25 @@ derivation {{
 """
 
 
+# A chain of three derivations. `QueryMissing` must name all three, because
+# `mustBuildDrv` at `misc.cc:139` enqueues each input of what it builds, and
+# the client prints "these 3 derivations will be built".
+CHAIN = """
+let
+  step = name: input: derivation {
+    inherit name;
+    system = builtins.currentSystem;
+    builder = "/bin/sh";
+    # `read` and `echo` are builtins of the shell. The store of this test
+    # holds no `coreutils`, so `cat` is not there to run.
+    args = [ "-c" (if input == null then "echo 0 > $out" else "read n < ${input}; echo $((n + 1)) > $out") ];
+  };
+  bottom = step "chain-bottom" null;
+  middle = step "chain-middle" bottom;
+in step "chain-top" middle
+"""
+
+
 # An output that names another store path, so the closure has an edge in it
 # and `--references`, `--referrers` and `--requisites` all have an answer.
 REFERRER = """
@@ -268,6 +287,8 @@ async def _builds(run: Runner, root: Path, work: Path) -> None:
         ["path-info", "--json", "--impure", "--expr", DERIVATION],
         ["store", "gc"],
         ["build", "--impure", "--no-link", "--json", "--expr", MULTI],
+        # A chain of three, so `QueryMissing` has to walk the inputs.
+        ["build", "--impure", "--no-link", "--json", "--expr", CHAIN],
         # The path of the derivation, and not an output of it.
         # `builtins.unsafeDiscardOutputDependency` drops the output dependency
         # of the string, so the client asks for one opaque store path that
