@@ -57,6 +57,43 @@ The stream mode reads the wire instead of the verdict of each script:
 | `diff-streams`   | state which tests differ on the wire               |
 | `streams`        | setup, both records, and the comparison            |
 
+### From a darwin host: `nixft.sh`
+
+The suite needs Linux, and a darwin host reaches Linux through the `vzrun`
+builder. Use `nixft.sh` there, and give it the same commands:
+
+```sh
+./pynixd/nix/functional-tests/nixft.sh pynixd --suite ca
+./pynixd/nix/functional-tests/nixft.sh --work '$HOME/nixft-full' all
+```
+
+**The builder is disposable, and the script takes that as the rule.** It shuts
+down after 60 seconds with no open connection, and the next boot makes its
+disk again from nothing. No directory of it survives that, `$HOME` included:
+`$HOME` and `/scratch` are two paths on one ext4 image that the host
+truncates on every cold boot.
+
+Two rules follow, and the script is both of them:
+
+- **One invocation does the whole job.** `nixft-remote.sh` runs inside the
+  builder and seeds the fetch cache, builds the runner, prepares the work
+  directory and runs the command. Each of the four is a no-op when its result
+  is already there. A host script that built, then prepared, then ran, left a
+  half-made work directory whenever a restart landed between two calls, and
+  the next call then reported something unrelated.
+- **One invocation holds one connection.** The shutdown counts open
+  connections, so a suite that runs inside one invocation keeps the builder
+  alive for its whole length.
+
+`nixft-remote.sh` writes `NIXFT-DONE <code>` as its last line and always exits
+0. That is how the host tells a failed test from a dead worker: a run with no
+such line did not finish, whatever the transport reported, and `nixft.sh`
+tries it again.
+
+The builder reads the checkout as a store path, and not as a shared
+directory, so the code under test is the code the host holds. `nixft.sh`
+passes that path, and it reads `nixft-remote.sh` out of it as well.
+
 Each further argument goes to `meson test`, so `control --suite ca` runs one
 suite and `control gc fetchurl` runs two tests.
 
