@@ -220,6 +220,17 @@ both runs. Issue #186 holds the first two, and the cause is not proven: the
 run that reported them differs from this one in the corrections of #174 and
 #175, and in nothing that touches the shape of a store.
 
+### A regression that stays
+
+`main:store-info` reads the version out of `nix store info`, and it greps for
+`Version: 2.34.8`. pynixd answers `Version: pynixd-0.1.0`, because it is not
+Nix and it says so in the handshake. `wirelog compare` holds the same
+difference as the `handshake.nix_version` exemption, and that exemption is on
+purpose.
+
+So this test counts as a regression in every run, and no correction is
+planned. The GC tests above are the other permanent group.
+
 ### The 22 control failures
 
 **A failure here is a failure of Nix or of this harness, and not of pynixd.**
