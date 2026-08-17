@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import anyio
@@ -26,6 +25,7 @@ from .allocator import BuildAllocator, RankedStore, TelemetryStoreRanker
 from .build_queue import BuildQueue, QueuedBuild
 from .exceptions import BackendError, InfrastructureError, ResourceExhaustedError
 from .serde import LogNext, QueryValidPathsRequest, StorePath as SerdeStorePath
+from .serde.ids import LOCAL_STORE_ID
 from .store import DaemonStore, LocalDBStore
 from .store.transfer import stream_paths_store_to_store
 from .store_path import StorePath
@@ -410,6 +410,25 @@ class Scheduler:
                     s.cpu_util.utilization,
                 )
 
+    @staticmethod
+    async def _say_where_it_builds(build: QueuedBuild, store: DaemonStore) -> None:
+        """Name the backend, but only when the backend is not the local one.
+
+        Nix writes `building '<drv>'...` for a local build, and `building
+        '<drv>' on '<machine>'...` for a remote one. The location is news only
+        in the second case, and the backend daemon writes the first line
+        itself, which pynixd forwards to the client.
+
+        pynixd wrote `pynixd: starting build on local at <timestamp>` for every
+        build, and two faults came from that. The extra line broke
+        `main:cli-characterisation`, which compares the output of a command
+        against a recorded `.exp` file. The timestamp also made the output
+        different on each run, so no two recordings of one build could agree.
+        """
+        if store.store_id == LOCAL_STORE_ID:
+            return
+        await build.post_log_and_fanout(LogNext(text=f"pynixd: building on {store.store_id}\n"))
+
     async def execute_build(self, build: QueuedBuild, store: DaemonStore) -> None:
         """Execute build on a store, handling inputs and outputs.
 
@@ -424,9 +443,7 @@ class Scheduler:
         try:
             async with store.build_conn() as conn:
                 await self._prepare_build(build, store, conn)
-                await build.post_log_and_fanout(
-                    LogNext(text=f"pynixd: starting build on {store.store_id} at {datetime.now(UTC).isoformat()}\n")
-                )
+                await self._say_where_it_builds(build, store)
                 build_resp = await self._execute(build, store, conn)
                 if build_resp.result.status == 0:
                     await self.queue.complete(build.build_id, build_resp)

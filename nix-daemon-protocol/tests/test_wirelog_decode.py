@@ -225,7 +225,7 @@ async def test_a_note_that_pynixd_writes_about_itself_is_exempt(workdir):
     candidate = await decode(
         await build_tape(
             workdir / "b.wire",
-            logs=("pynixd: IsValidPath (SQLite hit)", "deleting garbage...", "pynixd: starting build on local"),
+            logs=("pynixd: IsValidPath (SQLite hit)", "deleting garbage...", "pynixd: building on builder1"),
         )
     )
 
