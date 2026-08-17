@@ -8,9 +8,15 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from ..derived_path import DerivedPath, OutputsAll, OutputsNames
+from ..derived_path import DerivedPath, OutputsNames
 from ..drv_parser import ChildMapNode, to_basic_derivation
-from ..serde import BuildDerivationRequest, BuildResultStatus, IsValidPathRequest, StorePath as SerdeStorePath
+from ..serde import (
+    BuildDerivationRequest,
+    BuildResult,
+    BuildResultStatus,
+    IsValidPathRequest,
+    StorePath as SerdeStorePath,
+)
 from ..store_path import StorePath
 from .dependencies import DependencyGroupGoal
 from .goal import GoalHolder
@@ -170,10 +176,18 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         else:
             basic = await to_basic_derivation(parsed, store_path)
 
-        if not isinstance(self.derived_path.outputs, OutputsAll):
-            basic.outputs = {name: output for name, output in basic.outputs.items() if name in selected_outputs}
-
-        substituted = await self._try_substitute_known_outputs(basic.output_paths())
+        # **Every output of the derivation goes on the wire, and the wanted
+        # ones alone do not.** `BuildDerivation` carries no set of wanted
+        # outputs, so the daemon builds each output that the derivation names.
+        # It also rewrites `builtins.placeholder <name>` for each of those
+        # names, at `derivation-builder.cc:802` of Nix. A derivation that lost
+        # an output therefore reached the builder with the placeholder of that
+        # output unrewritten, and the builder read a path that is not there.
+        # The name of the derivation is also the dedup key of the build, so a
+        # request for `drv^out` and a request for `drv^bin` made two builds of
+        # one derivation. Issue #178.
+        selected_paths = {name: path for name, path in basic.output_paths().items() if name in selected_outputs}
+        substituted = await self._try_substitute_known_outputs(selected_paths)
         if substituted is not None:
             log.debug("ensure_derivation_substituted", drv_path=str(drv_path), outputs=sorted(selected_outputs))
             return substituted.with_dynamic_outputs(self.derived_path.base_store_path())
@@ -191,7 +205,9 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         for client in subscribers:
             await build_goal.subscribe(client)
         result = await self.run_child(build_goal)
-        return result.with_dynamic_outputs(self.derived_path.base_store_path())
+        result = result.with_dynamic_outputs(self.derived_path.base_store_path())
+        result.result = _only_wanted_outputs(result.result, selected_outputs)
+        return result
 
     async def _realise_input_derivations(self, parsed) -> list[GoalResult]:
         child_goals: list[EnsureDerivedPathGoal] = []
@@ -313,6 +329,28 @@ def _child_map_to_derived_paths(drv_path: StorePath, node: ChildMapNode) -> list
 
     walk(node, ())
     return results
+
+
+def _realisation_output_name(key: str, realisation) -> str:
+    name = getattr(realisation.id, "output_name", "")
+    return str(name) if name else key.split("!", 1)[-1]
+
+
+def _only_wanted_outputs(result: BuildResult, wanted: set[str]) -> BuildResult:
+    """Keep the outputs that the derived path names, and drop the others.
+
+    The daemon builds every output of the derivation, so it answers with every
+    output. A derived path names the outputs that the client wants, and
+    `derivation-goal.cc:291` of Nix removes each other output from the answer.
+    This makes the same removal, so `drv^out` answers with `out` alone.
+    """
+    built = result.built_outputs
+    if not built:
+        return result
+    kept = {key: item for key, item in built.items() if _realisation_output_name(key, item) in wanted}
+    if len(kept) == len(built):
+        return result
+    return result.model_copy(update={"built_outputs": kept})
 
 
 def _needs_placeholder_resolution(parsed) -> bool:

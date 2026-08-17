@@ -1,0 +1,230 @@
+"""The derivation on the wire keeps every output, and the answer keeps one.
+
+`BuildDerivation` carries no set of wanted outputs. The daemon builds each
+output that the derivation names, and it rewrites `builtins.placeholder <name>`
+for each of those names, at `derivation-builder.cc:802` of Nix.
+
+`EnsureDerivedPathGoal` removed each output that the derived path does not
+name, so `drv^out` sent a derivation of one output. The builder then read
+`${placeholder "bin"}` as a path, and no file is there. `main:placeholders` of
+the functional suite is that build. Issue #178.
+
+The removal also split one build in two: the derivation is the dedup key of a
+`BuildDerivationGoal`, so `drv^out` and `drv^bin` made two derivations and two
+builds of the same work.
+
+The answer is the other half. Nix removes each unwanted output from
+`builtOutputs`, at `derivation-goal.cc:291`, so a client that asks for one
+output reads one output.
+"""
+
+from __future__ import annotations
+
+import hashlib
+from typing import TYPE_CHECKING, Any, cast
+
+import pytest
+
+from pynixd.derived_path import DerivedPath
+from pynixd.drv_parser import Derivation
+from pynixd.goals.ensure import EnsureDerivedPathGoal
+from pynixd.goals.results import GoalResult, goal_success
+from pynixd.goals.substitute import SubstituteAttempt
+from pynixd.serde import BuildMode, IsValidPathResponse, Realisation, StorePath as SerdeStorePath
+from pynixd.store_path import DrvOutput, StorePath
+from pynixd.utils import nix32_encode
+
+if TYPE_CHECKING:
+    from pynixd.goals.engine import GoalEngine
+    from pynixd.serde import BuildDerivationRequest
+
+_DRV = "/nix/store/00000000000000000000000000000000-placeholders.drv"
+_OUT_PATH = {
+    "out": "/nix/store/11111111111111111111111111111111-placeholders",
+    "bin": "/nix/store/22222222222222222222222222222222-placeholders-bin",
+    "dev": "/nix/store/33333333333333333333333333333333-placeholders-dev",
+}
+
+# `nix eval --raw --expr 'builtins.placeholder "<name>"'`, Nix 2.34.8. The
+# helper below must answer the same, and `04f3da1k...` is the path that the
+# builder of `main:placeholders` could not read.
+_REAL_PLACEHOLDER = {
+    "out": "/1rz4g4znpzjwh1xymhjpm42vipw92pr73vdgl6xs1hycac8kf2n9",
+    "bin": "/04f3da1kmbr67m3gzxikmsl4vjz5zf777sv6m14ahv22r65aac9m",
+    "dev": "/02qcpld1y6xhs5gz9bchpxaw0xdhmsp5dv88lh25r2ss44kh8dxz",
+}
+
+
+def hash_placeholder(output_name: str) -> str:
+    """`hashPlaceholder` of `derivations.cc:1071` of Nix."""
+    return "/" + nix32_encode(hashlib.sha256(f"nix-output:{output_name}".encode()).digest())
+
+
+def _build_command() -> str:
+    """What `placeholders.sh` of the functional suite asks the builder to run."""
+    lines = [f"echo {name} > ${name}" for name in _OUT_PATH]
+    lines += [f"[[ $(cat {hash_placeholder(name)}) = {name} ]]" for name in _OUT_PATH]
+    return "\n".join(lines)
+
+
+def _derivation() -> Derivation:
+    return Derivation(
+        outputs=[
+            DrvOutput(hash_algo="", hash_value="", output_name=name, path=path) for name, path in _OUT_PATH.items()
+        ],
+        platform="x86_64-linux",
+        builder="/bin/sh",
+        args=["-e", "-c", _build_command()],
+        env={"buildCommand": _build_command(), **_OUT_PATH},
+    )
+
+
+class FakeLocalStore:
+    """A store that holds the derivation and none of its outputs."""
+
+    def __init__(self, store_path: str = "/") -> None:
+        self.store_path = store_path
+
+    async def read_derivation(self, drv_path: str) -> Derivation | None:
+        return _derivation() if drv_path == _DRV else None
+
+    async def execute(self, request: Any, **kwargs: Any) -> Any:
+        del kwargs
+        return IsValidPathResponse(valid=False)
+
+
+class FakeBuildGoal:
+    """A build goal that records its request and answers for every output."""
+
+    def __init__(self, request: BuildDerivationRequest) -> None:
+        self.request = request
+
+    async def subscribe(self, client: Any) -> None:
+        del client
+
+    async def result(self) -> GoalResult:
+        result = goal_success()
+        result.result = result.result.model_copy(
+            update={
+                "built_outputs": {
+                    f"sha256:abcd!{name}": Realisation(
+                        id=f"sha256:abcd!{name}",
+                        out_path=SerdeStorePath(path=path),
+                    )
+                    for name, path in _OUT_PATH.items()
+                }
+            }
+        )
+        result.resolved_outputs = {name: StorePath(path) for name, path in _OUT_PATH.items()}
+        return result
+
+
+class FakeSubstituteGoal:
+    """A substituter that holds nothing."""
+
+    async def result(self) -> SubstituteAttempt:
+        return SubstituteAttempt(found=False, result=goal_success())
+
+
+class FakeContext:
+    def __init__(self) -> None:
+        self.local_store = FakeLocalStore()
+
+
+class FakeEngine:
+    """Enough of `GoalEngine` for a derivation with no input derivation."""
+
+    def __init__(self) -> None:
+        self.ctx = FakeContext()
+        self.build_goals: list[FakeBuildGoal] = []
+
+    async def get_build_derivation_goal(self, request: BuildDerivationRequest) -> FakeBuildGoal:
+        goal = FakeBuildGoal(request)
+        self.build_goals.append(goal)
+        return goal
+
+    async def get_substitute_path_goal(self, path: StorePath, substituter_ids: tuple[str, ...]) -> Any:
+        """No substituter holds an output, so the goal has to build."""
+        del path, substituter_ids
+        return FakeSubstituteGoal()
+
+
+def _goal(engine: FakeEngine, derived_path: str) -> EnsureDerivedPathGoal:
+    return EnsureDerivedPathGoal(
+        engine=cast("GoalEngine", engine),
+        derived_path=DerivedPath(derived_path),
+        build_mode=BuildMode.NORMAL,
+        substituter_ids=(),
+    )
+
+
+def test_the_helper_answers_what_nix_answers() -> None:
+    """Pin the formula against the real values, so the tests below mean something."""
+    assert {name: hash_placeholder(name) for name in _REAL_PLACEHOLDER} == _REAL_PLACEHOLDER
+
+
+@pytest.mark.anyio
+async def test_one_wanted_output_still_sends_every_output() -> None:
+    """The defect of issue #178, stated where the derivation goes on the wire."""
+    engine = FakeEngine()
+
+    await _goal(engine, f"{_DRV}!out").result()
+
+    assert len(engine.build_goals) == 1
+    sent = engine.build_goals[0].request.derivation
+    assert set(sent.outputs) == set(_OUT_PATH)
+
+
+@pytest.mark.anyio
+async def test_the_builder_can_rewrite_every_placeholder_it_meets() -> None:
+    """Each placeholder in the build command names an output of the derivation.
+
+    The daemon builds `inputRewrites` from the outputs of the derivation it
+    receives. A placeholder whose output is not there stays in the command, and
+    the builder reads it as a path.
+    """
+    engine = FakeEngine()
+
+    await _goal(engine, f"{_DRV}!out").result()
+
+    sent = engine.build_goals[0].request.derivation
+    rewritable = {hash_placeholder(name) for name in sent.outputs}
+    unrewritten = [
+        placeholder
+        for placeholder in (hash_placeholder(name) for name in _OUT_PATH)
+        if placeholder not in rewritable and placeholder in sent.env["buildCommand"]
+    ]
+    assert unrewritten == []
+
+
+@pytest.mark.anyio
+async def test_the_answer_holds_the_wanted_output_alone() -> None:
+    """`derivation-goal.cc:291` of Nix removes the others, so this does too."""
+    engine = FakeEngine()
+
+    result = await _goal(engine, f"{_DRV}!out").result()
+
+    built = result.result.built_outputs or {}
+    assert {item.id.output_name for item in built.values()} == {"out"}
+
+
+@pytest.mark.anyio
+async def test_a_request_for_every_output_keeps_every_answer() -> None:
+    engine = FakeEngine()
+
+    result = await _goal(engine, f"{_DRV}!*").result()
+
+    built = result.result.built_outputs or {}
+    assert {item.id.output_name for item in built.values()} == set(_OUT_PATH)
+
+
+@pytest.mark.anyio
+async def test_two_wanted_outputs_make_one_derivation() -> None:
+    """The derivation is the dedup key, so it must not follow the wanted set."""
+    engine = FakeEngine()
+
+    await _goal(engine, f"{_DRV}!out").result()
+    await _goal(engine, f"{_DRV}!bin").result()
+
+    first, second = (goal.request.derivation for goal in engine.build_goals)
+    assert first == second
