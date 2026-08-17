@@ -21,6 +21,7 @@ output reads one output.
 from __future__ import annotations
 
 import hashlib
+from pathlib import PurePath
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -80,17 +81,18 @@ def _derivation() -> Derivation:
 
 
 class FakeLocalStore:
-    """A store that holds the derivation and none of its outputs."""
+    """A store that holds the derivation, and the outputs it is told to hold."""
 
-    def __init__(self, store_path: str = "/") -> None:
+    def __init__(self, store_path: str = "/", valid: frozenset[str] = frozenset()) -> None:
         self.store_path = store_path
+        self.valid = valid
 
     async def read_derivation(self, drv_path: str) -> Derivation | None:
         return _derivation() if drv_path == _DRV else None
 
     async def execute(self, request: Any, **kwargs: Any) -> Any:
         del kwargs
-        return IsValidPathResponse(valid=False)
+        return IsValidPathResponse(valid=str(request.path) in self.valid)
 
 
 class FakeBuildGoal:
@@ -127,15 +129,15 @@ class FakeSubstituteGoal:
 
 
 class FakeContext:
-    def __init__(self) -> None:
-        self.local_store = FakeLocalStore()
+    def __init__(self, valid: frozenset[str] = frozenset()) -> None:
+        self.local_store = FakeLocalStore(valid=valid)
 
 
 class FakeEngine:
     """Enough of `GoalEngine` for a derivation with no input derivation."""
 
-    def __init__(self) -> None:
-        self.ctx = FakeContext()
+    def __init__(self, valid: frozenset[str] = frozenset()) -> None:
+        self.ctx = FakeContext(valid)
         self.build_goals: list[FakeBuildGoal] = []
 
     async def get_build_derivation_goal(self, request: BuildDerivationRequest) -> FakeBuildGoal:
@@ -228,3 +230,43 @@ async def test_two_wanted_outputs_make_one_derivation() -> None:
 
     first, second = (goal.request.derivation for goal in engine.build_goals)
     assert first == second
+
+
+@pytest.mark.anyio
+async def test_an_already_valid_output_still_names_its_path() -> None:
+    """The defect of issue #179.
+
+    pynixd answered "this succeeded" and said nothing about what it produced.
+    `nix build --json` then wrote no `outputs` key at all, because
+    `BuiltPath::Built::toJSON` of Nix writes that key once for each output.
+    """
+    engine = FakeEngine(valid=frozenset(_OUT_PATH.values()))
+
+    result = await _goal(engine, f"{_DRV}!out").result()
+
+    assert engine.build_goals == [], "an already-valid output needs no build"
+    built = result.result.built_outputs or {}
+    assert {item.id.output_name for item in built.values()} == {"out"}
+    # `StorePath::to_string` of Nix, which is what a `Realisation` carries.
+    assert {str(item.out_path) for item in built.values()} == {PurePath(_OUT_PATH["out"]).name}
+
+
+@pytest.mark.anyio
+async def test_the_realisation_names_the_derivation_that_made_it() -> None:
+    """`DrvOutput::to_string` is `sha256:<hex>!<name>`, and the hex is real.
+
+    `tests/unit/test_drv_hash.py` states that the hash is the one Nix computes.
+    This states that the answer carries it in the shape a client can parse.
+    """
+    engine = FakeEngine(valid=frozenset(_OUT_PATH.values()))
+
+    result = await _goal(engine, f"{_DRV}!out").result()
+
+    built = result.result.built_outputs or {}
+    [key] = built
+    algo, _, rest = key.partition(":")
+    digest, _, name = rest.partition("!")
+    assert algo == "sha256"
+    assert name == "out"
+    assert len(digest) == 64
+    assert int(digest, 16) >= 0, "the hash is hexadecimal"

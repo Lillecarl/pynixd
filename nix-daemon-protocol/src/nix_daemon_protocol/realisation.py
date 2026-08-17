@@ -24,7 +24,12 @@ class Realisation(WireModel):
     framework's JSON serialization.
     """
 
-    model_config = ConfigDict(validate_by_alias=True)
+    # **The name of a field builds one of these, and the alias does too.**
+    # The wire uses the alias, and Python code reads `realisation.out_path`.
+    # With the alias alone, `Realisation(out_path=...)` put nothing in the
+    # field and raised nothing, so the answer carried `null` where a store
+    # path belongs.
+    model_config = ConfigDict(validate_by_alias=True, validate_by_name=True)
 
     id: DrvOutput = WireField(default_factory=DrvOutput)
     out_path: StorePath | None = WireField(default=None, alias="outPath")

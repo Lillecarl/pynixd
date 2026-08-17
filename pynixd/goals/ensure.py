@@ -3,18 +3,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import TYPE_CHECKING
 
 import structlog
 
 from ..derived_path import DerivedPath, OutputsNames
+from ..drv_hash import output_hashes
 from ..drv_parser import ChildMapNode, to_basic_derivation
 from ..serde import (
     BuildDerivationRequest,
     BuildResult,
     BuildResultStatus,
     IsValidPathRequest,
+    Realisation,
     StorePath as SerdeStorePath,
 )
 from ..store_path import StorePath
@@ -27,6 +29,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from ..connection import ClientConn
+    from ..drv_parser import Derivation
     from .build_derivation import BuildDerivationGoal
     from .engine import GoalEngine
 
@@ -158,6 +161,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         substituted = await self._try_substitute_known_outputs(early_outputs)
         if substituted is not None:
             log.debug("ensure_derivation_substituted", drv_path=str(drv_path), outputs=sorted(selected_outputs))
+            substituted = await self._say_what_it_produced(substituted, parsed, selected_outputs)
             return substituted.with_dynamic_outputs(self.derived_path.base_store_path())
 
         child_results = await self._realise_input_derivations(parsed)
@@ -190,6 +194,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         substituted = await self._try_substitute_known_outputs(selected_paths)
         if substituted is not None:
             log.debug("ensure_derivation_substituted", drv_path=str(drv_path), outputs=sorted(selected_outputs))
+            substituted = await self._say_what_it_produced(substituted, parsed, selected_outputs)
             return substituted.with_dynamic_outputs(self.derived_path.base_store_path())
 
         request = BuildDerivationRequest(
@@ -297,6 +302,45 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             merged.resolved_outputs[output_name] = selected[output_name]
             merged.produced_paths.update(result.produced_paths)
         return merged
+
+    async def _say_what_it_produced(
+        self,
+        result: GoalResult,
+        parsed: Derivation,
+        wanted: set[str],
+    ) -> GoalResult:
+        """Put a realisation for each wanted output in the answer.
+
+        A status alone does not name a path.
+        `DerivationBuildingGoal::checkPathValidity` of Nix answers with one
+        realisation for each output it found, and a client reads the output
+        paths out of them. pynixd answered an already-valid derived path with
+        an empty map, so `nix build --json` wrote no `outputs` key at all:
+        `BuiltPath::Built::toJSON` writes that key once for each output.
+        Issue #179.
+        """
+        if result.result.built_outputs:
+            return result
+        hashes = await output_hashes(parsed, self.engine.ctx.local_store.read_derivation)
+        if hashes is None:
+            return result
+
+        built: dict[str, Realisation] = {}
+        for output_name, path in result.resolved_outputs.items():
+            digest = hashes.get(output_name)
+            if output_name not in wanted or digest is None:
+                continue
+            # `sha256:<hex>!<name>` is `DrvOutput::to_string` of Nix, and the
+            # bare `<hash>-<name>` is `StorePath::to_string`, which is what
+            # `Realisation` carries in its JSON.
+            key = f"sha256:{digest}!{output_name}"
+            built[key] = Realisation(id=key, out_path=SerdeStorePath(path=PurePath(str(path)).name))
+        if not built:
+            return result
+
+        answer = result.copy()
+        answer.result = answer.result.model_copy(update={"built_outputs": built})
+        return answer
 
     async def _try_substitute_path(self, path: StorePath) -> GoalResult | None:
         substitute_goal = await self.engine.get_substitute_path_goal(path, self.substituter_ids)
