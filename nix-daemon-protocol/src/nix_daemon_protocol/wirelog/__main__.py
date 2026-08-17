@@ -20,12 +20,15 @@ from pathlib import Path
 import anyio
 
 from .decode import decode
-from .diff import compare, report
+from .diff import compare, exemptions, report
 from .recorder import Recorder
 
 # How long the backend has to make its socket. A daemon of Nix takes well
 # under a second, and a run that waits longer than this has a real fault.
 BACKEND_TIMEOUT = 30.0
+# How long the backend has to end after it gets the signal, before this
+# process leaves it behind.
+BACKEND_STOP_TIMEOUT = 10.0
 
 
 async def _wait_for_socket(path: Path) -> None:
@@ -34,12 +37,29 @@ async def _wait_for_socket(path: Path) -> None:
             await anyio.sleep(0.02)
 
 
+async def _stop_on_signal(scope: anyio.CancelScope) -> None:
+    """Cancel the run when somebody asks this process to stop.
+
+    Python ends on a SIGTERM that nothing handles, and it runs no `finally`
+    clause on the way out. The backend is a child of this process, so it would
+    stay behind with nobody to kill it. `killDaemon` of Nix's functional tests
+    sends exactly that signal, and `restartDaemon` then starts a second
+    backend beside the first one.
+    """
+    with anyio.open_signal_receiver(signal.SIGTERM, signal.SIGINT) as signals:
+        async for _ in signals:
+            break
+    print("wirelog: stopping", file=sys.stderr, flush=True)
+    scope.cancel()
+
+
 async def _run_record(args: argparse.Namespace) -> int:
     listen = Path(args.listen)
     connect = Path(args.connect)
     out = Path(args.out)
 
     async with anyio.create_task_group() as group:
+        group.start_soon(_stop_on_signal, group.cancel_scope)
         backend = None
         if args.command:
             env = dict(os.environ, NIX_DAEMON_SOCKET_PATH=str(connect))
@@ -66,8 +86,12 @@ async def _run_record(args: argparse.Namespace) -> int:
             try:
                 await backend.wait()
             finally:
+                # Shielded, because the usual way out of the `await` above is
+                # the cancellation that `_stop_on_signal` makes.
                 with anyio.CancelScope(shield=True):
                     backend.send_signal(signal.SIGTERM)
+                    with anyio.move_on_after(BACKEND_STOP_TIMEOUT):
+                        await backend.wait()
                 group.cancel_scope.cancel()
     return 0
 
@@ -76,30 +100,39 @@ async def _run_compare(args: argparse.Namespace) -> int:
     control_dir = Path(args.control)
     candidate_dir = Path(args.candidate)
 
-    control_files = sorted(control_dir.glob("conn-*.wire"))
-    candidate_files = sorted(candidate_dir.glob("conn-*.wire"))
+    # `rglob`, and the name of each file relative to its own root. A test that
+    # calls `restartDaemon` makes a second recorder, and the runner gives that
+    # recorder its own directory, so a tree and not one flat directory. The
+    # names line the two runs up: an extra connection in one of them then
+    # reads as an extra connection, and does not move every later one.
+    control_files = sorted(p.relative_to(control_dir) for p in control_dir.rglob("conn-*.wire"))
+    candidate_files = sorted(p.relative_to(candidate_dir) for p in candidate_dir.rglob("conn-*.wire"))
 
     if not control_files:
         print(f"compare: no recording in {control_dir}", file=sys.stderr)
         return 2
 
     total = 0
-    if len(control_files) != len(candidate_files):
-        print(
-            f"the daemon served {len(control_files)} connections and pynixd served {len(candidate_files)}",
-        )
+    for name in sorted(set(control_files) - set(candidate_files)):
+        print(f"the daemon served {name} and pynixd served nothing")
+        total += 1
+    for name in sorted(set(candidate_files) - set(control_files)):
+        print(f"pynixd served {name} and the daemon served nothing")
         total += 1
 
-    for control_path, candidate_path in zip(control_files, candidate_files, strict=False):
-        differences = compare(await decode(control_path), await decode(candidate_path))
+    both = [name for name in control_files if name in set(candidate_files)]
+    for name in both:
+        differences = compare(await decode(control_dir / name), await decode(candidate_dir / name))
         if differences:
-            print(f"--- {control_path.name} ---")
+            print(f"--- {name} ---")
             print(report(differences))
             total += len(differences)
 
     if not total:
-        print(f"the two runs agree over {len(control_files)} connections")
+        print(f"the two runs agree over {len(both)} connections")
         return 0
+    print()
+    print(exemptions())
     print(f"\n{total} differences over {len(control_files)} connections")
     return 1
 
