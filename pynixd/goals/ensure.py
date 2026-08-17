@@ -42,15 +42,23 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 
+_ERROR_PREFIX = "\x1b[31;1merror:\x1b[0m "
+"""The word that `showErrorInfo` of Nix writes in front of a failure.
+
+The daemon colours the word itself, and it does not ask whether the client
+wants colour. The wire parity run reads these bytes from `nix-daemon`.
+"""
+
+
 def _as_an_error(message: str) -> str:
     """Give *message* the shape that `showErrorInfo` of Nix gives it.
 
     `TunnelLogger::logEI` at `daemon.cc` formats the failure of a goal and
-    sends the text as one `STDERR_NEXT`. The text starts with "error: ", and
-    each line after the first carries seven spaces, which is the width of that
-    word.
+    sends the text as one `STDERR_NEXT`. Each line after the first carries
+    seven spaces, which is the width of "error: ". The text carries no line
+    feed at the end, because the client adds one.
     """
-    return "error: " + "\n       ".join(message.split("\n")) + "\n"
+    return _ERROR_PREFIX + "\n       ".join(message.split("\n"))
 
 
 @dataclass
@@ -72,6 +80,20 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
 
     _build_goal: BuildDerivationGoal | None = None
 
+    _wanted_by_a_goal: bool = False
+    """True when another goal waits for this one.
+
+    `Goal::amDone` at `goal.cc:214` of Nix writes the failure of a goal as an
+    error message when `waiters` is not empty. A goal at the top of the
+    request writes no such line, because the caller reports that one through
+    `STDERR_ERROR`. This flag is the `waiters` of Nix, reduced to the single
+    question that the rule asks.
+    """
+
+    def note_a_parent(self) -> None:
+        """Record that another goal waits for this one."""
+        self._wanted_by_a_goal = True
+
     def __post_init__(self) -> None:
         """Initialize the GoalHolder base with the shared engine."""
         GoalHolder.__init__(self, self.engine)
@@ -89,11 +111,46 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         await build_goal.subscribe(client)
 
     async def _run(self) -> GoalResult:
+        result = await self._produce()
+        return await self._tell_the_client_it_failed(result)
+
+    async def _produce(self) -> GoalResult:
         if self.derived_path.is_opaque:
             return await self._ensure_opaque()
         if self.derived_path.is_nested:
             return await self._ensure_nested()
         return await self._ensure_flat_derivation()
+
+    async def _tell_the_client_it_failed(self, result: GoalResult) -> GoalResult:
+        """Write the failure of a child goal as an error message.
+
+        Nix writes one `error:` block for each goal that failed and had a goal
+        waiting for it, and one more for the goal at the top of the request.
+        A client that asked for a derivation with a failing input therefore
+        reads the reason of the input first, and "1 dependency failed" after
+        it. pynixd wrote the second line alone, so the reason was lost.
+
+        Issue #188 holds the measurement, and `main:build-remote` reads both
+        blocks.
+
+        **Nix takes this decision from the shape of the goal graph, and the
+        shape is the wrong question.** `waiters` answers "does another goal
+        wait for me", and the reporting really asks "did the client learn
+        this already". The two answers differ for a derivation that the client
+        names *and* another derivation depends on: `waiters` is not empty, so
+        `amDone` writes the block, and the caller of `buildPaths` then throws
+        the same failure and the client writes it again. Nix cannot separate
+        the two questions, because one goal graph carries both the dependency
+        edges and the request. Python can, and pynixd does not yet, because
+        the wire parity run compares the bytes of the two daemons. Correct it
+        here when parity stops being the measure.
+        """
+        if not self._wanted_by_a_goal or result_succeeded(result.result):
+            return result
+        detail = str(result.result.error_msg)
+        if detail:
+            await self._say(_as_an_error(detail))
+        return result
 
     async def _ensure_opaque(self) -> GoalResult:
         store_path = StorePath(self.derived_path.drv_path)
@@ -141,6 +198,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             self.build_mode,
             self.substituter_ids,
         )
+        outer_goal.note_a_parent()
         await outer_goal.subscribe_many(self._subscribers)
         outer_result = await self.run_child(outer_goal)
 
@@ -156,6 +214,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
 
         wrapped = self.derived_path.wrap(inner_drv)
         remainder_goal = await self.engine.get_ensure_derived_path_goal(wrapped, self.build_mode, self.substituter_ids)
+        remainder_goal.note_a_parent()
         await remainder_goal.subscribe_many(self._subscribers)
         result = await self.run_child(remainder_goal)
 
@@ -559,6 +618,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         async with self._lock:
             subscribers = list(self._subscribers)
         for goal in child_goals:
+            goal.note_a_parent()
             await goal.subscribe_many(subscribers)
 
         return await self.run_child(DependencyGroupGoal(self.engine, child_goals))

@@ -147,6 +147,9 @@ class FakeBuildGoal:
 class FakeChildGoal:
     """The input derivation, already built, and the path it produced."""
 
+    def note_a_parent(self) -> None:
+        """The goal of an input has a goal that waits for it."""
+
     async def subscribe_many(self, clients: list[Any]) -> None:
         del clients
 

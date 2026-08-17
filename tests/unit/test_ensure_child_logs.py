@@ -23,8 +23,11 @@ import pytest
 
 from pynixd.derived_path import DerivedPath
 from pynixd.drv_parser import Derivation
-from pynixd.goals.ensure import EnsureDerivedPathGoal
-from pynixd.goals.results import GoalResult, goal_success
+from pynixd.goals.ensure import (
+    _ERROR_PREFIX,  # noqa: PLC2701 -- the exact bytes are the unit under test
+    EnsureDerivedPathGoal,
+)
+from pynixd.goals.results import GoalResult, goal_success, result_succeeded
 from pynixd.goals.substitute import SubstituteAttempt
 from pynixd.serde import (
     BuildMode,
@@ -47,6 +50,7 @@ TOP_OUT = "/nix/store/11111111111111111111111111111111-top"
 INPUT_OUT = "/nix/store/22222222222222222222222222222222-input"
 RESOLVED_PREFIX = "/nix/store/33333333333333333333333333333333"
 RESOLVED = f"{RESOLVED_PREFIX}-top.drv"
+GONE = "/nix/store/44444444444444444444444444444444-gone"
 
 
 def _input() -> Derivation:
@@ -127,6 +131,10 @@ class FakeChildGoal:
 
     def __init__(self) -> None:
         self.subscribers: list[Any] = []
+        self.has_a_parent = False
+
+    def note_a_parent(self) -> None:
+        self.has_a_parent = True
 
     async def subscribe_many(self, clients: list[Any]) -> None:
         self.subscribers.extend(clients)
@@ -145,6 +153,11 @@ class FakeSubstituteGoal:
 class FakeContext:
     def __init__(self) -> None:
         self.local_store = FakeLocalStore()
+
+    def store_for_output_path(self, path: str) -> None:
+        """No backend holds the path, so the goal has to fail."""
+        del path
+        return None
 
 
 class FakeEngine:
@@ -224,7 +237,7 @@ async def test_a_failed_resolved_build_says_the_short_sentence() -> None:
     )
 
     assert str(answer.result.error_msg) == f"build of resolved derivation '{RESOLVED}' failed"
-    assert client.lines == ["error: Cannot build 'x'.\n       Reason: no.\n"]
+    assert client.lines == [f"{_ERROR_PREFIX}Cannot build 'x'.\n       Reason: no."]
 
 
 @pytest.mark.anyio
@@ -247,4 +260,41 @@ async def test_a_failed_build_of_the_derivation_itself_keeps_its_message() -> No
     )
 
     assert str(answer.result.error_msg) == "Cannot build 'x'."
+    assert client.lines == []
+
+
+@pytest.mark.anyio
+async def test_a_failed_child_goal_writes_its_reason() -> None:
+    """`Goal::amDone` at `goal.cc:214` writes this when `waiters` is not empty."""
+    goal = EnsureDerivedPathGoal(
+        engine=cast("GoalEngine", FakeEngine()),
+        derived_path=DerivedPath(GONE),
+        build_mode=BuildMode.NORMAL,
+        substituter_ids=(),
+    )
+    client = FakeClient()
+    await goal.subscribe(cast("Any", client))
+    goal.note_a_parent()
+
+    result = await goal.result()
+
+    assert not result_succeeded(result.result)
+    assert client.lines == [f"{_ERROR_PREFIX}{result.result.error_msg}"]
+
+
+@pytest.mark.anyio
+async def test_a_failed_top_goal_writes_no_reason() -> None:
+    """The caller reports that one through `STDERR_ERROR`, so a line here doubles it."""
+    goal = EnsureDerivedPathGoal(
+        engine=cast("GoalEngine", FakeEngine()),
+        derived_path=DerivedPath(GONE),
+        build_mode=BuildMode.NORMAL,
+        substituter_ids=(),
+    )
+    client = FakeClient()
+    await goal.subscribe(cast("Any", client))
+
+    result = await goal.result()
+
+    assert not result_succeeded(result.result)
     assert client.lines == []

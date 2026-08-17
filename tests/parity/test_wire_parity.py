@@ -399,8 +399,9 @@ async def _failure(run: Runner, root: Path, work: Path) -> None:
     derivation that the client asked for, because the client holds that
     failure in the `BuildResult` and prints it itself.
 
-    pynixd writes both, and it writes each one as `pynixd: ` note lines.
-    Issue #188.
+    pynixd wrote both, and it wrote each one as a `pynixd: ` note. Issue #188
+    corrected the frame: a goal that another goal waits for writes its failure
+    as one error message, and a goal at the top of the request writes none.
     """
     del root, work
     await run([str(NIX), "build", "--impure", "--no-link", "--json", "--expr", FAILING_CHAIN])
@@ -522,10 +523,7 @@ async def clean_base() -> AsyncIterator[None]:
         # answers `willSubstitute`, and it then builds. `strict`, so the
         # marker goes away with the correction and does not hide it.
         pytest.param(_substitute, marks=pytest.mark.xfail(strict=True, reason="issue #187")),
-        # **Issue #188.** pynixd writes a build failure as `pynixd: ` note
-        # lines, and `nix-daemon` writes one error message. The text agrees
-        # and the frame does not.
-        pytest.param(_failure, marks=pytest.mark.xfail(strict=True, reason="issue #188")),
+        _failure,
     ],
     ids=["builds", "queries", "modes", "impure", "substitute", "failure"],
 )

@@ -111,6 +111,9 @@ class FakeBuildGoal:
 
 
 class FakeChildGoal:
+    def note_a_parent(self) -> None:
+        """The goal of an input has a goal that waits for it."""
+
     async def subscribe_many(self, clients: list[Any]) -> None:
         del clients
 
