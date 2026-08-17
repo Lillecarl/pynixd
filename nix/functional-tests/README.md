@@ -295,20 +295,22 @@ with the relocated store layout that the suite itself sets.
 | run     | OK  | FAIL | SKIP |
 | ------- | --- | ---- | ---- |
 | control | 149 | 22   | 36   |
-| pynixd  | 144 | 28   | 35   |
+| pynixd  | 146 | 25   | 36   |
 
-**5 regressions**: a test that the control passes and pynixd fails.
+**3 regressions**: a test that the control passes and pynixd fails.
 
 | test                 | why                                             |
 | -------------------- | ----------------------------------------------- |
-| `ca:build-cache`     | #187, the substituters that a client names       |
-| `ca:issue-13247`     | #198, `max-jobs 0`, so pynixd builds and a build makes every output |
 | `ca:new-build-cmd`   | #196, the count of the `error:` lines            |
 | `main:build`         | #196                                             |
 | `main:store-info`    | permanent, and the next section gives the reason |
 
-`main:multiple-outputs-substitute-failure` moved SKIP to FAIL in this run and
-has no issue yet.
+So two issues hold every regression, and one of the two is on purpose.
+
+`main:multiple-outputs-substitute-failure` moved SKIP to FAIL in one run and
+not in the next. Issue #199 holds it: the managed upstream daemon did not
+start, which is a fault of the harness rather than of the subject of the
+test.
 
 `main:multiple-outputs`, `main:gc-concurrent` and `main:build-delete` come and
 go between runs, and all three are the #174 family. Read a single failure of
@@ -326,10 +328,9 @@ is the shorter loop, and the numbers are for `--suite ca`.
 | run     | OK  | FAIL | SKIP |
 | ------- | --- | ---- | ---- |
 | control | 19  | 1    | 4    |
-| pynixd  | 16  | 4    | 4    |
+| pynixd  | 18  | 2    | 4    |
 
-`ca:recursive` fails in both, so the three regressions are `build-cache`,
-`issue-13247` and `new-build-cmd`.
+`ca:recursive` fails in both, so the one regression left is `new-build-cmd`.
 
 ### What moved, and what moved it
 
@@ -339,6 +340,8 @@ is the shorter loop, and the numbers are for `--suite ca`.
 | #197, the options of the client on a path that is added | `ca:signatures` FAIL to OK |
 | #196, a cap for `max-jobs`, and one replay for each client | every derivation is built once, and the log of a build reaches a client once |
 | do not build a derivation whose input failed | `resolved_derivation_not_stored` gone from `main:build` |
+| #198, the daemon substitutes a content-addressed output | `ca:issue-13247` FAIL to OK |
+| #187, the plan sees a realisation that a substituter holds | `ca:build-cache` FAIL to OK |
 
 Removing the layout patch of #176 moved `nix-channel` from FAIL to OK in the
 control run, so that patch was breaking a test of Nix on its own.
