@@ -59,6 +59,18 @@ class ClientConn:
         """Wrap a writer for thread-safe stderr output to a client."""
         self.w = w
         self._write_lock = anyio.Lock()
+        self.standard_features: frozenset[str] = frozenset()
+        """The features that this client and pynixd negotiated.
+
+        `DaemonProxy.handshake` fills it in, and it is empty until then. A
+        message that goes out before the handshake ends therefore takes the
+        shape that every version reads, which is the right answer: the two
+        sides have agreed on nothing yet.
+
+        **This is the set of the client, and not of a backend.** The two
+        differ, and a message written with the wrong one carries a shape the
+        reader does not expect. Issue #162.
+        """
         self.options: SetOptionsRequest | None = None
         """The options that this client set for its session.
 

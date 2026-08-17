@@ -20,6 +20,12 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
+from pynixd.connection import ClientConn
+from pynixd.serde import LogNext
+from pynixd.wire import BytesWriter
+
 _SOURCE = Path(__file__).resolve().parent.parent.parent / "pynixd"
 
 CONTEXT_NAMES = {"ReadContext", "WriteContext"}
@@ -102,3 +108,24 @@ def test_the_two_sets_of_a_proxy_stay_apart() -> None:
     assert "features=ctx.proxy.standard_features" in source
     assert "features=conn.standard_features" in source
     assert "features=proxy.standard_features" in source
+
+
+@pytest.mark.anyio
+async def test_a_client_connection_can_send_before_the_handshake() -> None:
+    """`ClientConn.send` builds a context, so it needs a set of its own.
+
+    It had none. The AST guard above asks every context for `features=`, and
+    satisfying it here with `self.standard_features` named an attribute that
+    `ClientConn` did not carry. Every log line to a client then raised
+    `AttributeError`, and the client read "Nix daemon disconnected
+    unexpectedly". The `ca` suite against Nix 2.35 found it; no unit test
+    called this method.
+
+    The set is empty until `DaemonProxy.handshake` fills it in, which is the
+    right answer before a handshake: the two sides have agreed on nothing.
+    Issue #162.
+    """
+    client = ClientConn(BytesWriter("client"))
+
+    assert client.standard_features == frozenset()
+    await client.send(LogNext(text="hello\n"))

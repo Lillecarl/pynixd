@@ -190,6 +190,41 @@ class DaemonProxy:
 
     # ── Handshake ────────────────────────────────────────────────────
 
+    def honourable_features(self) -> frozenset[str]:
+        """The standard features that pynixd may name to a client.
+
+        **A proxy honours a feature by speaking its shape on both sides.**
+        `SUPPORTED_STANDARD_FEATURES` says which shapes this code can write
+        at all, and that is only half of the question. The other half is
+        whether the backend reads them: a client that names
+        `realisation-with-path-not-hash` and a backend that does not would
+        need pynixd to translate between the two shapes, and one direction of
+        that translation has no answer on the wire. `DrvOutput` of the old
+        shape carries the hash of the derivation, and the new shape carries
+        the path; going from the path to the hash means reading the
+        derivation and hashing it, for every realisation.
+
+        So this answers what **every** store that a build can go to offers,
+        and pynixd claims nothing that one of them would refuse. Step 4 of
+        issue #162.
+
+        **A substituter is left out.** `no_schedule` marks a store that the
+        scheduler never sends a build to, and a binary cache is not a peer of
+        the worker protocol at all, so its empty feature set would answer
+        "nothing" for every configuration that holds one. The loop below that
+        collects the feature matrix leaves them out for the same reason.
+
+        A store that has never connected reports an empty set, and that is
+        the conservative answer and not a wrong one: pynixd then names no
+        feature, and both sides keep the shape that every version reads.
+        """
+        honourable = set(wire.SUPPORTED_STANDARD_FEATURES)
+        for store in self.stores.values():
+            if store.no_schedule:
+                continue
+            honourable &= set(store.features)
+        return frozenset(honourable)
+
     async def handshake(self) -> None:
         """Server-side daemon protocol handshake."""
         magic = await self.r.read_uint64()
@@ -219,14 +254,19 @@ class DaemonProxy:
             # names `realisation-with-path-not-hash` gets the new codec only
             # when pynixd names it back, which is `intersectFeatures` at
             # `worker-protocol-connection.cc:148`. Issue #162.
-            self.standard_features = wire.negotiate_features(client_features, wire.SUPPORTED_STANDARD_FEATURES)
+            honourable = self.honourable_features()
+            self.standard_features = wire.negotiate_features(client_features, honourable)
+            # `ClientConn.send` writes a log message straight to the client,
+            # so it needs the set of that client and not of a backend.
+            self.client.standard_features = self.standard_features
             log.debug(
                 "client_features",
                 client_features=client_features,
+                honourable_features=sorted(honourable),
                 standard_features=sorted(self.standard_features),
             )
 
-            our_features = get_extension_features() | set(wire.SUPPORTED_STANDARD_FEATURES)
+            our_features = get_extension_features() | set(honourable)
 
             # Only build-capable stores contribute scheduling capabilities.
             # Substituters are deliberately non-scheduleable; advertising
