@@ -161,7 +161,7 @@ way, with the same recorder and the same comparison. It needs no Linux and no
 builder of Nix, so it runs in the dev shell of any host and it takes eight
 seconds.
 
-It found three more defects, and each one is a difference that no script of
+It found four more defects, and each one is a difference that no script of
 the suite reports:
 
 1. `nix store gc` deleted nothing through pynixd. An idle pooled connection
@@ -180,8 +180,14 @@ the suite reports:
    `misc.cc:217`, which answers from the realisation when the derivation names
    no output path. The client took a different code path after that answer, so
    every operation after it differed too.
+4. `nix build --rebuild` and `--repair` both failed. The goal system of pynixd
+   raised `RuntimeError` for `BuildMode.CHECK` and for `BuildMode.REPAIR`, so
+   those two commands, and `nix-store --realise --check`, `--repair-path` and
+   `--verify --repair`, all failed through pynixd and passed through
+   `nix-daemon`. Neither mode is a build that pynixd can schedule, so the
+   request goes straight to the local store now.
 
-**The lesson is the size of the workload.** Twenty-one commands find what 207
+**The lesson is the size of the workload.** Sixty commands find what 207
 scripts do not, because a script reads its own exit status and this reads the
 bytes.
 
@@ -193,24 +199,26 @@ with the relocated store layout that the suite itself sets.
 | run     | OK  | FAIL | SKIP |
 | ------- | --- | ---- | ---- |
 | control | 149 | 22   | 36   |
-| pynixd  | 130 | 44   | 33   |
+| pynixd  | 134 | 37   | 36   |
 
-**19 regressions**: a test that the control passes and pynixd fails. 4 in the
-`ca` suite, 1 in `flakes`, 2 in `dyn-drv`, and 12 in `main`.
+**15 regressions**: a test that the control passes and pynixd fails. 5 in the
+`ca` suite, 1 in `flakes`, 2 in `dyn-drv`, and 7 in `main`.
 
 Removing the layout patch of #176 moved `nix-channel` from FAIL to OK in the
 control run, so that patch was breaking a test of Nix on its own.
 `nested-sandboxing` still fails, and its cause is not the layout.
 
-The count was 40 before issues #178, #179, #180, #182, #183, #184 and #185,
-and 29 before issues #174 and #175. Each one is below.
+The count was 40 before issues #178, #179, #180, #182, #183, #184 and #185.
+Issues #174 and #175 then took it from 29 to 15, in three steps: 29, 19, 15.
+Each one is below.
 
-Three tests moved from SKIP to FAIL, and `compare` puts them under "other
-changes" rather than under the regressions. `local-overlay-store:delete-duplicate`
-and `local-overlay-store:stale-file-handle` are the two new ones: the managed
-daemon of pynixd does not start in the store shape of that suite, and the
-script then fails where the control run skips it. Issue #186 holds that. The
-third, `main:multiple-outputs-substitute-failure`, is older.
+`compare` reports no "other change" now. Three tests moved from SKIP to FAIL
+in an earlier run -- `local-overlay-store:delete-duplicate`,
+`local-overlay-store:stale-file-handle` and
+`main:multiple-outputs-substitute-failure` -- and all three skip again, in
+both runs. Issue #186 holds the first two, and the cause is not proven: the
+run that reported them differs from this one in the corrections of #174 and
+#175, and in nothing that touches the shape of a store.
 
 ### The 22 control failures
 
