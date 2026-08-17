@@ -28,12 +28,18 @@ It found three defects:
    empty set. The client then took a different code path, so every operation
    after it differed too. `pynixd/goals/realisations.py` holds the rule.
 
-**The workload builds.** Four derivations, with `/bin/sh` as the builder: one
-plain one twice, one with two outputs, one that fails, and one that is
+There are two workloads, and each one is a run of the test.
+
+**`builds`** builds four derivations, with `/bin/sh` as the builder: one plain
+one twice, one with two outputs, one that fails, and one that is
 content-addressed twice. A garbage collection follows each group. So
 `BuildPathsWithResults`, the temporary roots that a build makes, a failure,
 and the answer that a second build of the same derivation gives are all in
 the comparison.
+
+**`queries`** asks about one closure every way that `nix-store -q` asks, and
+it exports the closure to a file and imports it again. `nix-store` is the old
+command, and it reaches operations that `nix store` does not.
 
 Issue #175.
 """
@@ -54,7 +60,13 @@ from nix_daemon_protocol.wirelog import compare, decode
 from nix_daemon_protocol.wirelog.diff import report
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Awaitable, Callable
+
+    Runner = Callable[[list[str]], Awaitable[str]]
+    """Run one command against the recorder, and answer its last line."""
+
+    Workload = Callable[[Runner, Path, Path], Awaitable[None]]
+    """One list of commands, given the runner, the store root and the work dir."""
 
 NIX = shutil.which("nix")
 PYNIXD = shutil.which("pynixd")
@@ -120,6 +132,17 @@ derivation {
 """
 CA_FLAGS = ["--extra-experimental-features", "ca-derivations"]
 
+# An output that names another store path, so the closure has an edge in it
+# and `--references`, `--referrers` and `--requisites` all have an answer.
+REFERRER = """
+derivation {
+  name = "referrer";
+  system = builtins.currentSystem;
+  builder = "/bin/sh";
+  args = [ "-c" "echo ${builtins.toFile "dep" "a dependency"} > $out" ];
+}
+"""
+
 
 def _config(work: Path, root: Path) -> Path:
     """The configuration that `nix/functional-tests/make-shim.sh` writes."""
@@ -174,7 +197,81 @@ async def _wait_for(path: Path) -> None:
             await anyio.sleep(0.02)
 
 
-async def _record(role: str, root: Path) -> Path:
+async def _builds(run: Runner, root: Path, work: Path) -> None:
+    """Add paths, query them, build four derivations, and collect the garbage."""
+    sample = work / "f.txt"
+    for words in (
+        ["store", "info"],
+        ["store", "info", "--json"],
+        ["store", "add-file", "--name", "f.txt", str(sample)],
+        ["store", "add-path", "--name", "d", str(work / "d")],
+        ["store", "ls", "--json", "--recursive", str(root / "store")],
+        ["path-info", "--json", str(root / "store")],
+        ["store", "verify", "--all"],
+        ["store", "optimise"],
+        ["store", "dump-path", str(root / "store")],
+        ["store", "gc", "--max", "0"],
+        ["store", "gc"],
+        ["store", "info"],
+        # A real build, then the same build again, so the second one reads
+        # the output that the first one made. The `gc` at the end then has
+        # to free it, and the temporary roots of the build are in the way.
+        ["build", "--impure", "--no-link", "--json", "--expr", DERIVATION],
+        ["build", "--impure", "--no-link", "--json", "--expr", DERIVATION],
+        ["path-info", "--json", "--impure", "--expr", DERIVATION],
+        ["store", "gc"],
+        ["build", "--impure", "--no-link", "--json", "--expr", MULTI],
+        ["build", "--impure", "--no-link", "--json", "--expr", FAILS],
+        ["build", "--impure", "--no-link", "--json", "--expr", CONTENT_ADDRESSED, *CA_FLAGS],
+        ["build", "--impure", "--no-link", "--json", "--expr", CONTENT_ADDRESSED, *CA_FLAGS],
+        ["store", "gc"],
+    ):
+        await run([str(NIX), *words])
+
+
+async def _queries(run: Runner, root: Path, work: Path) -> None:
+    """Ask about a closure every way that `nix-store -q` asks.
+
+    `nix-store` is the old command, and it reaches operations that the new one
+    does not: `QueryReferrers`, `QueryDerivationOutputs`, `ExportPath`,
+    `ImportPaths` and the three `--print-*` modes of the collector.
+    """
+    leaf = await run([str(NIX), "store", "add-file", "--name", "leaf.txt", str(work / "f.txt")])
+    referrer = await run([str(NIX), "build", "--impure", "--no-link", "--print-out-paths", "--expr", REFERRER])
+    export = work / "exported.nar"
+    for words in (
+        ["nix-store", "-q", "--references", referrer],
+        ["nix-store", "-q", "--referrers", leaf],
+        ["nix-store", "-q", "--referrers-closure", leaf],
+        ["nix-store", "-q", "--requisites", referrer],
+        ["nix-store", "-q", "--size", referrer],
+        ["nix-store", "-q", "--hash", referrer],
+        ["nix-store", "-q", "--roots", referrer],
+        ["nix-store", "-q", "--deriver", referrer],
+        ["nix-store", "-q", "--tree", referrer],
+        [str(NIX), "path-info", "--json", "--closure-size", "--recursive", referrer],
+        [str(NIX), "path-info", "--json", "--sigs", referrer],
+        [str(NIX), "store", "diff-closures", leaf, referrer],
+        ["nix-store", "--dump-db"],
+        ["nix-store", "--gc", "--print-roots"],
+        ["nix-store", "--gc", "--print-dead"],
+        ["nix-store", "--gc", "--print-live"],
+        ["nix-store", "--verify", "--check-contents"],
+        [str(NIX), "store", "verify", "--all", "--no-trust"],
+        # Export the closure to a file, delete it, and import it again.
+        ["sh", "-c", f"nix-store --export $(nix-store -qR {referrer}) > {export}"],
+        [str(NIX), "store", "delete", "--ignore-liveness", referrer],
+        [str(NIX), "path-info", "--json", referrer],
+        ["sh", "-c", f"nix-store --import < {export}"],
+        [str(NIX), "path-info", "--json", referrer],
+        # A path that no store holds.
+        ["nix-store", "-r", f"{root}/store/00000000000000000000000000000000-absent"],
+        [str(NIX), "store", "gc"],
+    ):
+        await run(words)
+
+
+async def _record(role: str, root: Path, workload: Workload) -> Path:
     """Run the workload once, and answer the directory of the recording."""
     work = BASE / role
     out = BASE / f"rec-{role}"
@@ -206,35 +303,15 @@ async def _record(role: str, root: Path) -> Path:
     try:
         await _wait_for(work / "outer.sock")
         client = dict(os.environ, NIX_REMOTE=f"unix://{work / 'outer.sock'}", NIX_STORE_DIR=str(root / "store"))
-        for words in (
-            ["store", "info"],
-            ["store", "info", "--json"],
-            ["store", "add-file", "--name", "f.txt", str(sample)],
-            ["store", "add-path", "--name", "d", str(work / "d")],
-            ["store", "ls", "--json", "--recursive", str(root / "store")],
-            ["path-info", "--json", str(root / "store")],
-            ["store", "verify", "--all"],
-            ["store", "optimise"],
-            ["store", "dump-path", str(root / "store")],
-            ["store", "gc", "--max", "0"],
-            ["store", "gc"],
-            ["store", "info"],
-            # A real build, then the same build again, so the second one reads
-            # the output that the first one made. The `gc` at the end then has
-            # to free it, and the temporary roots of the build are in the way.
-            ["build", "--impure", "--no-link", "--json", "--expr", DERIVATION],
-            ["build", "--impure", "--no-link", "--json", "--expr", DERIVATION],
-            ["path-info", "--json", "--impure", "--expr", DERIVATION],
-            ["store", "gc"],
-            ["build", "--impure", "--no-link", "--json", "--expr", MULTI],
-            ["build", "--impure", "--no-link", "--json", "--expr", FAILS],
-            ["build", "--impure", "--no-link", "--json", "--expr", CONTENT_ADDRESSED, *CA_FLAGS],
-            ["build", "--impure", "--no-link", "--json", "--expr", CONTENT_ADDRESSED, *CA_FLAGS],
-            ["store", "gc"],
-        ):
+
+        async def run(words: list[str]) -> str:
             # A command may fail, and a failure is a fine thing to record: the
             # two daemons must fail the same way.
-            await anyio.run_process([str(NIX), *words], env=client, check=False)
+            done = await anyio.run_process(words, env=client, check=False)
+            lines = done.stdout.decode(errors="replace").strip().splitlines()
+            return lines[-1] if lines else ""
+
+        await workload(run, root, work)
     finally:
         recorder.terminate()
         with anyio.move_on_after(30):
@@ -249,8 +326,9 @@ async def clean_base() -> AsyncIterator[None]:
     shutil.rmtree(BASE, ignore_errors=True)
 
 
+@pytest.mark.parametrize("workload", [_builds, _queries], ids=["builds", "queries"])
 @pytest.mark.usefixtures("clean_base")
-async def test_the_two_daemons_answer_the_same_bytes() -> None:
+async def test_the_two_daemons_answer_the_same_bytes(workload: Workload) -> None:
     """Each connection of the pynixd run agrees with the control run.
 
     The store directory is one path for both runs, because the hash of a store
@@ -261,7 +339,7 @@ async def test_the_two_daemons_answer_the_same_bytes() -> None:
     recordings: dict[str, Path] = {}
     for role in ("control", "pynixd"):
         shutil.rmtree(root, ignore_errors=True)
-        recordings[role] = await _record(role, root)
+        recordings[role] = await _record(role, root, workload)
 
     control = sorted(p.relative_to(recordings["control"]) for p in recordings["control"].rglob("conn-*.wire"))
     candidate = sorted(p.relative_to(recordings["pynixd"]) for p in recordings["pynixd"].rglob("conn-*.wire"))
