@@ -81,6 +81,7 @@ from .io import NixWriter as NixWriter
 from .is_valid_path import IsValidPathRequest as IsValidPathRequest
 from .is_valid_path import IsValidPathResponse as IsValidPathResponse
 from .keyed_build_result import KeyedBuildResult as KeyedBuildResult
+from .keyed_drv_output import KeyedDrvOutput as KeyedDrvOutput
 from .logging import ProtocolLogger as ProtocolLogger
 from .logs import ActivityField as ActivityField
 from .logs import LogError as LogError
@@ -178,6 +179,7 @@ from .store_dir import (
     store_prefix as store_prefix,
 )
 from .store_path import StorePath as StorePath
+from .unkeyed_realisation import UnkeyedRealisation as UnkeyedRealisation
 from .valid_path_info import ValidPathInfo as ValidPathInfo
 from .verify_store import VerifyStoreRequest as VerifyStoreRequest
 from .verify_store import VerifyStoreResponse as VerifyStoreResponse

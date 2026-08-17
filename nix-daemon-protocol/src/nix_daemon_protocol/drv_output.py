@@ -1,6 +1,16 @@
 """DrvOutput — a derivation output identifier as a canonical wire scalar.
 
 Wire format: plain string like ``sha256:abc123!out``.
+
+**That is the shape with no feature, and it is one of two.**
+`WorkerProto::Serialise<DrvOutput>` at `worker-protocol.cc:544` of the master
+branch raises when `realisation-with-path-not-hash` is off, and writes a
+derivation **path** and an output name when it is on. The hash form does not
+exist in that shape at all: a `DrvOutput` there names the derivation that made
+the output, and not a hash of it.
+
+`KeyedDrvOutput` in `keyed_drv_output.py` holds the other shape.
+`SUPPORTED_STANDARD_FEATURES` is empty, so nothing writes it yet. Issue #162.
 """
 
 from __future__ import annotations
