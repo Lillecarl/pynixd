@@ -6,10 +6,11 @@ import json
 from dataclasses import dataclass, field
 from enum import IntEnum
 
-from .constants import proto
+from .constants import FEATURE_REALISATION_WITH_PATH, proto
 from .opt_microseconds import OptMicroseconds
 from .realisation import Realisation
 from .store_path import StorePath
+from .unkeyed_realisation import UnkeyedRealisation
 from .wire_message import WireField, WireModel
 
 # The highest status byte a Nix client can decode. `buildResultStatusTable` in
@@ -139,7 +140,29 @@ class BuildResult(WireModel):
     cpu_system: OptMicroseconds = WireField(default_factory=OptMicroseconds, min_version=proto(1, 37))
 
     # Protocol 1.28 fields
-    built_outputs: dict[str, Realisation] | None = WireField(default=None, min_version=proto(1, 28))
+    #
+    # **`builtOutputs` of Nix is two fields, and a feature picks which one.**
+    # `worker-protocol.cc:268` writes it as an if/else. With
+    # `realisation-with-path-not-hash` it is a map of output name to
+    # `UnkeyedRealisation`; without it, and from 1.28, it is a map of
+    # `"<drvHash>!<output>"` to a JSON `Realisation`. Both live at 1.38, so a
+    # version alone cannot separate them. Issue #162.
+    built_outputs: dict[str, Realisation] | None = WireField(
+        default=None,
+        min_version=proto(1, 28),
+        unless_features=[FEATURE_REALISATION_WITH_PATH],
+    )
+    built_outputs_by_name: dict[str, UnkeyedRealisation] | None = WireField(
+        default=None,
+        needs_features=[FEATURE_REALISATION_WITH_PATH],
+    )
+    """The map that the feature shape carries, keyed by the output name alone.
+
+    The key of `built_outputs` is a whole `DrvOutput`; this one names the
+    output of the derivation that the answer is already about, so it needs no
+    derivation in the key. `SUPPORTED_STANDARD_FEATURES` is empty, so nothing
+    fills this in yet.
+    """
 
     def wire_status(self) -> int:
         """The status byte to send, which is not always the one held.

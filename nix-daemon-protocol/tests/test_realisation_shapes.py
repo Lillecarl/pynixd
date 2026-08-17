@@ -21,8 +21,11 @@ from __future__ import annotations
 import pytest
 
 from nix_daemon_protocol import (
+    FEATURE_REALISATION_WITH_PATH,
     PROTOCOL_VERSION,
+    BuildResult,
     KeyedDrvOutput,
+    OptMicroseconds,
     Realisation,
     Signature,
     StorePath,
@@ -33,6 +36,26 @@ from nix_daemon_protocol.io import BytesReader, BytesWriter
 
 OUT_PATH = "/nix/store/00000000000000000000000000000000-x"
 DRV_PATH = "/nix/store/11111111111111111111111111111111-x.drv"
+
+
+def _a_result(**maps) -> BuildResult:
+    """A `BuildResult` with every version-gated field filled in.
+
+    The 1.29 and 1.37 fields default to `None`, and `PROTOCOL_VERSION` puts
+    each of them on the wire, so a writer that meets `None` where an integer
+    belongs raises. The maps are the subject here; the rest is scaffolding.
+    """
+    return BuildResult(
+        status=0,
+        error_msg="",
+        times_built=1,
+        is_non_deterministic=0,
+        start_time=1_700_000_000,
+        stop_time=1_700_000_100,
+        cpu_user=OptMicroseconds(tag=0, value=0),
+        cpu_system=OptMicroseconds(tag=0, value=0),
+        **maps,
+    )
 
 
 async def _round_trip(value, model):
@@ -108,3 +131,46 @@ async def test_the_two_shapes_of_a_realisation_are_not_the_same_bytes() -> None:
     # The old shape is one JSON string, so it holds the field names.
     assert b"outPath" in old.get_bytes()
     assert b"outPath" not in new.get_bytes()
+
+
+@pytest.mark.anyio
+async def test_a_build_result_carries_one_built_outputs_map_and_not_two() -> None:
+    """`worker-protocol.cc:268` writes it as an if/else, and so does this.
+
+    Two fields hold the two shapes, and exactly one of them reaches the wire.
+    A model that wrote both would put a second map on the wire that the peer
+    reads as whatever comes after `BuildResult`.
+    """
+    result = _a_result(
+        built_outputs={"h!out": Realisation(out_path=StorePath(OUT_PATH))},
+        built_outputs_by_name={"out": UnkeyedRealisation(out_path=StorePath(OUT_PATH))},
+    )
+
+    without = BytesWriter("test")
+    await result.to_writer(WriteContext(writer=without, version=PROTOCOL_VERSION))
+    with_it = BytesWriter("test")
+    await result.to_writer(
+        WriteContext(writer=with_it, version=PROTOCOL_VERSION, features=frozenset({FEATURE_REALISATION_WITH_PATH})),
+    )
+
+    # The JSON of the old shape names its fields; the new shape names none.
+    assert b"outPath" in without.get_bytes()
+    assert b"outPath" not in with_it.get_bytes()
+    assert without.get_bytes() != with_it.get_bytes()
+
+
+@pytest.mark.anyio
+async def test_a_build_result_reads_back_the_shape_it_wrote() -> None:
+    """Under the feature, the map is keyed by the output name alone."""
+    result = _a_result(built_outputs_by_name={"out": UnkeyedRealisation(out_path=StorePath(OUT_PATH))})
+    features = frozenset({FEATURE_REALISATION_WITH_PATH})
+
+    writer = BytesWriter("test")
+    await result.to_writer(WriteContext(writer=writer, version=PROTOCOL_VERSION, features=features))
+    read = await BuildResult.from_reader(
+        ReadContext(reader=BytesReader(writer.get_bytes()), version=PROTOCOL_VERSION, features=features),
+    )
+
+    assert read.built_outputs is None
+    assert read.built_outputs_by_name is not None
+    assert read.built_outputs_by_name["out"].out_path == OUT_PATH
