@@ -42,14 +42,16 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from ..constants import WORKER_MAGIC_1, WORKER_MAGIC_2, proto
+from ..constants import STDERR_LAST, WORKER_MAGIC_1, WORKER_MAGIC_2, proto
 from ..context import ReadContext
-from ..io import BytesReader
+from ..io import BytesReader, BytesWriter
 from ..logs import LogError, LogNext, read_stream
-from ..wire_ops import WIRE_REGISTRY
+from ..wire_message import WireModel
+from ..wire_ops import WIRE_REGISTRY, WireResponse
 from .framing import Chunk, Direction, read_chunks
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
 # The operations whose request carries a framed source: a length and that many
@@ -92,6 +94,19 @@ class Operation:
     error: str | None
     """The message of `STDERR_ERROR`, or None."""
 
+    response_fields: dict[str, str] | None = None
+    """The payload as named fields, or None when no model covers it.
+
+    A comparison of the raw payload can say only "byte 224 differs". The
+    registration time of a store path lives at byte 224 of one answer and at
+    byte 96 of another, and it differs in every pair of runs, because the two
+    runs add the path at two times. A name is what makes an answer like that
+    readable, and what lets `EXEMPTIONS` reach one field of it.
+
+    None for an answer that no model covers: `NarFromPath` sends a NAR, and
+    the model of `AddToStore` covers its header alone.
+    """
+
 
 @dataclass
 class Session:
@@ -102,6 +117,71 @@ class Session:
     operations: list[Operation] = field(default_factory=list)
     problem: str | None = None
     """Why the decoder stopped early, or None when it read the whole file."""
+
+
+class _Quiet:
+    """A logger that says nothing.
+
+    A body that no model covers is the ordinary case here, and the decoder
+    tries every model to find out which. `deserialization_scope` writes the
+    whole traceback of each failure through `ctx.logger`, so without this the
+    report of a run holds one traceback for every NAR that passed.
+    """
+
+    def __getattr__(self, name: str) -> Callable[..., None]:
+        def nothing(*_args: object, **_kwargs: object) -> None:
+            return None
+
+        return nothing
+
+
+_QUIET = _Quiet()
+
+
+def _flatten(value: object, prefix: str, out: dict[str, str]) -> None:
+    """Every leaf of a model, under its dotted name."""
+    if isinstance(value, WireModel):
+        for name in type(value).model_fields:
+            if name == "logs":
+                # The stream of log messages, which the decoder already read
+                # and which the comparison does not compare.
+                continue
+            _flatten(getattr(value, name), f"{prefix}.{name}" if prefix else name, out)
+        return
+    if isinstance(value, (set, frozenset)):
+        out[prefix] = repr(sorted(str(item) for item in value))
+        return
+    out[prefix] = repr(value)
+
+
+async def _decode_body(op: int, payload: bytes, version: int) -> dict[str, str] | None:
+    """The payload of one answer as named fields, or None.
+
+    The model of a response reads the log stream first, and `payload` starts
+    after that stream. So this puts one `STDERR_LAST` in front of the payload,
+    which is the shortest stream that ends at once.
+    """
+    response_cls = getattr(WIRE_REGISTRY[op], "response_type", None)
+    if response_cls is None or not (isinstance(response_cls, type) and issubclass(response_cls, WireResponse)):
+        return None
+
+    head = BytesWriter("wirelog")
+    head.write_uint64(STDERR_LAST)
+    reader = BytesReader(head.get_bytes() + payload, identifier="wirelog:body")
+    try:
+        model = await response_cls.from_reader(
+            ReadContext(reader=reader, version=version, logger=_QUIET),  # type: ignore[arg-type] -- see _Quiet
+        )
+    except (EOFError, ConnectionError, ValueError, TypeError, KeyError):
+        return None
+    if reader.remaining():
+        # The model covers a part of the answer only, so its names would
+        # describe a part and hide the rest. `AddToStore` is that case.
+        return None
+
+    out: dict[str, str] = {}
+    _flatten(model, "", out)
+    return out
 
 
 async def _read_handshake(client: BytesReader, server: BytesReader) -> Handshake:
@@ -244,15 +324,17 @@ async def decode(path: Path) -> Session:
             session.problem = session.problem or f"the response of operation {index} did not decode: {exc}"
 
         request_cls = WIRE_REGISTRY[op]
+        payload = reader.remaining()
         session.operations.append(
             Operation(
                 index=index,
                 op=op,
                 name=request_cls.name,
                 request_body=body,
-                response_payload=reader.remaining(),
+                response_payload=payload,
                 logs=tuple(logs),
                 error=error,
+                response_fields=await _decode_body(op, payload, version),
             )
         )
 

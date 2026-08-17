@@ -26,7 +26,8 @@ from nix_daemon_protocol.io import BytesWriter
 from nix_daemon_protocol.is_valid_path import IsValidPathRequest
 from nix_daemon_protocol.query_path_info import QueryPathInfoRequest
 from nix_daemon_protocol.store_path import StorePath
-from nix_daemon_protocol.wirelog import Direction, compare, decode
+from nix_daemon_protocol.wirelog import Direction, compare, decode, exemptions, report
+from nix_daemon_protocol.wirelog.diff import EXEMPTIONS, _first_difference, _window
 from nix_daemon_protocol.wirelog.framing import MAGIC, encode_chunk
 
 VERSION = proto(1, 38)
@@ -121,6 +122,7 @@ async def build_tape(
     server_features: set[str] | None = None,
     second_answer: bool = True,
     logs: tuple[str, ...] = (),
+    trailing: bytes = b"",
 ) -> Path:
     tape = Tape()
     client_one, client_two = handshake_client({"nix-command"})
@@ -135,7 +137,9 @@ async def build_tape(
     tape.add(Direction.SERVER, server_two)
 
     tape.add(Direction.CLIENT, await encode_request(IsValidPathRequest(path=PATH_A)))
-    tape.add(Direction.SERVER, response(valid(True), logs))
+    # `trailing` puts bytes in the answer that `IsValidPathResponse` does not
+    # account for, so the decoder keeps no names for it.
+    tape.add(Direction.SERVER, response(valid(True) + trailing, logs))
     tape.add(Direction.CLIENT, await encode_request(IsValidPathRequest(path=PATH_B)))
     tape.add(Direction.SERVER, response(valid(second_answer)))
     return tape.save(path)
@@ -180,7 +184,7 @@ async def test_a_different_answer_names_the_operation(workdir):
     candidate = await decode(await build_tape(workdir / "b.wire", second_answer=False))
     differences = compare(control, candidate)
     assert len(differences) == 1
-    assert differences[0].where == "operation 1 IsValidPath response"
+    assert differences[0].where == "operation 1 IsValidPath response.valid"
 
 
 @pytest.mark.anyio
@@ -269,3 +273,66 @@ async def test_a_different_request_is_a_difference(workdir):
     assert differences[0].where == "operation 1"
     assert "IsValidPath" in differences[0].control
     assert "QueryPathInfo" in differences[0].candidate
+
+
+@pytest.mark.anyio
+async def test_an_answer_that_a_model_covers_differs_by_field(workdir):
+    """A name, and not an offset. Read the docstring of `Operation`."""
+    session = await decode(await build_tape(workdir / "a.wire"))
+    assert session.operations[0].response_fields == {"valid": "True"}
+
+
+@pytest.mark.anyio
+async def test_an_answer_that_no_model_covers_names_the_byte(workdir):
+    """Two long answers that share a prefix must not read as the same answer.
+
+    The first report of a real run showed two previews of 96 bytes that were
+    the same text, because a `ValidPathInfo` holds the store path first and
+    the fields that differ much later. A reader could not tell what changed.
+    """
+    control = await decode(await build_tape(workdir / "a.wire", trailing=b"one"))
+    candidate = await decode(await build_tape(workdir / "b.wire", trailing=b"two"))
+
+    # Bytes that the model does not account for, so the decoder keeps none of
+    # the names and the comparison falls back to the payload.
+    assert control.operations[0].response_fields is None
+
+    difference = compare(control, candidate)[0]
+    assert difference.where == "operation 0 IsValidPath response"
+    assert "they differ at byte " in difference.note
+    assert difference.note in str(difference)
+
+
+def test_the_offset_is_the_first_byte_that_differs():
+    assert _first_difference(b"abcdef", b"abcXef") == 3
+    assert _first_difference(b"abc", b"abc") == 3
+    # One a prefix of the other: the offset is the end of the short one.
+    assert _first_difference(b"abc", b"abcdef") == 3
+
+
+def test_a_window_states_what_it_left_out():
+    value = bytes(range(256))
+    assert _window(value, 0).startswith("b'")
+    assert _window(value, 0).endswith("...")
+    middle = _window(value, 128)
+    assert middle.startswith("...")
+    assert middle.endswith("...")
+
+
+@pytest.mark.anyio
+async def test_the_exemptions_are_not_part_of_each_report(workdir):
+    """A run compares many connections, and the reasons belong at the end.
+
+    A copy of the list above every connection made the report of two tests
+    longer than the differences in it.
+    """
+    text = exemptions()
+    for item in EXEMPTIONS:
+        assert item.field in text
+        assert item.reason in text
+
+    control = await decode(await build_tape(workdir / "a.wire"))
+    candidate = await decode(await build_tape(workdir / "b.wire", second_answer=False))
+    body = report(compare(control, candidate))
+    assert "DIFFERENCES" in body
+    assert EXEMPTIONS[0].reason not in body

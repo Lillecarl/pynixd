@@ -63,6 +63,15 @@ EXEMPTIONS: tuple[Exemption, ...] = (
         ),
     ),
     Exemption(
+        field="response.*.registration_time",
+        reason=(
+            "The registration time of a store path is the second in which the store "
+            "took the path. The control run and the candidate run add the same path at "
+            "two times, so this differs between any two runs and says nothing about "
+            "pynixd. `UnkeyedValidPathInfo.registration_time` holds it."
+        ),
+    ),
+    Exemption(
         field="handshake.trusted",
         reason=(
             "pynixd answers TRUSTED to a client of its Unix socket, because that client "
@@ -72,6 +81,18 @@ EXEMPTIONS: tuple[Exemption, ...] = (
 )
 
 EXEMPT_FIELDS: frozenset[str] = frozenset(item.field for item in EXEMPTIONS)
+
+# The name of a field of a response, whatever model holds it. `response.*.`
+# is the prefix that `EXEMPTIONS` writes, and the part after it is the name.
+RESPONSE_PREFIX = "response.*."
+EXEMPT_RESPONSE_LEAVES: frozenset[str] = frozenset(
+    item.field.removeprefix(RESPONSE_PREFIX) for item in EXEMPTIONS if item.field.startswith(RESPONSE_PREFIX)
+)
+
+
+def _is_exempt_leaf(name: str) -> bool:
+    """True for a field of a response that `EXEMPTIONS` covers by its name."""
+    return name.rsplit(".", 1)[-1] in EXEMPT_RESPONSE_LEAVES
 
 
 @dataclass(frozen=True)
@@ -84,14 +105,47 @@ class Difference:
     control: str
     candidate: str
 
+    note: str = ""
+    """Where in the two values the difference is, for a pair of byte strings."""
+
     def __str__(self) -> str:
-        return f"{self.where}\n    daemon: {self.control}\n    pynixd: {self.candidate}"
+        head = f"{self.where}\n" if not self.note else f"{self.where}\n    {self.note}\n"
+        return f"{head}    daemon: {self.control}\n    pynixd: {self.candidate}"
 
 
-def _brief(value: bytes, limit: int = 96) -> str:
-    if len(value) <= limit:
-        return repr(value)
-    return f"{value[:limit]!r}... ({len(value)} bytes)"
+# How much of a byte string to show around the byte that differs.
+BEFORE = 16
+AFTER = 48
+
+
+def _first_difference(control: bytes, candidate: bytes) -> int:
+    """The index of the first byte that the two do not share."""
+    shared = min(len(control), len(candidate))
+    for index in range(shared):
+        if control[index] != candidate[index]:
+            return index
+    return shared
+
+
+def _window(value: bytes, at: int) -> str:
+    """`value` around byte `at`, with an ellipsis for what is left out."""
+    start = max(0, at - BEFORE)
+    end = min(len(value), at + AFTER)
+    head = "..." if start else ""
+    tail = "..." if end < len(value) else ""
+    return f"{head}{value[start:end]!r}{tail}"
+
+
+def _pair(control: bytes, candidate: bytes) -> tuple[str, str, str]:
+    """Two byte strings, shown around the first byte where they differ.
+
+    A whole answer is too long to read and its first bytes are usually equal,
+    so a plain prefix of each one shows two lines that look the same. This
+    names the byte and shows that byte.
+    """
+    at = _first_difference(control, candidate)
+    note = f"they differ at byte {at}; the daemon sent {len(control)} bytes and pynixd sent {len(candidate)}"
+    return _window(control, at), _window(candidate, at), note
 
 
 def _compare_handshake(control: Handshake | None, candidate: Handshake | None) -> list[Difference]:
@@ -119,6 +173,25 @@ def _compare_handshake(control: Handshake | None, candidate: Handshake | None) -
     return found
 
 
+def _compare_response(where: str, control: Operation, candidate: Operation) -> list[Difference]:
+    """The answers differ. Name the fields when a model covers the answer."""
+    one_fields = control.response_fields
+    two_fields = candidate.response_fields
+    if one_fields is None or two_fields is None:
+        one, two, note = _pair(control.response_payload, candidate.response_payload)
+        return [Difference(f"{where} response", one, two, note)]
+
+    found: list[Difference] = []
+    for name in sorted(set(one_fields) | set(two_fields)):
+        if _is_exempt_leaf(name):
+            continue
+        one_value = one_fields.get(name, "(absent)")
+        two_value = two_fields.get(name, "(absent)")
+        if one_value != two_value:
+            found.append(Difference(f"{where} response.{name}", one_value, two_value))
+    return found
+
+
 def _compare_operation(control: Operation, candidate: Operation) -> list[Difference]:
     where = f"operation {control.index} {control.name}"
     found: list[Difference] = []
@@ -132,11 +205,10 @@ def _compare_operation(control: Operation, candidate: Operation) -> list[Differe
     if control.request_body != candidate.request_body:
         # The client sends the request, so a difference here means the client
         # took a different path, and an earlier answer of pynixd caused it.
-        found.append(Difference(f"{where} request", _brief(control.request_body), _brief(candidate.request_body)))
+        one, two, note = _pair(control.request_body, candidate.request_body)
+        found.append(Difference(f"{where} request", one, two, note))
     if control.response_payload != candidate.response_payload:
-        found.append(
-            Difference(f"{where} response", _brief(control.response_payload), _brief(candidate.response_payload))
-        )
+        found.extend(_compare_response(where, control, candidate))
     if (control.error is None) != (candidate.error is None):
         found.append(Difference(f"{where} error", repr(control.error), repr(candidate.error)))
     return found
@@ -174,13 +246,22 @@ def compare(control: Session, candidate: Session) -> list[Difference]:
 
 
 def report(differences: list[Difference]) -> str:
-    """The differences as text, and the exemptions that the reader should know."""
+    """The differences as text."""
     if not differences:
         return "the two recordings agree"
 
     lines = [f"=== {len(differences)} DIFFERENCES ==="]
     lines.extend(str(item) for item in differences)
-    lines.append("")
-    lines.append("These fields are exempt, and each one is on purpose:")
+    return "\n".join(lines)
+
+
+def exemptions() -> str:
+    """The fields that the comparison passes over, and the reason for each.
+
+    Printed once for a run, and not once for each connection. A reader needs
+    this to read the report, and a copy of it above every connection makes the
+    report harder to read rather than easier.
+    """
+    lines = ["These fields are exempt, and each one is on purpose:"]
     lines.extend(f"  {item.field}: {item.reason}" for item in EXEMPTIONS)
     return "\n".join(lines)

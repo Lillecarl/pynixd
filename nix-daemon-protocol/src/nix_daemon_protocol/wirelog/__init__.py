@@ -37,6 +37,9 @@ from .diff import (
     compare as compare,
 )
 from .diff import (
+    exemptions as exemptions,
+)
+from .diff import (
     report as report,
 )
 from .framing import (
