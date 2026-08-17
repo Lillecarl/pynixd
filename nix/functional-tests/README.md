@@ -295,25 +295,30 @@ with the relocated store layout that the suite itself sets.
 | run     | OK  | FAIL | SKIP |
 | ------- | --- | ---- | ---- |
 | control | 149 | 22   | 36   |
-| pynixd  | 142 | 29   | 36   |
+| pynixd  | 144 | 28   | 35   |
 
-**7 regressions**: a test that the control passes and pynixd fails.
+**5 regressions**: a test that the control passes and pynixd fails.
 
 | test                 | why                                             |
 | -------------------- | ----------------------------------------------- |
 | `ca:build-cache`     | #187, the substituters that a client names       |
-| `ca:issue-13247`     | #198, an output that the derived path did not name |
-| `ca:new-build-cmd`   | #196, `max-jobs` and the duplicate error lines   |
-| `ca:signatures`      | #197, a path with no signature in the cache      |
+| `ca:issue-13247`     | #198, `max-jobs 0`, so pynixd builds and a build makes every output |
+| `ca:new-build-cmd`   | #196, the count of the `error:` lines            |
 | `main:build`         | #196                                             |
-| `main:build-delete`  | #174, a temporary root of a pooled connection    |
 | `main:store-info`    | permanent, and the next section gives the reason |
 
-`main:multiple-outputs` and `main:gc-concurrent` come and go between runs,
-and both are the #174 family. Read a single failure of one of them as a
-report of that issue, and not as a new one.
+`main:multiple-outputs-substitute-failure` moved SKIP to FAIL in this run and
+has no issue yet.
 
-### The `ca` suite alone, after #195 and the first part of #196
+`main:multiple-outputs`, `main:gc-concurrent` and `main:build-delete` come and
+go between runs, and all three are the #174 family. Read a single failure of
+one of them as a report of that issue, and not as a new one.
+
+**22 tests fail in both arms.** Those are a defect of Nix or of this harness,
+and not of pynixd. `main:build-remote-*` is eight of them, because the suite
+has no second machine to build on here.
+
+### The `ca` suite alone
 
 The whole suite takes about 25 minutes, and one suite takes about two. This
 is the shorter loop, and the numbers are for `--suite ca`.
@@ -321,12 +326,19 @@ is the shorter loop, and the numbers are for `--suite ca`.
 | run     | OK  | FAIL | SKIP |
 | ------- | --- | ---- | ---- |
 | control | 19  | 1    | 4    |
-| pynixd  | 15  | 5    | 4    |
+| pynixd  | 16  | 4    | 4    |
 
-`ca:recursive` fails in both, so the four regressions are `build-cache`,
-`issue-13247`, `new-build-cmd` and `signatures`. #195 took `build-cache` and
-`issue-13247` off the `IncompleteReadError` road and on to the behaviour gap
-that the crash was hiding, and each issue records what it now reaches.
+`ca:recursive` fails in both, so the three regressions are `build-cache`,
+`issue-13247` and `new-build-cmd`.
+
+### What moved, and what moved it
+
+| correction | measured |
+| ---------- | -------- |
+| #195, the empty output path off the wire | `ca:build-cache` and `ca:issue-13247` stopped dropping the connection, and each moved to the behaviour the crash was hiding |
+| #197, the options of the client on a path that is added | `ca:signatures` FAIL to OK |
+| #196, a cap for `max-jobs`, and one replay for each client | every derivation is built once, and the log of a build reaches a client once |
+| do not build a derivation whose input failed | `resolved_derivation_not_stored` gone from `main:build` |
 
 Removing the layout patch of #176 moved `nix-channel` from FAIL to OK in the
 control run, so that patch was breaking a test of Nix on its own.
