@@ -154,6 +154,37 @@ where Nix answers a constant `1`, so a failed build read as a successful one.
 No script could find it, because the client of Nix reads that number and drops
 it.
 
+### The same mode, without the suite
+
+`pynixd/tests/parity/test_wire_parity.py` runs one small workload the same
+way, with the same recorder and the same comparison. It needs no Linux and no
+builder of Nix, so it runs in the dev shell of any host and it takes eight
+seconds.
+
+It found three more defects, and each one is a difference that no script of
+the suite reports:
+
+1. `nix store gc` deleted nothing through pynixd. An idle pooled connection
+   kept a worker of the daemon alive, and that worker held the temporary root
+   of the path. Issue #174.
+2. `QueryPathInfo` answered `sha256:<digest>` where `nix-daemon` answers the
+   digest alone. The fast path of pynixd read the `narHash` column of the
+   database, and that column carries the name of the algorithm. No client
+   complained, because `Hash::parseAny` reads both forms. The signature of a
+   path did complain: `ValidPathInfo::fingerprint` at `path-info.cc:48` puts
+   the base-32 digest in the string it signs, and pynixd signed the base-16
+   one, so every signature that pynixd made was false.
+3. The second `nix build` of a content-addressed derivation answered
+   `willBuild: [cad.drv]` to `QueryMissing`, and `nix-daemon` answers an empty
+   set. `Store::queryMissing` reads `queryPartialDerivationOutputMap` at
+   `misc.cc:217`, which answers from the realisation when the derivation names
+   no output path. The client took a different code path after that answer, so
+   every operation after it differed too.
+
+**The lesson is the size of the workload.** Twenty-one commands find what 207
+scripts do not, because a script reads its own exit status and this reads the
+bytes.
+
 ## The measurement
 
 Client, scripts and daemon all Nix 2.34.8. One serial run each, on Linux,
@@ -162,17 +193,17 @@ with the relocated store layout that the suite itself sets.
 | run     | OK  | FAIL | SKIP |
 | ------- | --- | ---- | ---- |
 | control | 149 | 22   | 36   |
-| pynixd  | 120 | 54   | 33   |
+| pynixd  | 130 | 44   | 33   |
 
-**29 regressions**: a test that the control passes and pynixd fails. 7 in the
-`ca` suite, 2 in `flakes`, 2 in `dyn-drv`, and 18 in `main`.
+**19 regressions**: a test that the control passes and pynixd fails. 4 in the
+`ca` suite, 1 in `flakes`, 2 in `dyn-drv`, and 12 in `main`.
 
 Removing the layout patch of #176 moved `nix-channel` from FAIL to OK in the
 control run, so that patch was breaking a test of Nix on its own.
 `nested-sandboxing` still fails, and its cause is not the layout.
 
-The count was 40 before issues #178, #179, #180, #182, #183, #184 and #185.
-Each one is below.
+The count was 40 before issues #178, #179, #180, #182, #183, #184 and #185,
+and 29 before issues #174 and #175. Each one is below.
 
 Three tests moved from SKIP to FAIL, and `compare` puts them under "other
 changes" rather than under the regressions. `local-overlay-store:delete-duplicate`
