@@ -375,6 +375,35 @@ is the shorter loop, and the numbers are for `--suite ca`.
 
 `ca:recursive` fails in both, so the one regression left is `new-build-cmd`.
 
+### The same suite against Nix 2.35: 17 regressions
+
+`--nix-version nix_2_35`, same checkout, same suite, one run of each arm:
+
+| run     | OK  | FAIL | SKIP |
+| ------- | --- | ---- | ---- |
+| control | 19  | 1    | 4    |
+| pynixd  | 2   | 19   | 3    |
+
+The control is the same as at 2.34: Nix has no trouble with itself. pynixd
+answers **2 of 24**, and the two that pass are
+`derivation-advanced-attributes` and `derivation-json`, neither of which
+builds anything. Every test that touches a realisation fails, with one
+message:
+
+```
+error: the daemon is missing the 'realisation-with-path-not-hash' protocol
+feature, needed to support content-addressing derivations
+```
+
+**That is issue #162, measured.** The protocol number stopped at 1.38 and each
+new capability is a feature name. 2.34 offers none of them, so every
+measurement of this suite before this one was taken against the one version
+that cannot see the gap. Against a peer that offers the feature, pynixd is
+not usable for a content-addressed derivation at all.
+
+Read the 2.34 numbers with that in mind. They say what pynixd does at the
+floor of this repository, and the floor is where no feature exists.
+
 ### What moved, and what moved it
 
 | correction | measured |
