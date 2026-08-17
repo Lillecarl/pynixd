@@ -178,8 +178,8 @@ Three tests moved from SKIP to FAIL, and `compare` puts them under "other
 changes" rather than under the regressions. `local-overlay-store:delete-duplicate`
 and `local-overlay-store:stale-file-handle` are the two new ones: the managed
 daemon of pynixd does not start in the store shape of that suite, and the
-script then fails where the control run skips it. The third,
-`main:multiple-outputs-substitute-failure`, is older.
+script then fails where the control run skips it. Issue #186 holds that. The
+third, `main:multiple-outputs-substitute-failure`, is older.
 
 ### The 22 control failures
 

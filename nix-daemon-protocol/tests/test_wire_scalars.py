@@ -74,7 +74,7 @@ async def test_wire_scalars_are_native_strings_on_the_generic_wire() -> None:
 
 def test_wire_scalar_keyword_constructors_remain_compatible() -> None:
     assert StorePath(path="/nix/store/example").path == "/nix/store/example"
-    assert NARHash(hash="sha256:example").hash == "sha256:example"
+    assert NARHash(hash="sha256:example").hash == "example", "the wire carries the digest alone"
     assert ContentAddress(value="text:sha256:example").value == "text:sha256:example"
     assert DerivedPath(value="example.drv!out").value == "example.drv!out"
     assert Signature(name="cache", signature="signed") == "cache:signed"
@@ -141,3 +141,25 @@ def test_no_helper_of_a_wire_scalar_calls_itself() -> None:
         "The accessor they delegate through returns `self` and not `str(self)`, "
         "so the call dispatches back to this class. See StorePath.path."
     )
+
+
+def test_a_nar_hash_carries_the_digest_and_not_the_name_of_the_algorithm() -> None:
+    """`worker-protocol.cc:356` of Nix writes `Base16` with no prefix.
+
+    `LocalStore` of Nix writes `sha256:<digest>` into the `narHash` column of
+    its database, at `local-store.cc:677`, so a fast path that reads that
+    column and answers a client would send a string that `nix-daemon` never
+    sends. `Hash::parseAny` of the client reads both forms, so nothing failed
+    and the two answers still differed. `tests/parity` of pynixd saw it.
+    """
+    digest = "c6f868b00a75e555f44b2554f3fb57c69836460fc0f02e515455723b1f46e105"
+
+    assert NARHash(f"sha256:{digest}") == digest
+    assert NARHash(digest) == digest, "a bare digest is already the wire form"
+    assert NARHash(f"sha512:{digest}") == digest
+    assert NARHash("") == ""
+
+
+def test_a_nar_hash_keeps_a_colon_that_names_no_algorithm() -> None:
+    """The rule takes off a prefix that it knows, and nothing else."""
+    assert NARHash("nothing:here") == "nothing:here"

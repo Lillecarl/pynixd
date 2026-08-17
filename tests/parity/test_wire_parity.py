@@ -12,12 +12,17 @@ and that is a statement about the bytes. A script of the functional suite says
 "pass" or "fail" for reasons that are not the wire, and it needs Linux and a
 builder. This needs neither, so it runs in the dev shell on any host.
 
-It found one defect on the first run. `nix store add-file` and then
-`nix store gc` deleted the file against `nix-daemon`, and deleted nothing
-against pynixd: an idle pooled connection kept a worker of the daemon alive,
-and that worker held the temporary root of the path.
-`tests/unit/test_gc_retires_idle_connections.py` holds the rule that
-corrects it.
+It found two defects in its first two runs:
+
+1. `nix store add-file` and then `nix store gc` deleted the file against
+   `nix-daemon`, and deleted nothing against pynixd. An idle pooled connection
+   kept a worker of the daemon alive, and that worker held the temporary root
+   of the path. `tests/unit/test_gc_retires_idle_connections.py` holds the
+   rule that corrects it.
+2. `QueryPathInfo` answered `sha256:<digest>` where `nix-daemon` answers the
+   digest alone. The fast path of pynixd read the `narHash` column of the
+   database, which carries the name of the algorithm, and the wire does not.
+   No client complained, because `Hash::parseAny` reads both forms.
 
 **The workload builds nothing.** A build needs a builder and takes minutes,
 and the functional suite covers that ground already. This covers the
@@ -109,6 +114,8 @@ async def _record(role: str, root: Path) -> Path:
         await anyio.Path(path).mkdir(parents=True, exist_ok=True)
     sample = work / "f.txt"
     await anyio.Path(sample).write_text("hello wirelog\n")
+    await anyio.Path(work / "d").mkdir(exist_ok=True)
+    await anyio.Path(work / "d" / "inner").write_text("inner\n")
 
     command, env = _backend(role, work, root)
     recorder = await anyio.open_process(
@@ -133,9 +140,17 @@ async def _record(role: str, root: Path) -> Path:
         client = dict(os.environ, NIX_REMOTE=f"unix://{work / 'outer.sock'}", NIX_STORE_DIR=str(root / "store"))
         for words in (
             ["store", "info"],
+            ["store", "info", "--json"],
             ["store", "add-file", "--name", "f.txt", str(sample)],
+            ["store", "add-path", "--name", "d", str(work / "d")],
+            ["store", "ls", "--json", "--recursive", str(root / "store")],
             ["path-info", "--json", str(root / "store")],
+            ["store", "verify", "--all"],
+            ["store", "optimise"],
+            ["store", "dump-path", str(root / "store")],
+            ["store", "gc", "--max", "0"],
             ["store", "gc"],
+            ["store", "info"],
         ):
             # A command may fail, and a failure is a fine thing to record: the
             # two daemons must fail the same way.
