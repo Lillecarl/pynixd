@@ -37,6 +37,7 @@ class FakeConnection:
         self.dirty = False
         self.op_log: list[str] = []
         self.opened_at = time.monotonic() if opened_at is None else opened_at
+        self.applied_options = None
         self.closed = False
         self.r = FakeReader()
         self.w = FakeWriter()

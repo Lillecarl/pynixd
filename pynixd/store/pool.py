@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 
     from ..connection import Connection
     from ..monitor import ResourceGate
+    from ..serde import SetOptionsRequest
 
 log = structlog.get_logger(__name__)
 
@@ -152,8 +153,18 @@ class ConnectionPool:
         """True when this connection has served long enough to retire."""
         return self.max_lifetime > 0 and now - conn.opened_at >= self.max_lifetime
 
-    async def get_or_create_conn(self) -> Connection:
-        """Return a reusable idle connection, or create a new one."""
+    async def get_or_create_conn(self, options: SetOptionsRequest | None = None) -> Connection:
+        """Return a reusable idle connection, or create a new one.
+
+        **A connection carries the options of one client for its whole life.**
+        The daemon protocol has `SetOptions` and no operation that takes an
+        option away, so a second `SetOptions` on one connection adds to the
+        first set rather than replacing it. A client that built with
+        `--auto-optimise-store` therefore left that setting on, and the next
+        client got a store that optimises when it asked for none.
+        `main:optimise-store` reads exactly that. So an idle connection with
+        another set is of no use here, and this discards it. Issue #192.
+        """
 
         """Pop an idle connection or create a new one."""
         now = time.monotonic()
@@ -165,6 +176,18 @@ class ConnectionPool:
                     store_id=self.store_id,
                     conn_id=candidate.id,
                     age=f"{now - candidate.opened_at:.1f}s",
+                )
+                if candidate in self.all_conns:
+                    self.all_conns.remove(candidate)
+                with suppress(Exception):
+                    await candidate.close()
+                continue
+
+            if candidate.applied_options is not None and candidate.applied_options != options:
+                log.debug(
+                    "pool_discarding_other_options",
+                    store_id=self.store_id,
+                    conn_id=candidate.id,
                 )
                 if candidate in self.all_conns:
                     self.all_conns.remove(candidate)
@@ -209,6 +232,7 @@ class ConnectionPool:
     async def acquire(
         self,
         kind: str | None = None,
+        options: SetOptionsRequest | None = None,
     ) -> AsyncIterator[Connection]:
         """Acquire a connection from the shared pool.
 
@@ -260,7 +284,7 @@ class ConnectionPool:
             self.active_connections += 1
             conn: Connection | None = None
             try:
-                conn = await self.get_or_create_conn()
+                conn = await self.get_or_create_conn(options)
 
                 # Increment nesting count
                 counts = _nested_conns.get({}).copy()

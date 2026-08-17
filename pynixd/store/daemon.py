@@ -44,6 +44,7 @@ if TYPE_CHECKING:
     from ..connection import Connection
     from ..drv_parser import Derivation
     from ..psi import CpuUtil, MemInfo
+    from ..serde import SetOptionsRequest
     from ..store_path import StorePath
 
 log = structlog.get_logger(__name__)
@@ -226,13 +227,13 @@ class DaemonStore(Store):
         """Human-readable pool statistics string."""
         return self.pool.stats
 
-    def build_conn(self) -> AbstractAsyncContextManager[Connection]:
+    def build_conn(self, options: SetOptionsRequest | None = None) -> AbstractAsyncContextManager[Connection]:
         """Acquire a connection for build operations."""
-        return self.pool.acquire("build")
+        return self.pool.acquire("build", options)
 
-    def transfer_conn(self) -> AbstractAsyncContextManager[Connection]:
+    def transfer_conn(self, options: SetOptionsRequest | None = None) -> AbstractAsyncContextManager[Connection]:
         """Acquire a connection for transfer operations."""
-        return self.pool.acquire("transfer")
+        return self.pool.acquire("transfer", options)
 
     async def retire_idle_connections(self) -> int:
         """Close each pooled connection that nobody uses, and release its roots."""
@@ -372,9 +373,10 @@ class DaemonStore(Store):
 
         is_build = not request.forward if isinstance(request, WireRequest) else request.is_build
         pool = self.build_conn if is_build else self.transfer_conn
+        options = client.options if client is not None else None
 
         try:
-            async with pool() as conn:
+            async with pool(options) as conn:
                 return await conn.call(
                     request, client=client, suppress_last=suppress_last, raise_on_error=raise_on_error
                 )

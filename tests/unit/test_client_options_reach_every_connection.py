@@ -14,6 +14,7 @@ program that made it.
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
@@ -36,6 +37,7 @@ from pynixd.serde import (
 from pynixd.serde.auth import Role
 from pynixd.serde.context import WriteContext
 from pynixd.serde.ids import BuildId
+from pynixd.store.pool import ConnectionPool
 from pynixd.wire import PROTOCOL_VERSION, STDERR_LAST, BytesReader, BytesWriter
 
 if TYPE_CHECKING:
@@ -250,3 +252,100 @@ async def test_the_build_carries_the_set_of_the_client_that_asked() -> None:
     await task
 
     assert scheduler.options == _options("/hook.sh")
+
+
+# ── A connection carries one option set for its whole life ───────────
+
+
+class FakeIo:
+    async def is_dirty(self) -> bool:
+        return False
+
+    async def close(self) -> None:
+        return None
+
+
+class PooledConnection:
+    """Enough of `Connection` for the rules of the pool."""
+
+    def __init__(self, conn_id: str, options: SetOptionsRequest | None) -> None:
+        self.id = conn_id
+        self.dirty = False
+        self.op_log: list[str] = []
+        self.opened_at = 0.0
+        self.closed = False
+        self.applied_options = options
+        self.r = FakeIo()
+        self.w = FakeIo()
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class FakeGate:
+    async def acquire(self, *args: object, **kwargs: object) -> None:
+        return None
+
+    def release(self, *args: object, **kwargs: object) -> None:
+        return None
+
+
+def _pool() -> ConnectionPool:
+    async def factory() -> PooledConnection:
+        return PooledConnection("fresh", None)
+
+    return ConnectionPool(
+        store_id="test",
+        factory=cast("Any", factory),
+        gate=cast("Any", FakeGate()),
+        max_lifetime=0.0,
+        idle_ttl=10_000.0,
+    )
+
+
+def _idle(pool: ConnectionPool, conn: PooledConnection) -> None:
+    pool.idle_conns.append((cast("Any", conn), time.monotonic()))
+    pool.all_conns.append(cast("Any", conn))
+
+
+@pytest.mark.anyio
+async def test_the_pool_discards_a_connection_that_carries_another_set() -> None:
+    """`SetOptions` adds to the set of a connection, and takes nothing away.
+
+    A client built with `--auto-optimise-store`, and the next client got a
+    store that optimises when it asked for none. `main:optimise-store` reads
+    exactly that.
+    """
+    pool = _pool()
+    stale = PooledConnection("stale", _options("/first.sh"))
+    _idle(pool, stale)
+
+    handed = await pool.get_or_create_conn(_options("/second.sh"))
+
+    assert stale.closed
+    assert handed is not stale
+    assert stale not in pool.all_conns
+
+
+@pytest.mark.anyio
+async def test_the_pool_reuses_a_connection_that_carries_the_same_set() -> None:
+    pool = _pool()
+    same = PooledConnection("same", _options("/hook.sh"))
+    _idle(pool, same)
+
+    handed = await pool.get_or_create_conn(_options("/hook.sh"))
+
+    assert handed is same
+    assert not same.closed
+
+
+@pytest.mark.anyio
+async def test_the_pool_reuses_a_connection_that_carries_no_set() -> None:
+    """A fresh connection takes the set of whoever needs it first."""
+    pool = _pool()
+    fresh = PooledConnection("fresh", None)
+    _idle(pool, fresh)
+
+    handed = await pool.get_or_create_conn(_options("/hook.sh"))
+
+    assert handed is fresh

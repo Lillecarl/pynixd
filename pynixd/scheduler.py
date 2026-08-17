@@ -444,7 +444,7 @@ class Scheduler:
         build_resp: BuildDerivationResponse | None = None
         completed = False
         try:
-            async with store.build_conn() as conn:
+            async with store.build_conn(build.options) as conn:
                 await self._prepare_build(build, store, conn)
                 await self._say_where_it_builds(build, store)
                 build_resp = await self._execute(build, store, conn)
