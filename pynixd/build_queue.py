@@ -276,6 +276,10 @@ class QueuedBuild:
                 return
             if self._log_writer.tell():
                 try:
+                    # One line for each replay, so a run can count them. A
+                    # client that reads one build message twice reads it once
+                    # live and once from here.
+                    log.debug("build_log_replayed", build_id=self.build_id, bytes=self._log_writer.tell())
                     await client.send_raw(self._log_writer.get_bytes())
                 except (OSError, BrokenPipeError, ConnectionResetError):
                     log.debug("subscriber_replay_failed", build_id=self.build_id)

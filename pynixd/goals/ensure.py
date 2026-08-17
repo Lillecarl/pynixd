@@ -153,6 +153,10 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             return result
         detail = str(result.result.error_msg)
         if detail:
+            # One line for each block this writes, so a run can count them.
+            # `main:build` reads the number of `error:` lines of the client,
+            # and a block that goes out twice is invisible without this.
+            log.debug("told_the_client_the_reason", derived_path=str(self.derived_path), detail=detail[:80])
             await self._say(_as_an_error(detail))
         return result
 

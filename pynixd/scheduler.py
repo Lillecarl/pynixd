@@ -617,6 +617,9 @@ class Scheduler:
 
         resp = await conn.call(build.request, options=build.options)
         if resp.logs.messages:
+            # The count, so a run can tell one fan-out of many messages from
+            # many fan-outs of one message.
+            log.debug("build_logs_fanned_out", build_id=build.build_id, count=len(resp.logs.messages))
             for msg in resp.logs.messages:
                 await build.post_log_and_fanout(msg)
         # **A failure of the build itself gets no log line here.** The message
