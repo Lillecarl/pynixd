@@ -526,6 +526,15 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             derived_paths=[SerdeDerivedPath(value=str(self.derived_path))],
             build_mode=int(self.build_mode),
         )
+        # One line for each attempt, so a run can say whether the upstream
+        # call ran at all and which derived path it named. The query that
+        # follows reads `drv_path`, and the two must be the same derivation.
+        log.debug(
+            "upstream_realise_asking",
+            derived_path=str(self.derived_path),
+            drv_path=str(drv_path),
+            wanted=sorted(wanted),
+        )
         try:
             await self.engine.ctx.local_store.execute(request, client=client)
         except (DaemonProtocolError, OSError, EOFError) as ex:
@@ -539,7 +548,9 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         # The daemon holds the realisation now, so the ordinary reader finds
         # it. This does not trust the answer of the daemon on its own: that
         # method checks the path as well.
-        return await self._already_realised(parsed, wanted)
+        answer = await self._already_realised(parsed, wanted)
+        log.debug("upstream_realise_answered", drv_path=str(drv_path), realised=answer is not None)
+        return answer
 
     async def _under_the_original_id(self, result: GoalResult, parsed: Derivation) -> GoalResult:
         """Give each realisation the id that the original derivation makes, and register it.
