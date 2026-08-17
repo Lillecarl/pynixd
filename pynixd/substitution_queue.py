@@ -15,6 +15,7 @@ from cachetools import TTLCache
 from .exceptions import OpNotImplementedError
 from .serde import AddToStoreNarRequest, NarFromPathRequest, QueryPathInfoRequest, StorePath as SerdeStorePath
 from .serde.context import ReadContext, WriteContext
+from .serde.ids import LOCAL_STORE_ID
 from .serde.valid_path_info import ValidPathInfo
 from .store import DaemonStore, HTTPBinaryCacheStore
 
@@ -215,7 +216,7 @@ class SubstitutionQueue:
         return (
             store
             for store_id, store in sorted(self.ctx.stores.items(), key=lambda item: str(item[0]))
-            if str(store_id) != "local" and store.no_schedule
+            if store_id != LOCAL_STORE_ID and store.no_schedule
         )
 
     async def _query_store(self, path: StorePath, store: Store) -> SubstitutionQueryResult:

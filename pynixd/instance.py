@@ -23,7 +23,7 @@ from .reverse_client import ReverseInitiator
 from .reverse_server import start_reverse_acceptor
 from .scheduler import Scheduler
 from .serde import PynixdCollectGarbageRequest
-from .serde.ids import StoreId
+from .serde.ids import LOCAL_STORE_ID, StoreId
 from .serde.protocol import PynixdGCAction
 from .ssh_server import start_ssh_server
 from .store import DaemonStore, ExternalUnixStore, HTTPBinaryCacheStore, LocalDBStore, LocalStore, Store
@@ -151,14 +151,14 @@ class Server:
             settings = PynixdSettings(**kwargs)
 
         if stores is None:
-            spec = LocalSocketStoreSpec(store_id=StoreId("local"), monitor=False)
-            stores = {StoreId("local"): spec.to_store(str(StoreId("local")))}
-        elif StoreId("local") not in stores:
+            spec = LocalSocketStoreSpec(store_id=LOCAL_STORE_ID, monitor=False)
+            stores = {LOCAL_STORE_ID: spec.to_store(str(LOCAL_STORE_ID))}
+        elif LOCAL_STORE_ID not in stores:
             stores = dict(stores)
-            spec = LocalSocketStoreSpec(store_id=StoreId("local"), monitor=False)
-            stores[StoreId("local")] = spec.to_store(str(StoreId("local")))
+            spec = LocalSocketStoreSpec(store_id=LOCAL_STORE_ID, monitor=False)
+            stores[LOCAL_STORE_ID] = spec.to_store(str(LOCAL_STORE_ID))
 
-        local_store = stores[StoreId("local")]
+        local_store = stores[LOCAL_STORE_ID]
         _adopt_store_dir(local_store)
 
         existing_http_urls = {
@@ -301,7 +301,7 @@ class Server:
 
         NOTE: Used by external projects — do not remove.
         """
-        if store_id == StoreId("local"):
+        if store_id == LOCAL_STORE_ID:
             raise RuntimeError("Cannot remove local store")
         if self.scheduler:
             # First, drain the store in the scheduler to cancel/requeue jobs
@@ -406,7 +406,7 @@ class Server:
         # Start non-local stores concurrently — they're already in _stores.
         async with anyio.create_task_group() as tg:
             for store_id, store in list(self.ctx._stores.items()):
-                if store_id != StoreId("local"):
+                if store_id != LOCAL_STORE_ID:
                     tg.start_soon(self.add_store, store)
 
         if self.ctx.scheduler:

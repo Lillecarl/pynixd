@@ -20,3 +20,10 @@ from typing import NewType
 StoreId = NewType("StoreId", str)
 BuildId = NewType("BuildId", int)
 RequestId = NewType("RequestId", int)
+
+LOCAL_STORE_ID = StoreId("local")
+"""The identifier of the store that runs beside pynixd itself.
+
+Every deployment has this store, and pynixd makes one when the configuration
+names none. Sixteen sites wrote `StoreId("local")` or the bare string
+`"local"`, so a reader had to know that the two spellings mean one thing."""

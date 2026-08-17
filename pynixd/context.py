@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from .serde.ids import StoreId
+from .serde.ids import LOCAL_STORE_ID, StoreId
 from .store.daemon import DaemonStore
 
 if TYPE_CHECKING:
@@ -63,7 +63,7 @@ class PynixdContext:
     @property
     def local_store(self) -> LocalStore:
         """The primary local Nix daemon store for this context."""
-        return self._stores[StoreId("local")]  # type: ignore[return-value]
+        return self._stores[LOCAL_STORE_ID]  # type: ignore[return-value]
 
     @property
     def stores(self) -> Mapping[StoreId, Store]:

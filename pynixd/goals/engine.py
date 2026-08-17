@@ -18,6 +18,7 @@ from ..serde import (
     QueryMissingRequest,
     QueryMissingResponse,
 )
+from ..serde.ids import LOCAL_STORE_ID
 from .build_derivation import BuildDerivationGoal
 from .ensure import EnsureDerivedPathGoal
 from .keys import BuildDerivationKey, EnsureDerivedPathKey, SubstitutePathKey
@@ -192,15 +193,14 @@ class GoalEngine:
         return tuple(
             str(store_id)
             for store_id, store in self.ctx.stores.items()
-            if str(store_id) != "local" and store.no_schedule
+            if store_id != LOCAL_STORE_ID and store.no_schedule
         )
 
     def substituter_stores(self) -> Iterable[Store]:
         """Yield healthy substituter stores, ordered by store ID."""
-        local_id = "local"
         ids = set(self.substituter_ids())
         return (
             store
             for store_id, store in sorted(self.ctx.stores.items(), key=lambda item: str(item[0]))
-            if str(store_id) != local_id and str(store_id) in ids and store.is_healthy
+            if store_id != LOCAL_STORE_ID and str(store_id) in ids and store.is_healthy
         )

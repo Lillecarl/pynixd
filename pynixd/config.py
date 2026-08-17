@@ -15,7 +15,7 @@ from pydantic_settings import (
 )
 
 from .nix_config import NixConfig
-from .serde.ids import StoreId
+from .serde.ids import LOCAL_STORE_ID, StoreId
 from .store_layout import StoreLayout
 
 
@@ -519,9 +519,9 @@ class PynixdSettings(BaseSettings):
             store = spec.to_store(store_id=key)
             stores[store.store_id] = store
 
-        if StoreId("local") not in stores:
+        if LOCAL_STORE_ID not in stores:
             spec = LocalSocketStoreSpec(
-                store_id=StoreId("local"),
+                store_id=LOCAL_STORE_ID,
                 monitor=False,
                 settings=self,
             )
@@ -538,7 +538,7 @@ class PynixdSettings(BaseSettings):
             # `LocalDBStore` returns `None` for that, and `DaemonStore.execute`
             # falls through to the wire. So "on by default" costs a store that
             # cannot read the database nothing but one warning.
-            stores[StoreId("local")] = spec.to_store(store_id=str(StoreId("local")))
+            stores[LOCAL_STORE_ID] = spec.to_store(store_id=str(LOCAL_STORE_ID))
 
         return stores
 

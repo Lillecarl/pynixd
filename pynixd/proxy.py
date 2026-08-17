@@ -33,7 +33,7 @@ from .serde import (
 )
 from .serde.auth import Role
 from .serde.context import ReadContext, RequestContext as RequestContext, WriteContext
-from .serde.ids import StoreId
+from .serde.ids import LOCAL_STORE_ID, StoreId
 from .serde.protocol import OptTrusted, Verbosity
 from .serde.wire_ops import WIRE_REGISTRY, WireResponse
 from .store_layout import StoreLayout
@@ -284,7 +284,7 @@ class DaemonProxy:
 
         # Extension not supported by local store or returned not found — try other stores
         for store in self.stores.values():
-            if store.store_id == StoreId("local"):
+            if store.store_id == LOCAL_STORE_ID:
                 continue  # already tried above
             try:
                 # We don't forward client logs to remote stores for simple queries

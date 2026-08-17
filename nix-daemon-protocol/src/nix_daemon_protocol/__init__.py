@@ -61,6 +61,7 @@ from .exceptions import UnsupportedProtocolVersion as UnsupportedProtocolVersion
 from .find_roots import FindRootsEntry as FindRootsEntry
 from .find_roots import FindRootsRequest as FindRootsRequest
 from .find_roots import FindRootsResponse as FindRootsResponse
+from .ids import LOCAL_STORE_ID as LOCAL_STORE_ID
 from .ids import BuildId as BuildId
 from .ids import RequestId as RequestId
 from .ids import StoreId as StoreId
