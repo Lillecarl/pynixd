@@ -71,28 +71,37 @@ if [[ "$is_daemon" != true ]] || [[ "$wants_version" == true ]]; then
     exec "$REAL_NIX" "$@"
 fi
 
-if [[ -z "${NIX_STORE_DIR:-}" || -z "${NIX_DAEMON_SOCKET_PATH:-}" ]]; then
-    echo "shim: NIX_STORE_DIR and NIX_DAEMON_SOCKET_PATH must be set" >&2
+if [[ -z "${NIX_STORE_DIR:-}" || -z "${NIX_STATE_DIR:-}" || -z "${NIX_DAEMON_SOCKET_PATH:-}" ]]; then
+    echo "shim: NIX_STORE_DIR, NIX_STATE_DIR and NIX_DAEMON_SOCKET_PATH must be set" >&2
     exit 2
 fi
 
-# `setup.sh` gives each test a chroot store, so NIX_STORE_DIR is
-# `$TEST_ROOT/nix/store` and `$TEST_ROOT` is the root that pynixd needs.
+# **The suite uses a relocated store, and pynixd serves one since #176.**
+# `common/vars.sh` exports `NIX_STORE_DIR=$TEST_ROOT/store` and
+# `NIX_STATE_DIR=$TEST_ROOT/var/nix`, so the two directories come straight
+# from the environment of the test. `setup.sh` used to rewrite that layout to
+# a chroot store, and that patch is gone.
 #
 # `readlink -f` is necessary. Nix refuses a store when a parent directory of it
 # is a symbolic link, and it says so: "the path ... is a symlink; this is not
 # allowed for the Nix store and its parent directories". `vars.sh` resolves
 # NIX_STORE_DIR for the same reason.
-root=$(readlink -f "$(dirname "$(dirname "$NIX_STORE_DIR")")")
+store_dir=$(readlink -f "$NIX_STORE_DIR")
+state_dir=$(readlink -f "$NIX_STATE_DIR")
 
-config=$root/pynixd-test-config.json
+# The work of pynixd goes beside the test, and not in the store of the test.
+# `TEST_ROOT` is what `vars.sh` builds both directories from.
+work=${TEST_ROOT:-$(dirname "$(dirname "$state_dir")")}
+
+config=$work/pynixd-test-config.json
 cat > "$config" <<JSON
 {
   "stores": {
     "local": {
       "type": "local-socket",
-      "store_path": "$root",
-      "socket_path": "$root/pynixd-upstream.socket",
+      "store_dir": "$store_dir",
+      "state_dir": "$state_dir",
+      "socket_path": "$work/pynixd-upstream.socket",
       "nix_bin": "$REAL_NIX",
       "use_db": true,
       "monitor": false,

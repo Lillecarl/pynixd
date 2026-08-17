@@ -22,7 +22,8 @@ So the ca suite and the dyn-drv suite have **no daemon coverage upstream**.
 
 This directory makes the third mode: one store for each test, as in mode 1,
 and a daemon, as in mode 2. `setup.sh` applies four patches to reach it, and
-each patch names its reason in the file.
+each patch names its reason in the file. A fifth patch rewrote the layout of
+the store of each test, and issue #176 removed it.
 
 ## Run it
 
@@ -155,8 +156,9 @@ it.
 
 ## The control measurement
 
-Client, scripts and daemon all Nix 2.34.8. One serial run, on Linux, with the
-chroot store layout of patch 5:
+Client, scripts and daemon all Nix 2.34.8. One serial run, on Linux. This
+measurement is from before issue #176, so it used the chroot store layout of
+the patch that #176 removed.
 
 ```
 151 OK    36 SKIP    20 FAIL     (207 total)
@@ -174,28 +176,31 @@ The 20 failures:
   here.
 - **7 others** — `chroot-store`, `structured-attrs` (it wants a flake
   registry), `shell`, `formatter`, `nix-profile`, `nix-channel`,
-  `nested-sandboxing`. The last two arrived with patch 5, and neither is
-  explained yet.
+  `nested-sandboxing`. The last two arrived with the layout patch that
+  #176 removed, and neither is explained yet. Measure them again.
 
 **A failure here is a failure of Nix or of this harness, and not of pynixd.**
 `compare` puts these under "FAILS IN BOTH" and keeps them out of the answer.
 Report a genuine defect of Nix to `github/lillecarl/nix`.
 
-## Why each test gets a chroot store
+## The store of each test
 
-**pynixd serves a chroot store only.** `LocalSocketStoreSpec` holds one
-`store_path`, and the managed daemon gets `--store <store_path>`.
-`local-fs-store.hh:54-70` of Nix states that this gives `$root/nix/store` and
-`$root/nix/var/nix`. The suite puts the store at `$TEST_ROOT/store` and the
-state at `$TEST_ROOT/var/nix`, which is a relocated store and not a chroot
-store.
+**The suite uses a relocated store, and pynixd serves one.** `common/vars.sh`
+exports `NIX_STORE_DIR=$TEST_ROOT/store` and `NIX_STATE_DIR=$TEST_ROOT/var/nix`,
+so the store path and the directory on disk are the same and the state sits
+beside it. `make-shim.sh` reads both names out of the environment of the test
+and writes them into the configuration of pynixd.
 
-Patch 5 changes the layout of the suite, and not pynixd, so a failure then
-names pynixd and nothing else. The control run takes the same patch, because a
-comparison of two runs must change the daemon and nothing else. Only 2 of the
-207 scripts name the main store directly: `read-only-store.sh:40` and
-`binary-cache.sh:33`. Every other `$TEST_ROOT/store*` is a second store that
-the test makes for itself.
+Nix moves a store the other way as well. `--store <root>` puts the files at
+`<root>/nix/store` and moves no store path, so `builtins.storeDir` still
+answers `/nix/store`. pynixd served that shape alone until issue #176, and a
+fifth patch here rewrote the layout of the suite to match. **That patch
+changed the tests to fit pynixd**, and it was the one patch of the five that
+worked around pynixd rather than around the harness. It is gone, with the two
+script rewrites under it.
+
+`pynixd/store_layout.py` holds both shapes now, and `tests/unit/test_store_layout.py`
+states the difference.
 
 ## The safety limit
 

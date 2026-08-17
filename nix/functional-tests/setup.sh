@@ -125,50 +125,6 @@ if [[ "${NIX_REMOTE:-}" == daemon ]]; then
 fi
 EOF
 
-# --- Patch 5: give each test a chroot store -------------------------------
-#
-# The suite puts the store at `$TEST_ROOT/store` and the state at
-# `$TEST_ROOT/var/nix`. That is a relocated store. pynixd serves a chroot store
-# only: it gives its managed daemon `--store <store_path>`, and
-# `local-fs-store.hh:54-70` of Nix states that this makes the store
-# `$root/nix/store` and the state `$root/nix/var/nix`.
-#
-# So each test gets a chroot layout here, and `$TEST_ROOT` is then the
-# `store_path` that pynixd needs. The control run uses this layout as well,
-# because a comparison of two runs must change the daemon and nothing else.
-VARS="$WORK/src/tests/functional/common/vars.sh"
-sed -i \
-    -e 's|"\$TEST_ROOT/store"|"$TEST_ROOT/nix/store"|' \
-    -e 's|^      NIX_STORE_DIR=\$TEST_ROOT/store$|      NIX_STORE_DIR=$TEST_ROOT/nix/store|' \
-    -e 's|^  export NIX_LOCALSTATE_DIR=\$TEST_ROOT/var$|  export NIX_LOCALSTATE_DIR=$TEST_ROOT/nix/var|' \
-    -e 's|^  export NIX_LOG_DIR=\$TEST_ROOT/var/log/nix$|  export NIX_LOG_DIR=$TEST_ROOT/nix/var/log/nix|' \
-    -e 's|^  export NIX_STATE_DIR=\$TEST_ROOT/var/nix$|  export NIX_STATE_DIR=$TEST_ROOT/nix/var/nix|' \
-    "$VARS"
-for name in "nix/store" "nix/var" "nix/var/log/nix" "nix/var/nix"; do
-    if ! grep -q "TEST_ROOT/$name" "$VARS"; then
-        echo "setup.sh: vars.sh holds no '$name' after the layout patch; the patch is stale" >&2
-        exit 1
-    fi
-done
-
-# `init.sh` makes each of those directories, and a nested path needs `-p`.
-sed -i \
-    -e 's|^mkdir "\$NIX_STORE_DIR"$|mkdir -p "$NIX_STORE_DIR"|' \
-    -e 's|^mkdir "\$NIX_LOCALSTATE_DIR"$|mkdir -p "$NIX_LOCALSTATE_DIR"|' \
-    -e 's|^mkdir "\$NIX_STATE_DIR"$|mkdir -p "$NIX_STATE_DIR"|' \
-    "$INIT"
-
-# Two scripts build the path of the main store themselves, rather than read
-# the name that holds it. Both mean the same directory under either layout.
-# The names in the replacement text belong to the patched script, and this
-# shell must not expand them.
-# shellcheck disable=SC2016
-sed -i 's|chmod -R -w "\$TEST_ROOT"/store|chmod -R -w "$NIX_STORE_DIR"|' \
-    "$WORK/src/tests/functional/read-only-store.sh"
-# shellcheck disable=SC2016
-sed -i 's|rm -rf "\$TEST_ROOT/var/log/nix"|rm -rf "$NIX_LOG_DIR"|' \
-    "$WORK/src/tests/functional/binary-cache.sh"
-
 echo "patches applied:"
 grep -n "NIX_REMOTE= nix --extra" "$FUNCS"
 grep -n "    restartDaemon" "$FUNCS"
