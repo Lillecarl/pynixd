@@ -159,17 +159,19 @@ it.
 Client, scripts and daemon all Nix 2.34.8. One serial run each, on Linux,
 with the relocated store layout that the suite itself sets.
 
-| run     | OK  | FAIL | SKIP | other     |
-| ------- | --- | ---- | ---- | --------- |
-| control | 149 | 22   | 36   |           |
-| pynixd  | 109 | 63   | 34   | 1 TIMEOUT |
+| run     | OK  | FAIL | SKIP |
+| ------- | --- | ---- | ---- |
+| control | 149 | 22   | 36   |
+| pynixd  | 114 | 59   | 34   |
 
-**40 regressions**: a test that the control passes and pynixd fails. 14 in the
-`ca` suite, 4 in `flakes`, 2 in `dyn-drv`, and 20 in `main`.
+**35 regressions**: a test that the control passes and pynixd fails. 14 in the
+`ca` suite, 2 in `flakes`, 2 in `dyn-drv`, and 17 in `main`.
 
 Removing the layout patch of #176 moved `nix-channel` from FAIL to OK in the
 control run, so that patch was breaking a test of Nix on its own.
 `nested-sandboxing` still fails, and its cause is not the layout.
+
+The count was 40 before issues #178, #179 and #180. Each one is below.
 
 ### The 22 control failures
 
@@ -199,8 +201,34 @@ and the test moved to FAIL, with a real builder error under it. Issue #178
 holds that defect.
 
 Measured both ways: with the correction the test fails, and with the
-correction reverted and nothing else changed it reports `Ok: 1`. So read a
-pass of a build test with care until #178 is closed.
+correction reverted and nothing else changed it reports `Ok: 1`.
+
+### One test, and three defects under it
+
+`main:placeholders` passes now. Reaching that took three corrections, and
+each one made the next one visible. This is the shape of the work here, so it
+is worth stating once:
+
+1. **#178.** pynixd sent the wanted outputs of a derivation and dropped the
+   others. The daemon rewrites `builtins.placeholder <name>` for each output
+   the derivation names, so `${placeholder "bin"}` reached the builder as a
+   path that is not there. `main:placeholders` passes with this corrected.
+2. **#179.** An already-valid derived path answered with no realisation, so
+   `nix build --json` wrote no `outputs` key. `main:build` read `null` at
+   line 23.
+3. **#180.** The request held its derived paths in a set, so the answers came
+   back sorted. `main:build` reads them by position at line 8. That test
+   passed in one work directory and failed in another, with no change but the
+   hash part of two store paths.
+
+`main:build` reaches line 91 now, and it started at line 8. A defect in this
+project hides the next one, so a test that moves forward is progress even
+when it still fails.
+
+`main:multiple-outputs` is a `#174` difference now, and not one of the three
+above. `nix store delete --ignore-liveness` cannot delete a path that a temp
+root holds: `collectGarbage` of Nix reads the temp roots whatever that option
+says. Add it to the list of GC tests above.
 
 ## The store of each test
 
