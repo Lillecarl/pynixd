@@ -15,8 +15,10 @@ from ..drv_hash import output_hashes
 from ..drv_parser import ChildMapNode, to_basic_derivation
 from ..serde import (
     BuildDerivationRequest,
+    BuildPathsRequest,
     BuildResult,
     BuildResultStatus,
+    DerivedPath as SerdeDerivedPath,
     DrvOutput,
     EnsurePathRequest,
     IsValidPathRequest,
@@ -272,6 +274,11 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             log.debug("ensure_derivation_already_realised", drv_path=str(drv_path), outputs=sorted(selected_outputs))
             return realised.with_dynamic_outputs(self.derived_path.base_store_path())
 
+        fetched = await self._try_realise_upstream(parsed, selected_outputs, drv_path)
+        if fetched is not None:
+            log.debug("ensure_derivation_realised_upstream", drv_path=str(drv_path))
+            return fetched.with_dynamic_outputs(self.derived_path.base_store_path())
+
         refusal = await self._refuse_an_impure_input(parsed, drv_path)
         if refusal is not None:
             return refusal
@@ -420,6 +427,71 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         answer.produced_paths = set(resolved_outputs.values())
         answer.result = answer.result.model_copy(update={"built_outputs": built})
         return answer
+
+    async def _try_realise_upstream(
+        self,
+        parsed: Derivation,
+        wanted: set[str],
+        drv_path: SerdeStorePath,
+    ) -> GoalResult | None:
+        """Let the daemon behind pynixd substitute a content-addressed output.
+
+        **A content-addressed output has no store path to substitute by.** The
+        derivation names none, so `_try_substitute_known_outputs` has nothing
+        to pass and `EnsurePath` upstream has nothing to take. The path exists
+        only in a realisation, and the realisation lives in the cache that the
+        client named. `_already_realised` asks the store for one and finds
+        none, so the goal took the build road. Issue #198 measured what that
+        costs: `--max-jobs 0` says "substitute this, do not build it", pynixd
+        built anyway, and a build makes **every** output, so
+        `use-a-more-outputs^first` also produced `second`.
+
+        This is the road that was missing. `BuildPaths` for the derived path
+        goes to the daemon behind pynixd, with the option set of the client,
+        so that daemon applies `substituters`, `max-jobs` and
+        `require-sigs` and runs its own `DrvOutputSubstitutionGoal`. That
+        goal is the one thing that reads a realisation out of a substituter,
+        and pynixd has no such client of its own. `_try_substitute_upstream`
+        takes the same decision for a path that is already known, and states
+        the same reason. Issues #187, #195 and #198.
+
+        It runs only for a client that named a substituter, and only for a
+        derivation whose wanted outputs name no path. A derivation that names
+        its paths has the older road, and a client that named no substituter
+        gains nothing from asking.
+
+        **A failure here is not a failure of the goal.** The daemon answers an
+        error when no substituter holds the realisation, and that is the
+        ordinary answer for a derivation the client must build. The caller
+        goes on to the inputs and the build.
+        """
+        if not wanted or parsed.is_impure:
+            return None
+        paths_of_drv = parsed.output_paths()
+        if any(str(paths_of_drv.get(name, "")) for name in wanted):
+            return None
+        client = next((c for c in self._watchers if c.options is not None), None)
+        if not client_names_a_substituter(client):
+            return None
+
+        request = BuildPathsRequest(
+            derived_paths=[SerdeDerivedPath(value=str(self.derived_path))],
+            build_mode=int(self.build_mode),
+        )
+        try:
+            await self.engine.ctx.local_store.execute(request, client=client)
+        except (DaemonProtocolError, OSError, EOFError) as ex:
+            # An upstream miss is the normal answer for a derivation that the
+            # client must build, and a broken upstream connection must not end
+            # the goal either: the build road is still there. Issue #195 holds
+            # what an escape from here costs.
+            log.debug("upstream_realise_miss", drv_path=str(drv_path), reason=str(ex))
+            return None
+
+        # The daemon holds the realisation now, so the ordinary reader finds
+        # it. This does not trust the answer of the daemon on its own: that
+        # method checks the path as well.
+        return await self._already_realised(parsed, wanted)
 
     async def _under_the_original_id(self, result: GoalResult, parsed: Derivation) -> GoalResult:
         """Give each realisation the id that the original derivation makes, and register it.
