@@ -329,31 +329,39 @@ with the relocated store layout that the suite itself sets.
 
 | run     | OK  | FAIL | SKIP |
 | ------- | --- | ---- | ---- |
-| control | 149 | 22   | 36   |
-| pynixd  | 146 | 25   | 36   |
+| control | 151 | 20   | 36   |
+| pynixd  | 148 | 24   | 35   |
 
 **3 regressions**: a test that the control passes and pynixd fails.
 
 | test                 | why                                             |
 | -------------------- | ----------------------------------------------- |
-| `ca:new-build-cmd`   | #196, the count of the `error:` lines            |
-| `main:build`         | #196                                             |
+| `ca:new-build-cmd`   | #196, and it fails at the same `build.sh:247`    |
+| `main:build`         | #196, at `build.sh:247`                          |
 | `main:store-info`    | permanent, and the next section gives the reason |
 
-So two issues hold every regression, and one of the two is on purpose.
+So two issues hold every regression, one of the two is on purpose, and the
+two that are not are **one assertion**. `new-build-cmd.sh` sources `build.sh`,
+so both arrive at the same line.
 
-`main:multiple-outputs-substitute-failure` moved SKIP to FAIL in one run and
-not in the next. Issue #199 holds it: the managed upstream daemon did not
-start, which is a fault of the harness rather than of the subject of the
-test.
+`main:multiple-outputs-substitute-failure` moved SKIP to FAIL. Issue #199
+holds it: the managed upstream daemon did not start, which is a fault of the
+harness rather than of the subject of the test.
 
 `main:multiple-outputs`, `main:gc-concurrent` and `main:build-delete` come and
 go between runs, and all three are the #174 family. Read a single failure of
 one of them as a report of that issue, and not as a new one.
 
-**22 tests fail in both arms.** Those are a defect of Nix or of this harness,
+**20 tests fail in both arms.** Those are a defect of Nix or of this harness,
 and not of pynixd. `main:build-remote-*` is eight of them, because the suite
 has no second machine to build on here.
+
+**The control moved from 149 to 151, and the shell is the reason.** The
+`bash` that `runtimeInputs` now names put a shell in the store, so
+`chroot-store` and `nested-sandboxing` build inside their sandbox and pass in
+both arms. The section below on the harness gives the mechanism. A control
+that fails hides a regression, so read these two numbers as one measurement
+that got better and not as a change of subject.
 
 ### The `ca` suite alone
 
@@ -427,7 +435,7 @@ issue #191 tracks the list of such markers.
 No script of the suite reads this line, so no test moves either way. Issue
 #189 holds the measurement.
 
-### The 22 control failures
+### The 20 control failures
 
 **A failure here is a failure of Nix or of this harness, and not of pynixd.**
 `compare` puts these under "FAILS IN BOTH" and keeps them out of the answer.
@@ -441,9 +449,12 @@ Report a genuine defect of Nix to `github/lillecarl/nix`.
 - **1 `db-migration`** — the script states its own condition: "This assumes
   that the `daemon` package is older than the `client` one". Both are 2.34.8
   here.
-- **9 others** — `chroot-store`, `structured-attrs` (it wants a flake
-  registry), `shell`, `formatter`, `nix-profile`, `nested-sandboxing`, `json`,
-  `tarball` and `fetchurl`.
+- **7 others** — `structured-attrs` (it wants a flake registry), `shell`,
+  `formatter`, `nix-profile`, `json`, `tarball` and `fetchurl`.
+
+`chroot-store` and `nested-sandboxing` were on that list and are not any
+more. Both build inside a sandbox, and both failed because the suite had no
+shell in the store to build with.
 
 ### A number that hid a defect
 
