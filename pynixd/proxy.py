@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Any, cast
 import asyncssh
 import structlog
 
+from nix_daemon_protocol.exceptions import DaemonProtocolError
+
 from . import wire
 from .config import ScheduleMode
 from .connection import ClientConn
@@ -63,11 +65,12 @@ def _error_text(ex: Exception) -> str:
     name of a Python class, a quoted string, and every escape of the message
     doubled. Nix writes the message alone.
 
-    A `PynixdError` carries a message that pynixd wrote for a reader, so the
-    message is the whole text. Any other exception is a fault of pynixd, and
-    the name of the class is the part that says so.
+    A `PynixdError` carries a message that pynixd wrote for a reader, and a
+    `DaemonProtocolError` carries the message of a daemon behind pynixd. Both
+    are the whole text. Any other exception is a fault of pynixd, and the name
+    of the class is the part that says so.
     """
-    if isinstance(ex, PynixdError):
+    if isinstance(ex, PynixdError | DaemonProtocolError):
         return str(ex)
     return f"{type(ex).__name__}: {ex}"
 

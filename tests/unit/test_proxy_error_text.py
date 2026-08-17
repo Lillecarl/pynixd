@@ -10,6 +10,7 @@ Refs #175, #188.
 
 from __future__ import annotations
 
+from nix_daemon_protocol.exceptions import DaemonProtocolError
 from pynixd.exceptions import BackendError, InfrastructureError
 from pynixd.proxy import _error_text  # noqa: PLC2701 -- the format is the unit under test
 
@@ -31,3 +32,9 @@ def test_a_fault_of_pynixd_names_the_class() -> None:
 def test_the_message_keeps_its_escapes() -> None:
     """`repr` doubled each one, so the client printed the text of an escape."""
     assert _error_text(BackendError("a \x1b[31;1mred\x1b[0m word")) == "a \x1b[31;1mred\x1b[0m word"
+
+
+def test_the_message_of_a_daemon_passes_through() -> None:
+    """pynixd is a proxy, so the text of the daemon behind it is the text."""
+    message = "Cannot delete path '/nix/store/aaa-x' since it is still alive."
+    assert _error_text(DaemonProtocolError(message)) == message

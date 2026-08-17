@@ -148,13 +148,21 @@ async def read_stream(ctx: ReadContext) -> AsyncIterator[LogMessage]:
 
 
 async def drain(ctx: ReadContext, raise_on_error: bool = True) -> LogError | None:
-    """Read and discard all stderr/log messages until STDERR_LAST."""
+    """Read and discard all stderr/log messages until STDERR_LAST.
+
+    **The exception carries the message of the daemon, and nothing in front of
+    it.** A proxy sends that text on to its own client, which prints it after
+    the word "error:". This put "Backend error: " in front, so a client of
+    pynixd read `error: Backend error: Cannot delete path '...'`, and a client
+    of `nix-daemon` read `error: Cannot delete path '...'`. The class of the
+    exception already says where the message came from.
+    """
     last_error: LogError | None = None
     async for msg in read_stream(ctx):
         if isinstance(msg, LogError):
             last_error = msg
             if raise_on_error:
-                raise ctx.error_factory(f"Backend error: {msg.msg}")
+                raise ctx.error_factory(msg.msg)
     return last_error
 
 
@@ -194,7 +202,7 @@ class WireLogs(WireModel):
                 # STDERR_ERROR is a valid daemon response, not a decode failure.
                 if isinstance(msg, LogError):
                     if ctx.raise_on_error:
-                        backend_error = ctx.error_factory(f"Backend error: {msg.msg}")
+                        backend_error = ctx.error_factory(msg.msg)
                     break
 
             object.__setattr__(obj, "messages", msgs)
