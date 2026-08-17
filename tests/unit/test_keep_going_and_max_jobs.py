@@ -57,6 +57,7 @@ class FakeEnsureGoal:
 
     def __init__(self, name: str, *, succeeds: bool, started: list[str]) -> None:
         self.name = name
+        self.derived_path = DerivedPath(name)
         self.succeeds = succeeds
         self.started = started
 
@@ -70,12 +71,25 @@ class FakeEnsureGoal:
         return goal_success() if self.succeeds else goal_failure(f"{self.name} failed")
 
 
+def _store(*, no_schedule: bool) -> SimpleNamespace:
+    """A store that the scheduler may send a build to, or may not."""
+    return SimpleNamespace(no_schedule=no_schedule)
+
+
 class FakeEngine:
-    def __init__(self, goals: dict[str, FakeEnsureGoal], *, has_a_backend: bool) -> None:
+    def __init__(
+        self,
+        goals: dict[str, FakeEnsureGoal],
+        *,
+        has_a_backend: bool,
+        has_a_substituter: bool = False,
+    ) -> None:
         self.goals = goals
-        stores: dict[StoreId, object] = {LOCAL_STORE_ID: object()}
+        stores: dict[StoreId, object] = {LOCAL_STORE_ID: _store(no_schedule=False)}
         if has_a_backend:
-            stores[StoreId("builder")] = object()
+            stores[StoreId("builder")] = _store(no_schedule=False)
+        if has_a_substituter:
+            stores[StoreId("http-cache.nixos.org")] = _store(no_schedule=True)
         self.ctx = SimpleNamespace(stores=stores)
 
     def substituter_ids(self) -> tuple[str, ...]:
@@ -100,13 +114,16 @@ async def _run(
     failing: set[str],
     options: SetOptionsRequest | None,
     has_a_backend: bool = False,
+    has_a_substituter: bool = False,
+    paths: list[str] | None = None,
 ) -> tuple[list[str], list[str]]:
     """Run the four paths, and answer which goals ran and which got an answer."""
+    paths = _PATHS if paths is None else paths
     started: list[str] = []
-    goals = {path: FakeEnsureGoal(path, succeeds=path not in failing, started=started) for path in _PATHS}
-    engine = FakeEngine(goals, has_a_backend=has_a_backend)
+    goals = {path: FakeEnsureGoal(path, succeeds=path not in failing, started=started) for path in paths}
+    engine = FakeEngine(goals, has_a_backend=has_a_backend, has_a_substituter=has_a_substituter)
     request = BuildPathsWithResultsRequest(
-        derived_paths=[SerdeDerivedPath(value=path) for path in _PATHS],
+        derived_paths=[SerdeDerivedPath(value=path) for path in paths],
         build_mode=BuildMode.NORMAL,
     )
 
@@ -120,8 +137,13 @@ async def _run(
 
 
 @pytest.mark.anyio
-async def test_one_slot_runs_the_goals_in_the_order_of_the_request() -> None:
-    """`-j1` against a pynixd with no backend runs one goal at a time."""
+async def test_one_slot_runs_one_goal_at_a_time() -> None:
+    """`-j1` against a pynixd with no backend runs one goal at a time.
+
+    The four names sort the same way as the four store paths here, so this
+    reads the slot count alone.
+    `test_the_goals_run_in_the_order_of_the_derivation_name` reads the order.
+    """
     started, answered = await _run(failing=set(), options=_options(max_build_jobs=1, keep_going=False))
 
     assert started == _PATHS
@@ -183,3 +205,68 @@ async def test_a_client_with_no_option_set_keeps_the_fan_out() -> None:
 
     assert sorted(started) == sorted(_PATHS)
     assert answered == _PATHS
+
+
+@pytest.mark.anyio
+async def test_a_substituter_does_not_lift_the_limit() -> None:
+    """A store that the scheduler never builds on is not a builder.
+
+    `_build_slots` counted every store that is not the local one, so one
+    binary cache in the configuration made `-j1` mean nothing. Almost every
+    configuration holds one. `main:build` measured it with
+    `stores=["http-cache.nixos.org", "local"]` and `slots=4` for a request of
+    four goals at `max_build_jobs=1`. Issue #196.
+    """
+    started, answered = await _run(
+        failing=set(),
+        options=_options(max_build_jobs=1, keep_going=False),
+        has_a_substituter=True,
+    )
+
+    assert started == _PATHS
+    assert answered == _PATHS
+
+
+@pytest.mark.anyio
+async def test_the_goals_run_in_the_order_of_the_derivation_name() -> None:
+    """Nix takes `aardvark` before `baboon`, whatever order the client wrote.
+
+    `DerivationBuildingGoal::key()` at `derivation-building-goal.cc:54` builds
+    `"dd$" + name + "$" + path`, and `goal.hh:604` states the rule. The store
+    path decides nothing until the names are equal.
+
+    `main:build` measured it. The client sends four failing derivations in
+    store-path order, `-j1`, and asserts that the one `error:` line names x1.
+    pynixd took the request order, so it built x3 and named x3.
+    """
+    # The store path order is the reverse of the name order, so a request in
+    # store-path order can only pass by reading the name.
+    paths = [f"/nix/store/{chr(ord('a') + 4 - index) * 32}-x{index}.drv!out" for index in (4, 3, 2, 1)]
+    started, answered = await _run(
+        failing={paths[-1]},
+        options=_options(max_build_jobs=1, keep_going=False),
+        paths=paths,
+    )
+
+    # x1 is last in the request and first by name, and it is the one that fails.
+    assert started == [paths[-1]]
+    assert answered == [paths[-1]]
+
+
+@pytest.mark.anyio
+async def test_the_answer_keeps_the_order_of_the_request() -> None:
+    """The work order is the name order, and the answer order is the request order.
+
+    `nix build --json` reads the answers by position. `_goal_order` decides
+    which goal runs first and writes each result to the place of the request,
+    so the two orders stay apart. Issue #196.
+    """
+    paths = [f"/nix/store/{chr(ord('a') + 4 - index) * 32}-x{index}.drv!out" for index in (4, 3, 2, 1)]
+    started, answered = await _run(
+        failing=set(),
+        options=_options(max_build_jobs=1, keep_going=False),
+        paths=paths,
+    )
+
+    assert started == list(reversed(paths))
+    assert answered == paths

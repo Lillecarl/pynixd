@@ -42,6 +42,11 @@ class FakeEnsureGoal(Goal[GoalResult]):
         super().__init__(engine)
         self._result = result
         self._before_result = before_result
+        # `FakeEngine.get_ensure_derived_path_goal` fills this in, the way the
+        # real goal carries the path it was made for. `_goal_order` reads it to
+        # take the goals in the order that Nix takes them, which is the order
+        # of the derivation name. Issue #196.
+        self.derived_path: DerivedPath | None = None
         self.subscribers: list[ClientConn] = []
 
     async def subscribe(self, client: ClientConn | None) -> None:
@@ -59,7 +64,14 @@ class FakeEngine:
         self.goals = goals
         # A backend is present, so `max-jobs` of the client does not reach the
         # loop of the root goals. `_build_slots` gives the reason. Issue #190.
-        self.ctx = SimpleNamespace(stores={LOCAL_STORE_ID: object(), StoreId("builder"): object()})
+        # `no_schedule` is the property that separates a builder from a
+        # substituter, and `_build_slots` counts the builders alone. Issue #196.
+        self.ctx = SimpleNamespace(
+            stores={
+                LOCAL_STORE_ID: SimpleNamespace(no_schedule=False),
+                StoreId("builder"): SimpleNamespace(no_schedule=False),
+            }
+        )
 
     def substituter_ids(self) -> tuple[str, ...]:
         return ()
@@ -71,7 +83,9 @@ class FakeEngine:
         substituter_ids: tuple[str, ...],
     ) -> FakeEnsureGoal:
         del build_mode, substituter_ids
-        return self.goals[str(path)]
+        goal = self.goals[str(path)]
+        goal.derived_path = path
+        return goal
 
     async def build_paths_with_results(
         self,

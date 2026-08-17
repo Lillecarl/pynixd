@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import anyio
+import structlog
 
 from ..derived_path import DerivedPath
 from ..serde import (
@@ -25,6 +27,59 @@ if TYPE_CHECKING:
     from .engine import GoalEngine
     from .ensure import EnsureDerivedPathGoal
     from .results import GoalResult
+
+log = structlog.get_logger(__name__)
+
+
+async def _the_result_unless_it_stops(goal: EnsureDerivedPathGoal, stop: anyio.Event) -> GoalResult | None:
+    """The result of *goal*, or `None` when *stop* comes first.
+
+    **A goal that the request left behind reports nothing, and it keeps
+    running.** Nix takes both halves of that. `Worker::run` leaves its loop
+    when `topGoals` is empty, so a goal that is still building never reaches
+    `amDone`, its `exitCode` stays `ecBusy`, and
+    `Worker::buildPathsWithResults` at `entry-points.cc:93` skips it. Nix then
+    destroys the goal, which kills the builder as well.
+
+    pynixd keeps the build. A build of pynixd serves every client that asked
+    for the same derivation, and one client that gave up must not take the
+    work of the others. So this stops waiting and leaves the build alone.
+
+    `main:build` measured what the waiting costs. `nix flake check
+    ./cancelled-builds -j2` builds `fast-fail` and `slow` together, and
+    `slow` blocks on a fifo. Nix answers as soon as `fast-fail` fails and
+    says nothing about `slow`; `build.sh:245` asserts that no `error:` line
+    names it. pynixd waited for `slow` and then reported it, and with a fifo
+    that nothing opens the wait has no end.
+
+    `asyncio.shield` is the one primitive that does this. `Goal.result`
+    awaits the `asyncio.Task` of the goal, and a cancellation of the awaiting
+    task cancels that task as well, because `Task.__step` cancels the future
+    it waits on. `shield` puts a second future between the two, and a
+    cancellation reaches that one alone. It also reads the outcome of the
+    goal when nothing else does, so an abandoned failure raises no "exception
+    was never retrieved" report. anyio offers no equivalent, and the goal
+    system is asyncio below `Goal.result`. Issue #196.
+    """
+    if stop.is_set():
+        return None
+    shielded = asyncio.shield(goal.result())
+    result: GoalResult | None = None
+
+    async def watch_the_stop() -> None:
+        await stop.wait()
+        tg.cancel_scope.cancel()
+
+    async def take_the_result() -> None:
+        nonlocal result
+        result = await shielded
+        tg.cancel_scope.cancel()
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(watch_the_stop)
+        tg.start_soon(take_the_result)
+
+    return result
 
 
 @dataclass
@@ -98,31 +153,78 @@ class BuildPathsWithResultsGoal(ExecutionGoal[BuildPathsWithResultsResponse]):
 
         **`max-jobs` limits the local builds alone, and `_build_slots` states
         when that reaches this loop.**
+
+        **The order of the request is not the order of the work.**
+        `_goal_order` states which goal runs first, and the answer stays in
+        the order the client asked.
         """
         options = self.client.options if self.client is not None else None
         keep_going = bool(options.keep_going) if options is not None else False
 
         results: list[GoalResult | None] = [None] * len(goals)
         stop = anyio.Event()
-        next_index = 0
+        order = self._goal_order(goals)
+        next_position = 0
 
         async def take_the_next_goal() -> None:
-            nonlocal next_index
-            while next_index < len(goals) and not stop.is_set():
+            nonlocal next_position
+            while next_position < len(order) and not stop.is_set():
                 # The read and the increment take no await between them, so
                 # two tasks cannot take the same goal.
-                index = next_index
-                next_index += 1
-                result = await goals[index].result()
+                index = order[next_position]
+                next_position += 1
+                log.debug("root_goal_taken", index=index, derived_path=str(goals[index].derived_path))
+                result = await _the_result_unless_it_stops(goals[index], stop)
+                if result is None:
+                    log.debug("root_goal_abandoned", index=index, derived_path=str(goals[index].derived_path))
+                    return
                 results[index] = result
                 if not keep_going and not result_succeeded(result.result):
                     stop.set()
 
+        slots = self._build_slots()
+        log.debug(
+            "root_goal_slots",
+            slots=slots,
+            goals=len(goals),
+            keep_going=keep_going,
+            max_build_jobs=None if options is None else int(options.max_build_jobs),
+            stores=sorted(self.engine.ctx.stores),
+        )
         async with anyio.create_task_group() as tg:
-            for _ in range(min(self._build_slots(), len(goals))):
+            for _ in range(min(slots, len(goals))):
                 tg.start_soon(take_the_next_goal)
 
         return results
+
+    @staticmethod
+    def _goal_order(goals: Sequence[EnsureDerivedPathGoal]) -> list[int]:
+        """The positions of *goals*, in the order that Nix takes its goals.
+
+        **Nix takes a derivation by its name, and not by its place in the
+        request.** `Worker::awake` is a `std::set` over `CompareGoalPtrs`,
+        which reads `Goal::key()`, and `DerivationBuildingGoal::key()` at
+        `derivation-building-goal.cc:54` builds `"dd$" + name + "$" + path`.
+        The name comes before the path, so `aardvark` runs before `baboon`
+        whatever order the client wrote. `goal.hh:604` states the rule.
+
+        `main:build` measured the difference. It builds x1, x2, x3 and x4 with
+        `-j1`, all four give a hash mismatch, and it asserts that the one
+        `error:` line names **x1**. The client sends the four in store-path
+        order, and `f71q...-x3.drv` sorts first, so pynixd built x3 and the
+        test read a mismatch of the wrong derivation.
+
+        The answer of the request keeps the order the client asked. This
+        decides which goal runs first, and `results[index]` still writes to
+        the place of the request. Issue #196.
+        """
+        return sorted(
+            range(len(goals)),
+            key=lambda index: (
+                goals[index].derived_path.base_store_path().base_name(),
+                str(goals[index].derived_path),
+            ),
+        )
 
     def _build_slots(self) -> int:
         """How many goals of this request may run at one time.
@@ -136,17 +238,30 @@ class BuildPathsWithResultsGoal(ExecutionGoal[BuildPathsWithResultsResponse]):
         builds at once.
 
         pynixd sends a build to a backend when it has one, so the limit reaches
-        this loop only when every store is the local one. A client that asks
-        for `-j1` against a pynixd with backends keeps the fan-out, which is
-        the same answer that `nix-daemon` gives with `builders`.
+        this loop only when the local store is the one place a build can run. A
+        client that asks for `-j1` against a pynixd with builders keeps the
+        fan-out, which is the same answer that `nix-daemon` gives with
+        `builders`.
 
-        `main:build` of the functional suite reads this. It builds four
+        **A substituter is not a builder.** `no_schedule` marks a store that
+        the scheduler never sends a build to, and `substituter_ids` reads the
+        same property. This counted every store that is not the local one, so
+        one `http-cache.nixos.org` in the configuration lifted the limit for
+        every request. Almost every configuration holds a binary cache, so
+        `max-jobs` reached this loop in almost none of them.
+
+        `main:build` of the functional suite measured it. It builds four
         fixed-output derivations that all give the wrong hash, with `-j1`, and
-        it asserts one `error:` line. pynixd wrote five. Issue #190.
+        it asserts one `error:` line. The four root goals all ran, all four
+        failed, and the client wrote nine lines: `slots=4, goals=4,
+        max_build_jobs=1, stores=["http-cache.nixos.org", "local"]`.
+        Issues #190 and #196.
         """
         stores = self.engine.ctx.stores
-        remote = [store_id for store_id in stores if store_id != LOCAL_STORE_ID]
-        if remote:
+        builders = [
+            store_id for store_id, store in stores.items() if store_id != LOCAL_STORE_ID and not store.no_schedule
+        ]
+        if builders:
             return len(self._root_goals) or 1
         options = self.client.options if self.client is not None else None
         if options is None:
