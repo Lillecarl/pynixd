@@ -42,6 +42,17 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 
+def _as_an_error(message: str) -> str:
+    """Give *message* the shape that `showErrorInfo` of Nix gives it.
+
+    `TunnelLogger::logEI` at `daemon.cc` formats the failure of a goal and
+    sends the text as one `STDERR_NEXT`. The text starts with "error: ", and
+    each line after the first carries seven spaces, which is the width of that
+    word.
+    """
+    return "error: " + "\n       ".join(message.split("\n")) + "\n"
+
+
 @dataclass
 class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
     """Coordinate the production of a derived path via substitution or build."""
@@ -51,6 +62,14 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
     build_mode: int
     substituter_ids: tuple[str, ...]
     _subscribers: list[ClientConn] = field(default_factory=list)
+    _watchers: list[ClientConn] = field(default_factory=list)
+    """Every client that ever subscribed, for a line that this goal writes.
+
+    `_subscribers` holds the clients that the build goal has not taken yet,
+    and it becomes empty as soon as the build starts. This one keeps them, so
+    `_say` reaches the client after the build as well as before it.
+    """
+
     _build_goal: BuildDerivationGoal | None = None
 
     def __post_init__(self) -> None:
@@ -62,6 +81,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         if client is None:
             return
         async with self._lock:
+            self._watchers.append(client)
             build_goal = self._build_goal
             if build_goal is None:
                 self._subscribers.append(client)
@@ -235,10 +255,45 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         for client in subscribers:
             await build_goal.subscribe(client)
         result = await self.run_child(build_goal)
+        result = await self._name_the_resolved_derivation(result, drv_path, build_drv_path)
         result = result.with_dynamic_outputs(self.derived_path.base_store_path())
         result = await self._under_the_original_id(result, parsed)
         result.result = _only_wanted_outputs(result.result, selected_outputs)
         return result
+
+    async def _name_the_resolved_derivation(
+        self,
+        result: GoalResult,
+        original: SerdeStorePath,
+        built: SerdeStorePath,
+    ) -> GoalResult:
+        """The failure of a resolved build names the resolved derivation.
+
+        Nix says two things when the build of a resolved derivation fails, and
+        pynixd said neither.
+
+        The goal of the resolved derivation has a goal that waits for it, so
+        `Goal::amDone` at `goal.cc:214` writes the whole detail as an error
+        message. A goal at the top of the request gets no such line, because
+        the caller reports that one.
+
+        `DerivationGoal` at `derivation-goal.cc:247` then answers "build of
+        resolved derivation '%s' failed", and that short sentence is the
+        result. `dyn-drv:failing-outer` reads it.
+        """
+        if str(original) == str(built) or result_succeeded(result.result):
+            return result
+        detail = str(result.result.error_msg)
+        if detail:
+            await self._say(_as_an_error(detail))
+        return GoalResult(
+            result=result.result.model_copy(
+                update={"error_msg": f"build of resolved derivation '{built}' failed"},
+            ),
+            resolved_outputs=result.resolved_outputs,
+            produced_paths=result.produced_paths,
+            dynamic_paths=result.dynamic_paths,
+        )
 
     async def _already_realised(self, parsed: Derivation, wanted: set[str]) -> GoalResult | None:
         """The realisation of each wanted output, when the store holds one for all of them.
@@ -398,8 +453,8 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
     async def _say(self, text: str) -> None:
         """Send one line to each client that watches this goal."""
         async with self._lock:
-            subscribers = list(self._subscribers)
-        for client in subscribers:
+            watchers = list(self._watchers)
+        for client in watchers:
             await client.send(LogNext(text=text))
 
     async def _refuse_an_impure_input(self, parsed: Derivation, drv_path: SerdeStorePath) -> GoalResult | None:

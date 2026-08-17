@@ -543,9 +543,17 @@ class Scheduler:
         if resp.logs.messages:
             for msg in resp.logs.messages:
                 await build.post_log_and_fanout(msg)
-        if resp.result.status != 0 and resp.result.error_msg:
-            for line in resp.result.error_msg.split("\n"):
-                await build.post_log_and_fanout(LogNext(text=f"pynixd: {line}\n"))
+        # **A failure of the build itself gets no log line here.** The message
+        # travels in `BuildResult.error_msg`, and the goal that asked for the
+        # build decides what a reader sees. `Goal::amDone` at `goal.cc:214`
+        # takes the same decision: it logs the failure of a goal that another
+        # goal waits for, and it stays quiet for a goal at the top, because
+        # the caller reports that one.
+        #
+        # pynixd wrote one `pynixd: <line>` for each line of the message. A
+        # `BuildPathsWithResults` request then carried a log that `nix-daemon`
+        # does not send, and the client printed the same text twice. Issue
+        # #188.
         log.debug(
             "build_executed",
             build_id=build.build_id,

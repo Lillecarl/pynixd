@@ -26,7 +26,15 @@ from pynixd.drv_parser import Derivation
 from pynixd.goals.ensure import EnsureDerivedPathGoal
 from pynixd.goals.results import GoalResult, goal_success
 from pynixd.goals.substitute import SubstituteAttempt
-from pynixd.serde import BuildMode, IsValidPathResponse, QueryRealisationRequest, QueryRealisationResponse
+from pynixd.serde import (
+    BuildMode,
+    BuildResult,
+    BuildResultStatus,
+    IsValidPathResponse,
+    QueryRealisationRequest,
+    QueryRealisationResponse,
+    StorePath as SerdeStorePath,
+)
 from pynixd.store_path import DrvOutput, StorePath
 
 if TYPE_CHECKING:
@@ -38,6 +46,7 @@ INPUT_DRV = "/nix/store/00000000000000000000000000000002-input.drv"
 TOP_OUT = "/nix/store/11111111111111111111111111111111-top"
 INPUT_OUT = "/nix/store/22222222222222222222222222222222-input"
 RESOLVED_PREFIX = "/nix/store/33333333333333333333333333333333"
+RESOLVED = f"{RESOLVED_PREFIX}-top.drv"
 
 
 def _input() -> Derivation:
@@ -191,3 +200,51 @@ async def test_the_client_reads_which_derivation_pynixd_really_builds() -> None:
     await goal.result()
 
     assert client.lines == [f"resolved derivation: '{TOP_DRV}' -> '{RESOLVED_PREFIX}-top.drv'...\n"]
+
+
+@pytest.mark.anyio
+async def test_a_failed_resolved_build_says_the_short_sentence() -> None:
+    """`DerivationGoal` at `derivation-goal.cc:247` answers this and nothing else."""
+    goal = EnsureDerivedPathGoal(
+        engine=cast("GoalEngine", FakeEngine()),
+        derived_path=DerivedPath(f"{TOP_DRV}!out"),
+        build_mode=BuildMode.NORMAL,
+        substituter_ids=(),
+    )
+    client = FakeClient()
+    await goal.subscribe(cast("Any", client))
+    failure = GoalResult(
+        result=BuildResult(status=BuildResultStatus.PERMANENT_FAILURE, error_msg="Cannot build 'x'.\nReason: no.")
+    )
+
+    answer = await goal._name_the_resolved_derivation(  # noqa: SLF001 -- the message is the unit under test
+        failure,
+        SerdeStorePath(path=TOP_DRV),
+        SerdeStorePath(path=RESOLVED),
+    )
+
+    assert str(answer.result.error_msg) == f"build of resolved derivation '{RESOLVED}' failed"
+    assert client.lines == ["error: Cannot build 'x'.\n       Reason: no.\n"]
+
+
+@pytest.mark.anyio
+async def test_a_failed_build_of_the_derivation_itself_keeps_its_message() -> None:
+    """A goal at the top of the request reports its own failure, at `goal.cc:214`."""
+    goal = EnsureDerivedPathGoal(
+        engine=cast("GoalEngine", FakeEngine()),
+        derived_path=DerivedPath(f"{TOP_DRV}!out"),
+        build_mode=BuildMode.NORMAL,
+        substituter_ids=(),
+    )
+    client = FakeClient()
+    await goal.subscribe(cast("Any", client))
+    failure = GoalResult(result=BuildResult(status=BuildResultStatus.PERMANENT_FAILURE, error_msg="Cannot build 'x'."))
+
+    answer = await goal._name_the_resolved_derivation(  # noqa: SLF001 -- the message is the unit under test
+        failure,
+        SerdeStorePath(path=TOP_DRV),
+        SerdeStorePath(path=TOP_DRV),
+    )
+
+    assert str(answer.result.error_msg) == "Cannot build 'x'."
+    assert client.lines == []
