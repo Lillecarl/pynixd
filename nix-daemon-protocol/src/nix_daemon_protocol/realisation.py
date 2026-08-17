@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from pydantic import ConfigDict
-
 from .drv_output import DrvOutput
 from .logging import deserialization_scope
 from .store_path import StorePath
@@ -24,12 +22,8 @@ class Realisation(WireModel):
     framework's JSON serialization.
     """
 
-    # **The name of a field builds one of these, and the alias does too.**
-    # The wire uses the alias, and Python code reads `realisation.out_path`.
-    # With the alias alone, `Realisation(out_path=...)` put nothing in the
-    # field and raised nothing, so the answer carried `null` where a store
-    # path belongs.
-    model_config = ConfigDict(validate_by_alias=True, validate_by_name=True)
+    # `WireModel` takes a value under the name of a field and under the alias,
+    # and the comment on its `model_config` gives the reason.
 
     id: DrvOutput = WireField(default_factory=DrvOutput)
     out_path: StorePath | None = WireField(default=None, alias="outPath")

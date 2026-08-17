@@ -342,7 +342,12 @@ class WireModel(BaseModel):
             path: str    # length-prefixed UTF-8
     """
 
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+    # **The name of a field builds one of these, and the alias does too.**
+    # The wire uses the alias, and Python code uses the name. With the alias
+    # alone, `Realisation(out_path=...)` put nothing in the field and raised
+    # nothing, so the answer carried `null` where a store path belongs. The
+    # rule belongs here, so the next field that gets an alias cannot repeat it.
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_by_alias=True, validate_by_name=True)
 
     def __init__(self, **data: Any) -> None:
         super().__init__(**data)
