@@ -89,6 +89,7 @@ class DaemonStore(Store):
         self.gc_max_age = spec.gc_max_age
         self.no_schedule = spec.no_schedule
         self.idle_ttl = spec.idle_ttl
+        self.max_lifetime = spec.max_lifetime
         self.version: int = wire.PROTOCOL_VERSION
         self.nix_version: str = ""
         self.conn_counter = 0
@@ -106,6 +107,7 @@ class DaemonStore(Store):
             factory=self._create_conn_with_counter,
             gate=self.gate,
             idle_ttl=self.idle_ttl,
+            max_lifetime=self.max_lifetime,
             on_connection_created=self._on_connection_created,
             on_pool_empty=self._on_pool_empty,
         )

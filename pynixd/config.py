@@ -95,6 +95,14 @@ class StoreSpecBase(BaseModel):
     feature_matrix: dict[str, set[str]] | None = None
     nix_bin: str = "nix"
     idle_ttl: float = 10.0
+    max_lifetime: float = 300.0
+    """How long a pooled connection may serve before the pool retires it.
+
+    A worker of the daemon holds a temporary root for each path that it
+    builds or substitutes, and it releases those roots when it exits. A
+    pooled connection keeps that worker alive, so a connection in steady
+    use holds every root it ever made. Zero turns the rule off. Issue #174.
+    """
     scheduleable: bool = True
     priority: float = 1.0
     score_penalty: int = 0

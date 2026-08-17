@@ -16,6 +16,7 @@ Lifecycle:
 from __future__ import annotations
 
 import contextlib
+import time
 from typing import TYPE_CHECKING, Any
 
 import anyio
@@ -116,6 +117,16 @@ class Connection:
         self.connected: bool = False
         self.dirty: bool = False
         self.op_log: list[str] = []
+        self.opened_at: float = time.monotonic()
+        """When this connection was made, for the lifetime rule of the pool.
+
+        A worker of the daemon holds a temporary root for each path that it
+        builds or substitutes, and it releases those roots when it exits. A
+        pooled connection keeps the worker alive, so the roots of one client
+        can reach the next one. `ConnectionPool.max_lifetime` retires a
+        connection that has lived long enough, which retires those roots with
+        it. Issue #174.
+        """
 
     async def __aenter__(self) -> Connection:
         """Enter async context; no setup required."""

@@ -40,6 +40,7 @@ class ConnectionPool:
         factory: Callable[[], Awaitable[Connection]],
         gate: ResourceGate,
         idle_ttl: float = 10.0,
+        max_lifetime: float = 300.0,
         max_connections: int = 64,
         on_connection_created: Callable[[Connection], None] | None = None,
         on_pool_empty: Callable[[], Awaitable[None]] | None = None,
@@ -50,6 +51,20 @@ class ConnectionPool:
         self.factory = factory
         self.gate = gate
         self.idle_ttl = idle_ttl
+        self.max_lifetime = max_lifetime
+        """How long a connection may serve before the pool retires it.
+
+        `idle_ttl` retires a connection that nobody uses. This retires one
+        that everybody uses, and the reason is the temporary roots of the
+        daemon. A worker adds a root for each path that it builds or
+        substitutes, and it releases those roots when it exits. A pooled
+        connection keeps the worker alive, so without this rule a connection
+        in steady use holds every root it ever made, and the collector can
+        free nothing that passed through it.
+
+        This is a bound on how long that lasts, and not a promise that a root
+        goes away at the end of the client that made it. Issue #174.
+        """
         self._slots = anyio.Semaphore(max_connections)
         self.on_connection_created = on_connection_created
         self.on_pool_empty = on_pool_empty
@@ -91,7 +106,7 @@ class ConnectionPool:
             expired: list[tuple[Connection, float]] = []
             for item in self.idle_conns:
                 conn, returned_at = item
-                if now - returned_at >= self.idle_ttl:
+                if now - returned_at >= self.idle_ttl or self._too_old(conn, now):
                     expired.append(item)
 
             # Remove from tracking lists synchronously to prevent race conditions
@@ -133,6 +148,10 @@ class ConnectionPool:
             # and the sweep task has nobody to report to.
             log.exception("pool_empty_callback_failed", store_id=self.store_id)
 
+    def _too_old(self, conn: Connection, now: float) -> bool:
+        """True when this connection has served long enough to retire."""
+        return self.max_lifetime > 0 and now - conn.opened_at >= self.max_lifetime
+
     async def get_or_create_conn(self) -> Connection:
         """Return a reusable idle connection, or create a new one."""
 
@@ -140,11 +159,12 @@ class ConnectionPool:
         now = time.monotonic()
         while self.idle_conns:
             candidate, returned_at = self.idle_conns.pop()
-            if now - returned_at >= self.idle_ttl:
+            if now - returned_at >= self.idle_ttl or self._too_old(candidate, now):
                 log.debug(
                     "pool_discarding_expired",
                     store_id=self.store_id,
                     conn_id=candidate.id,
+                    age=f"{now - candidate.opened_at:.1f}s",
                 )
                 if candidate in self.all_conns:
                     self.all_conns.remove(candidate)
@@ -257,13 +277,24 @@ class ConnectionPool:
                     _nested_conns.set(counts)
 
                     if conn is not None:
-                        if conn.dirty:
-                            log.warning(
-                                "store_discarding_dirty_connection",
-                                store_id=self.store_id,
-                                conn_id=conn.id,
-                                op_log=" -> ".join(conn.op_log[-10:]) or "(empty)",
-                            )
+                        now = time.monotonic()
+                        retired = self._too_old(conn, now)
+                        if conn.dirty or retired:
+                            if retired and not conn.dirty:
+                                log.debug(
+                                    "pool_retiring_old_connection",
+                                    store_id=self.store_id,
+                                    conn_id=conn.id,
+                                    age=f"{now - conn.opened_at:.1f}s",
+                                    max_lifetime=f"{self.max_lifetime:.1f}s",
+                                )
+                            else:
+                                log.warning(
+                                    "store_discarding_dirty_connection",
+                                    store_id=self.store_id,
+                                    conn_id=conn.id,
+                                    op_log=" -> ".join(conn.op_log[-10:]) or "(empty)",
+                                )
                             if conn in self.all_conns:
                                 self.all_conns.remove(conn)
                             with suppress(Exception):
