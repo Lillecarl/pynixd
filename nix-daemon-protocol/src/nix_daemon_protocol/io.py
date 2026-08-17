@@ -81,6 +81,14 @@ class BytesReader:
         self._data = data
         self._position = 0
 
+    def remaining(self) -> bytes:
+        """Every byte that this reader has not read yet.
+
+        `wirelog.decode` reads the log messages of a response and keeps what
+        is left, which is the payload that the client consumes.
+        """
+        return self._data[self._position :]
+
     async def readexactly(self, n: int) -> bytes:
         """Read exactly *n* bytes or raise ``EOFError``."""
         if self._position + n > len(self._data):

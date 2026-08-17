@@ -15,6 +15,30 @@ Issue #175.
 
 from __future__ import annotations
 
+from .decode import (
+    Handshake as Handshake,
+)
+from .decode import (
+    Operation as Operation,
+)
+from .decode import (
+    Session as Session,
+)
+from .decode import (
+    decode as decode,
+)
+from .diff import (
+    EXEMPTIONS as EXEMPTIONS,
+)
+from .diff import (
+    Difference as Difference,
+)
+from .diff import (
+    compare as compare,
+)
+from .diff import (
+    report as report,
+)
 from .framing import (
     Chunk as Chunk,
 )
