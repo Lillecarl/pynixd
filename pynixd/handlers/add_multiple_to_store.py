@@ -30,7 +30,18 @@ class AddMultipleToStoreHandler(Handler):
 
     async def handle(self, ctx: RequestContext) -> AddMultipleToStoreResponse | None:
         """Decode AddMultipleToStore request, stream framed NAR payloads to daemon, cache path infos, return response."""
-        async with ctx.proxy.local_store.transfer_conn() as conn:
+        # **The connection that adds the path carries the options of the
+        # client.** `LocalStore::addToStore` of Nix checks the signature of
+        # each path against `trusted-public-keys`, and that setting reaches
+        # the daemon through `SetOptions` alone. A transfer connection with no
+        # options made the daemon read its own keys, so `nix copy --from` with
+        # `--trusted-public-keys` was refused with "cannot add path ...
+        # because it lacks a signature by a trusted key" for a path the cache
+        # had signed correctly. `require-sigs` and `secret-key-files` travel
+        # the same way. Issues #197 and #192.
+        options = ctx.proxy.client.options if ctx.proxy.client is not None else None
+        async with ctx.proxy.local_store.transfer_conn(options) as conn:
+            await conn.apply_options(options)
             # 1. Read request header from client (serde)
             req = await AddMultipleToStoreRequest.from_reader(
                 ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version),
