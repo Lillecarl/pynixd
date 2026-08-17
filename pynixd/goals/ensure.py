@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from nix_daemon_protocol.exceptions import DaemonProtocolError
+
 from ..derived_path import DerivedPath, OutputsNames
 from ..drv_hash import output_hashes
 from ..drv_parser import ChildMapNode, to_basic_derivation
@@ -16,6 +18,7 @@ from ..serde import (
     BuildResult,
     BuildResultStatus,
     DrvOutput,
+    EnsurePathRequest,
     IsValidPathRequest,
     LogNext,
     Realisation,
@@ -25,6 +28,7 @@ from ..serde import (
 from ..store_path import StorePath
 from .dependencies import DependencyGroupGoal
 from .goal import GoalHolder
+from .query_missing import client_names_a_substituter
 from .realisations import realisations_of
 from .resolution import _nix_drv_name, resolve_derivation, resolve_dynamic_derivation, unparse_basic_derivation
 from .results import GoalResult, goal_failure, goal_success, result_succeeded
@@ -757,9 +761,48 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
     async def _try_substitute_path(self, path: StorePath) -> GoalResult | None:
         substitute_goal = await self.engine.get_substitute_path_goal(path, self.substituter_ids)
         attempt = await self.run_child(substitute_goal)
-        if not attempt.found:
+        if attempt.found:
+            return attempt.result
+        return await self._try_substitute_upstream(path)
+
+    async def _try_substitute_upstream(self, path: StorePath) -> GoalResult | None:
+        """Ask the daemon behind pynixd to fetch *path* from its substituters.
+
+        **A client can name a substituter that pynixd has no store for.**
+        `--substituters file:///...` is one. pynixd substitutes from its own
+        backends, and it has no client for a binary cache of its own, so a
+        path in such a cache reached the build road. The daemon behind pynixd
+        speaks to every kind of substituter already.
+
+        `Store::ensurePath` makes a substitution goal and nothing else, so
+        this never starts a build. It runs only for a client that names a
+        substituter; `_names_a_substituter` in `goals/query_missing.py` states
+        that rule, and the same rule keeps the plan and the work in agreement.
+        Issue #187.
+
+        **A failure here is not a failure of the goal.** `EnsurePath` answers
+        an error when no substituter holds the path, and that answer is the
+        normal one for a path that the client must build. The goal takes the
+        build road after it, so this catches the error and answers `None`.
+        """
+        client = next((c for c in self._watchers if c.options is not None), None)
+        if not client_names_a_substituter(client):
             return None
-        return attempt.result
+        wire_path = SerdeStorePath(path=str(path))
+        try:
+            await self.engine.ctx.local_store.execute(EnsurePathRequest(path=wire_path), client=client)
+        except DaemonProtocolError as ex:
+            log.debug("upstream_substitute_miss", path=str(path), reason=str(ex))
+            return None
+        response = await self.engine.ctx.local_store.execute(IsValidPathRequest(path=wire_path))
+        if not response.valid:
+            return None
+        log.debug("substituted_through_the_local_daemon", path=str(path))
+        return GoalResult(
+            result=goal_success().result,
+            resolved_outputs={},
+            produced_paths={path},
+        )
 
     async def subscribe_many(self, clients: list[ClientConn]) -> None:
         for client in clients:

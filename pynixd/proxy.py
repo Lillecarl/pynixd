@@ -299,7 +299,7 @@ class DaemonProxy:
         if isinstance(request, BuildPathsRequest):
             return await self.goal_engine.build_paths(request, client=self.client)
         if isinstance(request, QueryMissingRequest):
-            return await self.goal_engine.query_missing(request)
+            return await self.goal_engine.query_missing(request, client=self.client)
 
         local_resp: WireResponse | None = None
         try:

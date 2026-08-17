@@ -139,9 +139,13 @@ class GoalEngine:
         """
         return await self.ctx.local_store.call(request, client=client)
 
-    async def query_missing(self, request: QueryMissingRequest) -> QueryMissingResponse:
+    async def query_missing(
+        self,
+        request: QueryMissingRequest,
+        client: ClientConn | None = None,
+    ) -> QueryMissingResponse:
         """Execute a read-only QueryMissing request, classifying paths as build/substitute/unknown."""
-        return await QueryMissingPlanGoal(self, request).result()
+        return await QueryMissingPlanGoal(self, request, client).result()
 
     async def get_ensure_derived_path_goal(
         self,

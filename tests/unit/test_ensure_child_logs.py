@@ -86,6 +86,8 @@ class FakeClient:
 
     def __init__(self) -> None:
         self.lines: list[str] = []
+        self.options = None
+        """No option set, so this client names no substituter. Issue #187."""
 
     async def send(self, msg: Any) -> None:
         self.lines.append(str(msg.text))

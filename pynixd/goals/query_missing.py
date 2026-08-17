@@ -10,10 +10,12 @@ import structlog
 
 from ..derived_path import DerivedPath
 from ..serde import (
+    ContentAddress,
     IsValidPathRequest,
     LogNext,
     QueryMissingRequest,
     QueryMissingResponse,
+    QuerySubstitutablePathInfosRequest,
     StorePath as SerdeStorePath,
 )
 from ..store_path import StorePath
@@ -24,6 +26,7 @@ from .realisations import realisations_of
 if TYPE_CHECKING:
     from anyio.abc import TaskGroup
 
+    from ..connection import ClientConn
     from ..drv_parser import ChildMapNode, Derivation
     from .engine import GoalEngine
 
@@ -45,6 +48,18 @@ class QueryMissingPlan:
         self.will_substitute.add(SerdeStorePath(path=str(path)))
         self.download_size += availability.download_size or 0
         self.nar_size += availability.nar_size or 0
+
+
+_SUBSTITUTER_OPTIONS = ("substituters", "extra-substituters", "trusted-substituters")
+"""The names that make a client ask for a substituter of its own choosing."""
+
+
+def client_names_a_substituter(client: ClientConn | None) -> bool:
+    """True when the option set of *client* names a substituter."""
+    options = client.options if client is not None else None
+    if options is None:
+        return False
+    return any(name in options.overrides for name in _SUBSTITUTER_OPTIONS)
 
 
 @dataclass
@@ -71,13 +86,16 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
     input derivations of each derivation that must be built, and it walks the
     references of each path that a substituter holds.
 
-    One part is missing: the substituters that the client names. pynixd reads
-    the backends of its own configuration alone, so a path in a cache that
-    `--substituters` names reads as `willBuild`. Issue #187.
+    **The client can name a substituter that pynixd has no store for.**
+    `--substituters file:///...` is one, and so is any cache that the
+    configuration of pynixd does not list. The daemon behind pynixd speaks to
+    every kind of substituter already, so this asks that daemon rather than
+    building a second binary-cache client. Issue #187.
     """
 
     engine: GoalEngine
     request: QueryMissingRequest
+    client: ClientConn | None = None
 
     def __post_init__(self) -> None:
         ExecutionGoal.__init__(self, self.engine)
@@ -269,6 +287,44 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
 
     async def _can_substitute(self, path: StorePath) -> SubstitutionAvailability:
         scheduler = self.engine.ctx.scheduler
-        if scheduler is None:
+        if scheduler is not None:
+            availability = await scheduler.substitution_queue.can_substitute(path)
+            if availability.available:
+                return availability
+        return await self._can_substitute_upstream(path)
+
+    async def _can_substitute_upstream(self, path: StorePath) -> SubstitutionAvailability:
+        """Ask the daemon behind pynixd, when the client named a substituter.
+
+        **This runs only when the client names one.** A client that names none
+        gets the behaviour of before, so pynixd asks its own backends and
+        nothing else. A round trip for every missing path, against every
+        substituter of the machine, is not a cost to pay for a client that did
+        not ask for it.
+
+        `ca:build-cache`, `ca:issue-13247` and `ca:new-build-cmd` pass
+        `--option substituters file:///...` and then read the plan: a build
+        there is a defect, because the cache holds every path. Issue #187.
+
+        **The question is `QuerySubstitutablePathInfos`, and not
+        `QuerySubstitutablePaths`.** `Store::querySubstitutablePaths` at
+        `store-api.cc:517` skips each substituter whose `want-mass-query` is
+        off, and a `file://` cache has it off. `Store::queryMissing` asks the
+        other operation, which reads every substituter and also answers the
+        two sizes that the plan reports.
+        """
+        if not client_names_a_substituter(self.client):
             return SubstitutionAvailability.unavailable()
-        return await scheduler.substitution_queue.can_substitute(path)
+        wire_path = SerdeStorePath(path=str(path))
+        response = await self.engine.ctx.local_store.execute(
+            QuerySubstitutablePathInfosRequest(paths={wire_path: ContentAddress("")}),
+            client=self.client,
+        )
+        info = next((one for one in response.infos if one.path == wire_path), None)
+        if info is None:
+            return SubstitutionAvailability.unavailable()
+        return SubstitutionAvailability(
+            available=True,
+            download_size=info.download_size,
+            nar_size=info.nar_size,
+        )
