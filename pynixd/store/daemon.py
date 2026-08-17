@@ -234,6 +234,10 @@ class DaemonStore(Store):
         """Acquire a connection for transfer operations."""
         return self.pool.acquire("transfer")
 
+    async def retire_idle_connections(self) -> int:
+        """Close each pooled connection that nobody uses, and release its roots."""
+        return await self.pool.retire_idle()
+
     async def add_text_to_store(self, name: str, text: str, references: AbstractSet[str]) -> str:
         """Put a text file in the store of the daemon, and answer the path it took.
 

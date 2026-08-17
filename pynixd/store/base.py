@@ -141,6 +141,17 @@ class Store(ABC):
         """
         raise NotImplementedError(f"{type(self).__name__} cannot add a text file to its store")
 
+    async def retire_idle_connections(self) -> int:
+        """Close each connection to this store that nobody uses now.
+
+        A garbage collection calls this first. A worker of the daemon holds a
+        temporary root for each path that it took, and an idle connection
+        keeps that worker alive, so the collector frees nothing that passed
+        through pynixd. A store that pools no connection holds no such root
+        and answers zero. Issue #174.
+        """
+        return 0
+
     # ── Signing ─────────────────────────────────────────────────────
 
     @property

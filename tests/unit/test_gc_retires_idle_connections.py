@@ -1,0 +1,164 @@
+"""A garbage collection closes the idle connections before it starts.
+
+A worker of `nix-daemon` holds a temporary root for each path that it took,
+and it releases those roots when it exits. pynixd pools its connection to the
+local store, so the worker under an idle connection stays alive and keeps
+holding. The collector then reads a root that no client asked for, and frees
+nothing.
+
+`nix-daemon` has no such connection: the client that made the root is gone, so
+`readTempRoots` finds a stale file and removes it.
+
+The host probe of the stream mode found this. `nix store add-file` and then
+`nix store gc` deleted the file against `nix-daemon` and deleted nothing
+against pynixd, and the two recordings differed in `paths_deleted` and in
+`bytes_freed`.
+
+A connection that is in flight stays. A build really holds its paths, and
+issue #174 records that this difference is on purpose.
+"""
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass
+from typing import Any
+
+import pytest
+from test_pool_lifetime import FakeConnection, make_pool
+
+from pynixd.daemon_extensions.protocol import PynixdGCAction
+from pynixd.daemon_extensions.pynixd_collect_garbage import PynixdCollectGarbageRequest
+from pynixd.handlers.collect_garbage import CollectGarbageHandler
+from pynixd.handlers.pynixd_collect_garbage import PynixdCollectGarbageHandler
+from pynixd.serde import CollectGarbageRequest
+from pynixd.serde.auth import Role
+from pynixd.serde.context import WriteContext
+from pynixd.serde.protocol import GCAction
+from pynixd.store.base import Store
+from pynixd.wire import BytesReader, BytesWriter
+
+VERSION = 0x126
+
+
+@pytest.mark.anyio
+async def test_retire_idle_closes_each_idle_connection():
+    pool = make_pool(300.0)
+    now = time.monotonic()
+    conns = [FakeConnection("a"), FakeConnection("b")]
+    for conn in conns:
+        pool.idle_conns.append((conn, now))
+        pool.all_conns.append(conn)
+
+    closed = await pool.retire_idle()
+
+    assert closed == 2
+    assert all(conn.closed for conn in conns)
+    assert pool.idle_conns == []
+    assert pool.all_conns == []
+
+
+@pytest.mark.anyio
+async def test_retire_idle_leaves_a_connection_in_flight():
+    """A build holds its paths, and issue #174 accepts that difference."""
+    pool = make_pool(300.0)
+    busy = FakeConnection("busy")
+    pool.all_conns.append(busy)
+
+    closed = await pool.retire_idle()
+
+    assert closed == 0
+    assert not busy.closed
+    assert pool.all_conns == [busy]
+
+
+@pytest.mark.anyio
+async def test_a_store_that_pools_nothing_answers_zero():
+    """The default of `Store`. A store with no pool holds no such root."""
+
+    class NoPool:
+        retire_idle_connections = Store.retire_idle_connections
+
+    assert await NoPool().retire_idle_connections() == 0
+
+
+class FakeStore:
+    """A local store that counts what the handler asked it, and in what order."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def retire_idle_connections(self) -> int:
+        self.calls.append("retire")
+        return 1
+
+    async def call(self, request: Any) -> str:
+        self.calls.append(f"call:{type(request).__name__}")
+        return "answered"
+
+
+class FakeProxy:
+    def __init__(self, body: bytes) -> None:
+        self.r = BytesReader(body, identifier="test:gc")
+        self.version = VERSION
+        self.local_store = FakeStore()
+        self.errors: list[str] = []
+
+    async def send_error(self, message: str) -> None:
+        self.errors.append(message)
+
+
+@dataclass
+class FakeContext:
+    proxy: FakeProxy
+    role: Role
+    version: int = VERSION
+    username: str = "test"
+
+
+async def _body(request: Any) -> bytes:
+    """The request as the dispatcher hands it over: no operation number."""
+    writer = BytesWriter("test")
+    await request.to_writer(WriteContext(writer=writer, version=VERSION))
+    return writer.get_bytes()[8:]
+
+
+def _request() -> CollectGarbageRequest:
+    return CollectGarbageRequest(
+        action=GCAction.DELETE_DEAD,
+        ignore_liveness=0,
+        max_freed=2**63 - 1,
+        obsolete1=0,
+        obsolete2=0,
+        obsolete3=0,
+    )
+
+
+async def _handle(handler: Any, request: Any, role: Role) -> FakeProxy:
+    proxy = FakeProxy(await _body(request))
+    await handler.handle(FakeContext(proxy=proxy, role=role))  # type: ignore[arg-type] -- a fake context
+    return proxy
+
+
+@pytest.mark.anyio
+async def test_a_garbage_collection_retires_the_idle_connections_first():
+    proxy = await _handle(CollectGarbageHandler(), _request(), Role.ADMIN)
+
+    assert proxy.local_store.calls == ["retire", "call:CollectGarbageRequest"]
+
+
+@pytest.mark.anyio
+async def test_a_client_that_may_not_collect_retires_nothing():
+    """The handler refuses first, so a plain user cannot drop the pool."""
+    proxy = await _handle(CollectGarbageHandler(), _request(), Role.USER)
+
+    assert proxy.local_store.calls == []
+    assert proxy.errors
+
+
+@pytest.mark.anyio
+async def test_the_pynixd_operation_retires_them_as_well():
+    request = PynixdCollectGarbageRequest(action=PynixdGCAction.EXECUTE)
+    proxy = await _handle(PynixdCollectGarbageHandler(), request, Role.ADMIN)
+
+    assert proxy.local_store.calls == ["retire", "call:PynixdCollectGarbageRequest"]

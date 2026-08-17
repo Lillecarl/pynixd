@@ -315,6 +315,28 @@ class ConnectionPool:
         """Acquire a connection for transfer operations."""
         return self.acquire("transfer")
 
+    async def retire_idle(self) -> int:
+        """Close each connection that nobody uses now, and say how many.
+
+        `idle_ttl` does this after some seconds, and a garbage collection
+        cannot wait: a worker of the daemon holds a temporary root for each
+        path that it took, and it releases those roots when it exits. An idle
+        connection keeps a worker alive, so the collector reads a root that no
+        client asked for and frees nothing.
+
+        A connection that is in flight stays. A build really holds its paths,
+        and issue #174 records that this difference is on purpose.
+        """
+        idle = self.idle_conns
+        self.idle_conns = []
+        for conn, _ in idle:
+            if conn in self.all_conns:
+                self.all_conns.remove(conn)
+            log.debug("pool_retiring_idle", store_id=self.store_id, conn_id=conn.id)
+            with suppress(Exception):
+                await conn.close()
+        return len(idle)
+
     async def close(self) -> None:
         """Close all connections and cancel the idle sweep task."""
         if self.sweep_task is not None:

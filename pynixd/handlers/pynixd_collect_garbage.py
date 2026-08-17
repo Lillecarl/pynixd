@@ -30,4 +30,7 @@ class PynixdCollectGarbageHandler(Handler):
             )
             return None
 
+        # The same reason as `CollectGarbageHandler`: an idle connection holds
+        # the temporary roots of the worker under it.
+        await ctx.proxy.local_store.retire_idle_connections()
         return await ctx.proxy.local_store.call(req)
