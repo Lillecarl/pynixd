@@ -333,6 +333,13 @@ class Scheduler:
 
             if ranked or local_is_fallback:
                 rs = next(iter(ranked)) if ranked else RankedStore(local_store.store_id, 0.0, local_store)
+                if rs.store_id == local_store.store_id and self._local_slot_is_full(
+                    build,
+                    override_in_flight,
+                    assigned_this_pass,
+                ):
+                    waiting_slot.append(build)
+                    continue
                 log.debug(
                     "build_assigned_to_store",
                     build_id=build.build_id,
@@ -358,6 +365,49 @@ class Scheduler:
                 waiting_slot.append(build)
 
         return waiting_slot
+
+    def _local_slot_is_full(
+        self,
+        build: QueuedBuild,
+        override_in_flight: Mapping[StoreId, int],
+        assigned_this_pass: Mapping[StoreId, int],
+    ) -> bool:
+        """Answer whether `max-jobs` of the client leaves no local slot.
+
+        This is `Worker::waitForBuildSlot` at `worker.cc:261`, which counts
+        `getNrLocalBuilds()` against `settings.maxBuildJobs` and starts no
+        further local build until one ends. A build on a backend costs no
+        slot, and this method reaches only the local store for that reason.
+
+        **The option set of the build decides, and not a setting of pynixd.**
+        `QueuedBuild.options` holds the set of the client that made the build,
+        which is the same rule that `store.build_conn` takes. A build with no
+        options is one that pynixd made itself, and it takes no limit: the
+        request behind it named none.
+
+        `main:build` of the functional suite reads this. It builds four
+        fixed-output derivations that give the wrong hash, with `-j1`, and it
+        asserts one `error:` line. `_build_slots` of `goals/requests.py`
+        limited the root goals of one request already, and that is not the
+        whole fan-out: a root goal realises the input derivations of its
+        derivation at the same time, and each one is a separate build. Three
+        builds ran together under `-j1` for that reason. Issue #196.
+        """
+        options = build.options
+        if options is None:
+            return False
+        slots = max(1, int(options.max_build_jobs))
+        local_id = self.local_store.store_id
+        running = override_in_flight.get(local_id, 0) + assigned_this_pass.get(local_id, 0)
+        if running < slots:
+            return False
+        log.debug(
+            "build_waits_for_a_local_slot",
+            build_id=build.build_id,
+            running=running,
+            max_build_jobs=slots,
+        )
+        return True
 
     def _has_compatible_store(
         self,
