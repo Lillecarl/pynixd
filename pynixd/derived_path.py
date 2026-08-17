@@ -246,7 +246,7 @@ class DerivedPath:
 
     async def to_derivation(self, store_path: Path) -> Derivation | None:
         """Read the derivation file for the underlying ``.drv`` path."""
-        return await read_drv_file(store_path, self._drv_path)
+        return await read_drv_file(self._drv_path)
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, DerivedPath):

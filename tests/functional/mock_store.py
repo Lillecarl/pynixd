@@ -235,7 +235,7 @@ class MockStore(DaemonStore):
         """Read a .drv file from the mock filesystem."""
         from pynixd.drv_parser import read_drv_file
 
-        return await read_drv_file(self.store_path, drv_store_path)
+        return await read_drv_file(drv_store_path)
 
     async def execute(  # type: ignore[override]
         self,

@@ -413,9 +413,9 @@ async def main() -> None:
     deferred_drv_path = StorePath(stdout.strip())
     print(f"Deferred .drv path: {deferred_drv_path}")
 
-    deferred_parsed = await read_drv_file(root_store.store_path, deferred_drv_path)
+    deferred_parsed = await read_drv_file(deferred_drv_path)
     assert deferred_parsed is not None
-    await read_drv_file(root_store.store_path, ca_drv_path)
+    await read_drv_file(ca_drv_path)
 
     print(f"\nDeferred .drv outputs: {deferred_parsed.output_paths()}")
     print(f"Deferred .drv input_drvs: {list(deferred_parsed.input_drvs.keys())}")
@@ -497,7 +497,7 @@ async def main() -> None:
 
     if resolved_rows:
         nix_resolved_drv_path = StorePath(resolved_rows[0][0])
-        await read_drv_file(root_store.store_path, nix_resolved_drv_path)
+        await read_drv_file(nix_resolved_drv_path)
         nix_aterm_path = root_store.store_path / str(nix_resolved_drv_path).lstrip("/")
         nix_aterm = (await anyio.Path(nix_aterm_path).read_text()).strip()
         print("\n  Nix's resolved ATerm:")

@@ -151,7 +151,7 @@ async def main() -> None:
     print("=" * 70)
     print("Step 3: Inspect producingDrv .drv structure")
     print("=" * 70)
-    parsed_producing = await read_drv_file(root_store.store_path, producing_drv_path)
+    parsed_producing = await read_drv_file(producing_drv_path)
     assert parsed_producing is not None, "producingDrv .drv should exist"
     print(f"is_dynamic: {parsed_producing.is_dynamic}")
     print(
@@ -201,7 +201,7 @@ async def main() -> None:
 
             # Parse with pynixd
             try:
-                wrapper_parsed = await read_drv_file(root_store.store_path, wrapper_drv_path)
+                wrapper_parsed = await read_drv_file(wrapper_drv_path)
                 assert wrapper_parsed is not None
                 print(f"wrapper is_dynamic: {wrapper_parsed.is_dynamic}")
                 print(

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import TYPE_CHECKING
+
+from nix_daemon_protocol.store_dir import on_disk
 
 from ..connection import Connection
 from ..drv_parser import parse_drv
@@ -47,8 +50,11 @@ class ExternalUnixStore(DaemonStore):
     async def read_derivation(self, drv_store_path: StorePath | str) -> Derivation | None:
         """Fast-path: read .drv file directly from the store filesystem."""
 
-        sp = StorePath(str(drv_store_path))
-        drv_file = self.store_path / "nix" / "store" / str(sp)
+        # `on_disk` and not `self.store_path / "nix" / "store" / str(sp)`.
+        # `str(sp)` is an absolute path, and pathlib drops every part in front
+        # of an absolute one, so that read went to the store of the machine.
+        # See `read_drv_file` in `drv_parser.py` for what the mistake cost.
+        drv_file = Path(on_disk(str(StorePath(str(drv_store_path)))))
         try:
             contents = drv_file.read_bytes()
         except (FileNotFoundError, OSError):

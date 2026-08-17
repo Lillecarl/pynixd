@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, urlsplit
 import anyio
 import structlog
 
-from nix_daemon_protocol.store_dir import set_store_dir
+from nix_daemon_protocol.store_dir import set_real_store_dir
 
 from . import wire
 from .config import ExternalUnixStoreSpec, HTTPBinaryCacheSpec, LocalSocketStoreSpec, PynixdSettings
@@ -48,23 +48,28 @@ that a stricter limit accepts is bindable everywhere."""
 
 
 def _adopt_store_dir(local_store: Store) -> None:
-    """Take the store directory from the local store that pynixd serves.
+    """Take the real store directory from the local store that pynixd serves.
 
-    Nix builds the layout from the root that `--store <root>` names:
-    `local-fs-store.hh:54-70` puts the store at `<root>/nix/store`. So the root
-    of the local store gives the directory of every path that pynixd handles.
+    **The real one, and not the one that a store path names.** `--store <root>`
+    puts the files at `<root>/nix/store`, and it leaves `builtins.storeDir` at
+    `/nix/store`. Measured against Nix 2.34.8: `nix --store $T eval --expr
+    builtins.storeDir` answers `"/nix/store"`, and the layout appears under
+    `$T/nix/store`. So the root gives the directory of the files, and nothing
+    else.
 
-    A root of `/` is the default, and it means "the store of this machine". The
-    process then keeps the lazy value, which reads `NIX_STORE_DIR` and falls
-    back to `/nix/store`, as Nix does.
+    `NIX_STORE_DIR` is what moves the other one, and the managed daemon
+    inherits the environment of this process, so `store_dir()` reads the same
+    value the daemon does with no help from here.
 
-    Issue #173 holds what a constant did instead: it put `/nix/store/` in front
-    of a path that already named another store, and reported nothing.
+    A root of `/` changes neither, and it is the default.
+
+    Issue #173 holds what one constant did instead: it put `/nix/store/` in
+    front of a path that already named another store, and reported nothing.
     """
     root = getattr(local_store, "store_path", None)
     if root is None or Path(root) == Path("/"):
         return
-    set_store_dir(Path(root) / "nix" / "store")
+    set_real_store_dir(Path(root) / "nix" / "store")
 
 
 def _default_http_substituter_urls(local_store: Store) -> list[str]:

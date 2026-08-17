@@ -40,6 +40,8 @@ from typing import TYPE_CHECKING, ClassVar, TypedDict
 
 import anyio
 
+from nix_daemon_protocol.store_dir import on_disk
+
 from .serde import BasicDerivation, DerivationOutput, OutputKind, StorePath as SerdeStorePath
 from .store_path import DrvOutput, StorePath
 from .utils import compress_hash, nix32_encode
@@ -923,7 +925,7 @@ async def to_basic_derivation(
             continue
 
         try:
-            input_parsed = await read_drv_file(store_path, drv_path)
+            input_parsed = await read_drv_file(drv_path)
         except FileNotFoundError:
             input_parsed = None
 
@@ -953,23 +955,36 @@ def parse_drv(content: str) -> Derivation:
     return _Parser(content).parse_derivation()
 
 
-async def read_drv_file(
-    store_path: Path,
-    drv_store_path: StorePath | str,
-) -> Derivation | None:
-    """Read and parse a .drv file from a store's filesystem.
+async def read_drv_file(drv_store_path: StorePath | str) -> Derivation | None:
+    """Read and parse a `.drv` file from the file system of the store.
+
+    This took the root of the store as well, and it no longer does.
+    `real_store_dir()` holds that value for the process, so a caller that
+    passed a different root got an answer from the store of the process
+    anyway, and the argument said otherwise.
 
     Args:
-        store_path: The store root (e.g., "/tmp/pynixd-test-local")
-        drv_store_path: The full store path (e.g., "/nix/store/xxx.drv")
+        drv_store_path: A whole store path, such as `/nix/store/xxx.drv`.
 
     Returns:
-        Parsed derivation
+        The parsed derivation, or `None` when the file is not there.
     """
-    # drv_store_path is like "/nix/store/xxx.drv"
-    # On disk it's at "{store_path}/nix/store/xxx.drv"
-    fs_path = store_path / str(drv_store_path).lstrip("/")
-    path = anyio.Path(fs_path)
+    # `on_disk` and not `store_path / str(drv_store_path).lstrip("/")`.
+    #
+    # That line assumed every store path starts with `/nix/store/`, so removing
+    # the first separator and joining the root gave `<root>/nix/store/xxx.drv`.
+    # A store that answers `<root>/nix/store/xxx.drv` broke it: the join then
+    # made `<root><root>/nix/store/xxx.drv`, the file was not there, and the
+    # caller took the `None` branch. `to_basic_derivation` then sent the daemon
+    # a derivation whose `inputSrcs` named the input `.drv` rather than the
+    # output of that `.drv`. The daemon scans the build output for the paths in
+    # `inputSrcs` alone, so it found no reference and registered the output
+    # with none. `tests/functional/dependencies.sh` of Nix caught it.
+    #
+    # `real_store_dir` is where the files are. `store_dir` is what a store path
+    # says. A chroot store makes the two differ, and only the first one names a
+    # file. Issue #173.
+    path = anyio.Path(on_disk(str(drv_store_path)))
     if not await path.exists():
         return None
     content = await path.read_text()

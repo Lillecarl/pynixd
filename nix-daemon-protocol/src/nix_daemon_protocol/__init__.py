@@ -129,7 +129,16 @@ from .store_dir import (
     in_store_dir as in_store_dir,
 )
 from .store_dir import (
+    on_disk as on_disk,
+)
+from .store_dir import (
+    real_store_dir as real_store_dir,
+)
+from .store_dir import (
     reset_store_dir as reset_store_dir,
+)
+from .store_dir import (
+    set_real_store_dir as set_real_store_dir,
 )
 from .store_dir import (
     set_store_dir as set_store_dir,

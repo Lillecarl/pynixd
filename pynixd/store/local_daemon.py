@@ -19,6 +19,8 @@ from typing import TYPE_CHECKING
 import anyio
 import structlog
 
+from nix_daemon_protocol.store_dir import on_disk
+
 from ..config import LocalSocketStoreSpec, PynixdSettings
 from ..connection import Connection
 from ..monitor import DummyResourceMonitor, create_monitor
@@ -313,11 +315,11 @@ class LocalStore(DaemonStore):
         """Fast-path: read .drv file directly from the filesystem."""
         from ..drv_parser import parse_drv
 
-        sp = StorePath(str(drv_store_path))
-        # `sp.base()`, and not `str(sp)`. `str(sp)` is an absolute path, and
-        # pathlib drops every part before an absolute one. So this read went to
-        # the store directory of the process, whatever store this object holds.
-        drv_file = self.store_path / "nix" / "store" / sp.base()
+        # `on_disk` and not `self.store_path / "nix" / "store" / ...`.
+        # `real_store_dir()` is where the files of the store are, and a chroot
+        # store puts them somewhere other than the directory a store path
+        # names. See `read_drv_file` in `drv_parser.py`.
+        drv_file = Path(on_disk(str(StorePath(str(drv_store_path)))))
         try:
             contents = drv_file.read_bytes()
         except (FileNotFoundError, OSError):
