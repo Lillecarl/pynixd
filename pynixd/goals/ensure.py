@@ -776,14 +776,21 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
 
         `Store::ensurePath` makes a substitution goal and nothing else, so
         this never starts a build. It runs only for a client that names a
-        substituter; `_names_a_substituter` in `goals/query_missing.py` states
-        that rule, and the same rule keeps the plan and the work in agreement.
-        Issue #187.
+        substituter; `client_names_a_substituter` in `goals/query_missing.py`
+        states that rule, and the same rule keeps the plan and the work in
+        agreement. Issue #187.
 
         **A failure here is not a failure of the goal.** `EnsurePath` answers
         an error when no substituter holds the path, and that answer is the
         normal one for a path that the client must build. The goal takes the
         build road after it, so this catches the error and answers `None`.
+
+        **One goal serves many clients, and the first one with an option set
+        wins.** pynixd shares a goal between the clients that ask for the same
+        path, and each client has its own options. Nix has no such sharing, so
+        it has no answer to copy. The first watcher is the client that made
+        the goal, and `_run` of `goals/build_derivation.py` takes the same
+        rule for a build. Issue #192 holds the question.
         """
         client = next((c for c in self._watchers if c.options is not None), None)
         if not client_names_a_substituter(client):
