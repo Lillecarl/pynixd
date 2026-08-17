@@ -228,28 +228,38 @@ with the relocated store layout that the suite itself sets.
 | run     | OK  | FAIL | SKIP |
 | ------- | --- | ---- | ---- |
 | control | 149 | 22   | 36   |
-| pynixd  | 140 | 31   | 36   |
+| pynixd  | 142 | 29   | 36   |
 
-**9 regressions**: a test that the control passes and pynixd fails. 5 in the
-`ca` suite and 4 in `main`.
+**7 regressions**: a test that the control passes and pynixd fails.
 
 | test                 | why                                             |
 | -------------------- | ----------------------------------------------- |
 | `ca:build-cache`     | #187, the substituters that a client names       |
-| `ca:issue-13247`     | #187                                             |
-| `ca:new-build-cmd`   | #187                                             |
-| `ca:post-hook`       | #192, an option that reaches one connection      |
-| `ca:signatures`      | #192                                             |
-| `main:build`         | #190, `max-jobs` and `keep-going`                |
-| `main:multiple-outputs` | #174, a temporary root of a pooled connection |
-| `main:signing`       | #192                                             |
+| `ca:issue-13247`     | #198, an output that the derived path did not name |
+| `ca:new-build-cmd`   | #196, `max-jobs` and the duplicate error lines   |
+| `ca:signatures`      | #197, a path with no signature in the cache      |
+| `main:build`         | #196                                             |
+| `main:build-delete`  | #174, a temporary root of a pooled connection    |
 | `main:store-info`    | permanent, and the next section gives the reason |
 
-`main:post-hook` moved to OK in this run and failed in the run before it.
-#192 gives the reason it varies: the option of the client landed on whichever
-connection the pool gave, so the hook ran for the derivations that pynixd
-built on that connection. The correction of #192 is in, and the next run
-measures it.
+`main:multiple-outputs` and `main:gc-concurrent` come and go between runs,
+and both are the #174 family. Read a single failure of one of them as a
+report of that issue, and not as a new one.
+
+### The `ca` suite alone, after #195 and the first part of #196
+
+The whole suite takes about 25 minutes, and one suite takes about two. This
+is the shorter loop, and the numbers are for `--suite ca`.
+
+| run     | OK  | FAIL | SKIP |
+| ------- | --- | ---- | ---- |
+| control | 19  | 1    | 4    |
+| pynixd  | 15  | 5    | 4    |
+
+`ca:recursive` fails in both, so the four regressions are `build-cache`,
+`issue-13247`, `new-build-cmd` and `signatures`. #195 took `build-cache` and
+`issue-13247` off the `IncompleteReadError` road and on to the behaviour gap
+that the crash was hiding, and each issue records what it now reaches.
 
 Removing the layout patch of #176 moved `nix-channel` from FAIL to OK in the
 control run, so that patch was breaking a test of Nix on its own.
