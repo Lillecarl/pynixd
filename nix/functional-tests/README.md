@@ -154,17 +154,28 @@ where Nix answers a constant `1`, so a failed build read as a successful one.
 No script could find it, because the client of Nix reads that number and drops
 it.
 
-## The control measurement
+## The measurement
 
-Client, scripts and daemon all Nix 2.34.8. One serial run, on Linux. This
-measurement is from before issue #176, so it used the chroot store layout of
-the patch that #176 removed.
+Client, scripts and daemon all Nix 2.34.8. One serial run each, on Linux,
+with the relocated store layout that the suite itself sets.
 
-```
-151 OK    36 SKIP    20 FAIL     (207 total)
-```
+| run     | OK  | FAIL | SKIP | other     |
+| ------- | --- | ---- | ---- | --------- |
+| control | 149 | 22   | 36   |           |
+| pynixd  | 109 | 63   | 34   | 1 TIMEOUT |
 
-The 20 failures:
+**40 regressions**: a test that the control passes and pynixd fails. 14 in the
+`ca` suite, 4 in `flakes`, 2 in `dyn-drv`, and 20 in `main`.
+
+Removing the layout patch of #176 moved `nix-channel` from FAIL to OK in the
+control run, so that patch was breaking a test of Nix on its own.
+`nested-sandboxing` still fails, and its cause is not the layout.
+
+### The 22 control failures
+
+**A failure here is a failure of Nix or of this harness, and not of pynixd.**
+`compare` puts these under "FAILS IN BOTH" and keeps them out of the answer.
+Report a genuine defect of Nix to `github/lillecarl/nix`.
 
 - **8 `build-remote-*`** need a remote builder.
 - **4 recursive-nix** — `recursive`, `ca/recursive`,
@@ -174,14 +185,22 @@ The 20 failures:
 - **1 `db-migration`** — the script states its own condition: "This assumes
   that the `daemon` package is older than the `client` one". Both are 2.34.8
   here.
-- **7 others** — `chroot-store`, `structured-attrs` (it wants a flake
-  registry), `shell`, `formatter`, `nix-profile`, `nix-channel`,
-  `nested-sandboxing`. The last two arrived with the layout patch that
-  #176 removed, and neither is explained yet. Measure them again.
+- **9 others** — `chroot-store`, `structured-attrs` (it wants a flake
+  registry), `shell`, `formatter`, `nix-profile`, `nested-sandboxing`, `json`,
+  `tarball` and `fetchurl`.
 
-**A failure here is a failure of Nix or of this harness, and not of pynixd.**
-`compare` puts these under "FAILS IN BOTH" and keeps them out of the answer.
-Report a genuine defect of Nix to `github/lillecarl/nix`.
+### A number that hid a defect
+
+`main:placeholders` passed through pynixd in every run before this one, and it
+was never passing. pynixd answered `BuildPaths` with a number that said
+"failed", `RemoteStore::buildPaths` of Nix reads that number and drops it, and
+`placeholders.sh` reads the exit status alone. Issue #177 corrected the answer
+and the test moved to FAIL, with a real builder error under it. Issue #178
+holds that defect.
+
+Measured both ways: with the correction the test fails, and with the
+correction reverted and nothing else changed it reports `Ok: 1`. So read a
+pass of a build test with care until #178 is closed.
 
 ## The store of each test
 
