@@ -344,11 +344,57 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         for client in subscribers:
             await build_goal.subscribe(client)
         result = await self.run_child(build_goal)
+        result = await self._under_the_id_that_pynixd_uses(result, parsed)
         result = await self._name_the_resolved_derivation(result, drv_path, build_drv_path)
         result = result.with_dynamic_outputs(self.derived_path.base_store_path())
         result = await self._under_the_original_id(result, parsed)
         result.result = _only_wanted_outputs(result.result, selected_outputs)
         return result
+
+    async def _under_the_id_that_pynixd_uses(self, result: GoalResult, parsed: Derivation) -> GoalResult:
+        """Give the built outputs the key that the rest of this goal reads.
+
+        **The feature shape of `builtOutputs` carries no realisation id.**
+        `worker-protocol.cc:268` writes a map of output name to
+        `UnkeyedRealisation` when `realisation-with-path-not-hash` is on, and
+        a map of `"<drvHash>!<output>"` to a whole `Realisation` when it is
+        off. Every reader below this line takes the second one:
+        `_under_the_original_id`, `_name_the_outputs_of_a_cut_off_build` and
+        `_only_wanted_outputs` all key by the id and read `Realisation.id`.
+
+        So this rebuilds the id from the derivation, which is the one thing
+        that holds the hash. `output_hashes` is `staticOutputHashes` of Nix,
+        and the key it makes is what `DrvOutput::to_string` writes.
+
+        **`ca:build` measured what the gap costs.** `testGC` builds `rootCA`
+        under an out-link, collects garbage, and builds again with `-j0`. The
+        second build must find the realisation that the first one registered.
+        Under the feature the first build registered nothing, because
+        `_under_the_original_id` read `built_outputs` and the answer had
+        filled `built_outputs_by_name` instead. The `-j0` build then had no
+        road left and failed. Issue #162.
+        """
+        realised = result.result.realised_outputs()
+        if not realised or result.result.built_outputs:
+            return result
+        hashes = await output_hashes(parsed, self.engine.ctx.local_store.read_derivation)
+        if hashes is None:
+            return result
+
+        built: dict[str, Realisation] = {}
+        for output_name, realisation in realised.items():
+            digest = hashes.get(output_name)
+            if digest is None:
+                continue
+            key = f"sha256:{digest}!{output_name}"
+            built[key] = realisation.model_copy(update={"id": DrvOutput(key)})
+        if not built:
+            return result
+
+        log.debug("built_outputs_rekeyed", drv_path=self.derived_path.drv_path, outputs=sorted(built))
+        answer = result.copy()
+        answer.result = answer.result.model_copy(update={"built_outputs": built})
+        return answer
 
     async def _name_the_resolved_derivation(
         self,

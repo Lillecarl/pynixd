@@ -88,7 +88,15 @@ async def realisations_of(
         )
         realisation = _the_realisation(response, DrvOutput(key))
         if realisation is None or realisation.out_path is None:
-            log.debug("realisation_missing", drv_output=key)
+            # One line that says which shape answered and what it held, so a
+            # run states whether the query missed or the codec did. Issue #162.
+            log.debug(
+                "realisation_missing",
+                drv_output=key,
+                drv_path=str(drv_path),
+                present=response.present,
+                old_shape_count=len(response.realisations),
+            )
             return None
         answer[key] = realisation
     return answer
