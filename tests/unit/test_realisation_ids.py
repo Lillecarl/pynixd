@@ -32,6 +32,8 @@ from pynixd.serde import (
     BuildResult,
     BuildResultStatus,
     IsValidPathResponse,
+    QueryRealisationRequest,
+    QueryRealisationResponse,
     Realisation,
     RegisterDrvOutputRequest,
     StorePath as SerdeStorePath,
@@ -119,6 +121,9 @@ class FakeLocalStore:
         if isinstance(request, RegisterDrvOutputRequest):
             self.registered.append(request.realisation)
             return IsValidPathResponse(valid=True)
+        if isinstance(request, QueryRealisationRequest):
+            # No output is realised yet, so every derivation here is built.
+            return QueryRealisationResponse(realisations=[])
         return IsValidPathResponse(valid=str(request.path) in self.valid)
 
 

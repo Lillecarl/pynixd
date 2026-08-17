@@ -33,7 +33,7 @@ from pynixd.goals.ensure import EnsureDerivedPathGoal
 from pynixd.goals.resolution import downstream_placeholder
 from pynixd.goals.results import GoalResult, goal_success
 from pynixd.goals.substitute import SubstituteAttempt
-from pynixd.serde import BuildMode, IsValidPathResponse
+from pynixd.serde import BuildMode, IsValidPathResponse, QueryRealisationRequest, QueryRealisationResponse
 from pynixd.store_path import DrvOutput, StorePath
 
 if TYPE_CHECKING:
@@ -127,6 +127,9 @@ class FakeLocalStore:
     async def execute(self, request: Any, **kwargs: Any) -> Any:
         """The output of the input-addressed input is in the store already."""
         del kwargs
+        if isinstance(request, QueryRealisationRequest):
+            # No output is realised, so every derivation here is built.
+            return QueryRealisationResponse(realisations=[])
         return IsValidPathResponse(valid=str(request.path) == LEGACY_OUT)
 
 

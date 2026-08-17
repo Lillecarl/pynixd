@@ -17,6 +17,7 @@ from ..serde import (
     BuildResultStatus,
     DrvOutput,
     IsValidPathRequest,
+    QueryRealisationRequest,
     Realisation,
     RegisterDrvOutputRequest,
     StorePath as SerdeStorePath,
@@ -168,6 +169,11 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             substituted = await self._say_what_it_produced(substituted, parsed, selected_outputs)
             return substituted.with_dynamic_outputs(self.derived_path.base_store_path())
 
+        realised = await self._already_realised(parsed, selected_outputs)
+        if realised is not None:
+            log.debug("ensure_derivation_already_realised", drv_path=str(drv_path), outputs=sorted(selected_outputs))
+            return realised.with_dynamic_outputs(self.derived_path.base_store_path())
+
         child_results = await self._realise_input_derivations(parsed)
 
         store_path = Path(self.engine.ctx.local_store.store_path)
@@ -230,6 +236,58 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         result = await self._under_the_original_id(result, parsed)
         result.result = _only_wanted_outputs(result.result, selected_outputs)
         return result
+
+    async def _already_realised(self, parsed: Derivation, wanted: set[str]) -> GoalResult | None:
+        """The realisation of each wanted output, when the store holds one for all of them.
+
+        **A derivation that names no output path is not therefore unbuilt.**
+        A floating content-addressed output takes its path from what the build
+        makes, so the derivation cannot name it, and a deferred output cannot
+        name it either. The store answers instead: a realisation maps
+        `DrvOutput{staticOutputHashes(drv)[name], name}` to the path.
+
+        `DerivationGoal::checkPathValidity` at `derivation-goal.cc:405` reads
+        it there, and a valid path makes the goal `AlreadyValid`. pynixd read
+        the derivation alone, so it found no path and built the derivation
+        again. `ca:build` sees it in `testGC`, which builds with `-j0` after a
+        garbage collection and expects the rooted output to answer.
+
+        Answers `None` when any wanted output names a path already, or when
+        the store holds no realisation for one of them. The caller then goes
+        on to the inputs and the build. Issue #185.
+        """
+        paths_of_drv = parsed.output_paths()
+        if not wanted or any(str(paths_of_drv.get(name, "")) for name in wanted):
+            return None
+        hashes = await output_hashes(parsed, self.engine.ctx.local_store.read_derivation)
+        if hashes is None:
+            return None
+
+        built: dict[str, Realisation] = {}
+        resolved_outputs: dict[str, StorePath] = {}
+        for output_name in sorted(wanted):
+            digest = hashes.get(output_name)
+            if digest is None:
+                return None
+            key = f"sha256:{digest}!{output_name}"
+            response = await self.engine.ctx.local_store.execute(
+                QueryRealisationRequest(drv_output=DrvOutput(key)),
+            )
+            realisation = next(iter(response.realisations), None)
+            if realisation is None or realisation.out_path is None:
+                return None
+            path = StorePath(str(realisation.out_path))
+            valid = await self.engine.ctx.local_store.execute(IsValidPathRequest(path=SerdeStorePath(path=str(path))))
+            if not valid.valid:
+                return None
+            built[key] = realisation
+            resolved_outputs[output_name] = path
+
+        answer = goal_success()
+        answer.resolved_outputs = resolved_outputs
+        answer.produced_paths = set(resolved_outputs.values())
+        answer.result = answer.result.model_copy(update={"built_outputs": built})
+        return answer
 
     async def _under_the_original_id(self, result: GoalResult, parsed: Derivation) -> GoalResult:
         """Give each realisation the id that the original derivation makes, and register it.
