@@ -174,6 +174,10 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             log.debug("ensure_derivation_already_realised", drv_path=str(drv_path), outputs=sorted(selected_outputs))
             return realised.with_dynamic_outputs(self.derived_path.base_store_path())
 
+        refusal = await self._refuse_an_impure_input(parsed, drv_path)
+        if refusal is not None:
+            return refusal
+
         child_results = await self._realise_input_derivations(parsed)
 
         store_path = Path(self.engine.ctx.local_store.store_path)
@@ -384,6 +388,34 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             return original
         log.debug("resolved_derivation_stored", original=str(original), resolved=path)
         return SerdeStorePath(path=path)
+
+    async def _refuse_an_impure_input(self, parsed: Derivation, drv_path: SerdeStorePath) -> GoalResult | None:
+        """A pure derivation cannot depend on an impure one.
+
+        `DerivationResolutionGoal::init` at `derivation-resolution-goal.cc:67`
+        reads each input derivation and raises before it builds any of them.
+        The message is the one below, and `impure-derivations.sh:50` of the
+        functional suite greps for it.
+
+        An impure derivation may depend on an impure one, and so may a
+        fixed-output derivation. Neither one takes its output path from the
+        hash of its inputs, so an input that changes every build changes
+        nothing about it.
+
+        Nix guards the check with the `impure-derivations` feature, and pynixd
+        cannot ask the setting. It needs no guard: an impure derivation exists
+        only when the feature is on.
+        """
+        if parsed.is_impure or parsed.is_fixed_output:
+            return None
+        for input_drv_path in parsed.input_drvs:
+            given = await self.engine.ctx.local_store.read_derivation(input_drv_path)
+            if given is not None and given.is_impure:
+                return goal_failure(
+                    f"pure derivation '{drv_path}' depends on impure derivation '{input_drv_path}'",
+                    BuildResultStatus.UNKNOWN,
+                )
+        return None
 
     async def _input_paths(self, parsed: Derivation, dynamic_paths: DynamicPathMap) -> DynamicPathMap:
         """Name the store path of each output of each input derivation.
