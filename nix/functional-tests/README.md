@@ -61,6 +61,30 @@ enough.
 first. A test that fails in both runs is not a defect of pynixd. Only a test
 that passes the control and fails through pynixd is one.
 
+### In the Linux virtual machine of a Darwin host
+
+The tests build derivations, so they need Linux. The store is shared with the
+host, and `/scratch` belongs to the machine.
+
+```sh
+# On the host. `source.nix` filters the checkout into the shared store.
+SRC=$(nix eval --raw --impure --expr \
+    '(import ./nix/source.nix { lib = (import <nixpkgs> {}).lib; })')
+
+# In the machine. The tools live in the writable store of the machine, so a
+# rebuild of the machine removes them, and this command makes them again.
+nix build --no-link --print-out-paths \
+    nixpkgs#meson nixpkgs#ninja nixpkgs#jq nixpkgs#git nixpkgs#busybox
+
+# In the machine. FLAKE_COMPATISH_DISABLE_OVERRIDES makes this agree with a
+# flake evaluation, as every CI workflow does.
+FLAKE_COMPATISH_DISABLE_OVERRIDES=1 \
+    nix build --file "$SRC" pynixd --no-link --print-out-paths
+```
+
+Put `busybox` last on PATH. Before it, `meson` finds `ls` there rather than in
+coreutils, and it then states the wrong directory for `coreutils`.
+
 ## The control measurement
 
 Client, scripts and daemon all Nix 2.34.8. One serial run, on Linux:
