@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, cast
 import anyio
 import pytest
 
+from pynixd.exceptions import BackendError
 from pynixd.goals.engine import GoalEngine
 from pynixd.goals.goal import Goal
 from pynixd.goals.requests import BuildPathsWithResultsGoal
@@ -140,6 +141,30 @@ async def test_build_paths_reports_failure_when_any_root_fails() -> None:
         goal.engine = cast("GoalEngine", engine)
 
     derived_paths: set[Any] = {_serde_path(success_path), _serde_path(failure_path)}
+
+    # **An error, and not a value.** `daemon.cc:558` of Nix writes a constant
+    # `1` after `buildPaths`, and `buildPaths` throws when a build fails. A
+    # client of Nix reads that number and drops it, so a failure carried in
+    # the number reached nobody. Issue #177.
+    with pytest.raises(BackendError, match="expected test failure"):
+        await GoalEngine.build_paths(
+            cast("GoalEngine", engine),
+            BuildPathsRequest(
+                derived_paths=cast("set[SerdeDerivedPath]", derived_paths),
+                build_mode=BuildMode.NORMAL,
+            ),
+        )
+
+
+@pytest.mark.anyio
+async def test_build_paths_answers_one_when_every_root_succeeds() -> None:
+    """The same constant that Nix writes, and not a status of its own."""
+    success_path = "/nix/store/11111111111111111111111111111111-success.drv!out"
+    engine = FakeEngine({success_path: FakeEnsureGoal(cast("GoalEngine", None), goal_success())})
+    for goal in engine.goals.values():
+        goal.engine = cast("GoalEngine", engine)
+
+    derived_paths: set[Any] = {_serde_path(success_path)}
     response = await GoalEngine.build_paths(
         cast("GoalEngine", engine),
         BuildPathsRequest(

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 import anyio
 
+from ..exceptions import BackendError
 from ..serde import (
     BuildDerivationRequest,
     BuildMode,
@@ -35,6 +36,18 @@ if TYPE_CHECKING:
     from ..store import Store
     from ..store_path import StorePath
     from .goal import Goal
+
+
+def _build_failure_message(failed: list[Any]) -> str:
+    """What `BuildPaths` tells the client when a build did not succeed.
+
+    `Store::buildPaths` of Nix collects the message of each failed goal, so
+    this collects the `error_msg` of each failed result.
+    """
+    parts = [str(item.result.error_msg) for item in failed if str(item.result.error_msg)]
+    if not parts:
+        return f"{len(failed)} of the requested paths failed to build"
+    return "; ".join(parts)
 
 
 def _derivation_fingerprint(request: BuildDerivationRequest) -> str:
@@ -76,7 +89,16 @@ class GoalEngine:
             ),
             client=client,
         )
-        return BuildPathsResponse(value=0 if all(result_succeeded(item.result) for item in response.results) else 1)
+        # **The value is always 1, and a failure is an error and not a value.**
+        # `daemon.cc:558` of Nix writes `conn.to << 1` after `buildPaths`, and
+        # `buildPaths` throws when a build fails. A client of Nix reads the
+        # number and drops it, so a value of 0 for success reached no client
+        # and no test, and a value of 1 for failure read as success. Issue
+        # #177 holds the measurement that found this.
+        failed = [item for item in response.results if not result_succeeded(item.result)]
+        if failed:
+            raise BackendError(_build_failure_message(failed))
+        return BuildPathsResponse(value=1)
 
     async def build_paths_with_results(
         self,
