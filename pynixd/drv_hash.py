@@ -75,7 +75,7 @@ async def output_hashes(
     inputs = await _input_hashes(parsed, read, _CACHE if cache is None else cache)
     if inputs is None:
         return None
-    return parsed.hash_derivation_modulo(mask_outputs=True, input_drv_hashes=inputs or None)
+    return parsed.hash_derivation_modulo(mask_outputs=True, input_drv_hashes=inputs)
 
 
 async def _closure_hashes(drv_path: str, read: DerivationReader, cache: dict[str, OutputHashes]) -> OutputHashes | None:
@@ -90,7 +90,7 @@ async def _closure_hashes(drv_path: str, read: DerivationReader, cache: dict[str
     inputs = await _input_hashes(parsed, read, cache)
     if inputs is None:
         return None
-    hashes = parsed.hash_derivation_modulo(mask_outputs=False, input_drv_hashes=inputs or None)
+    hashes = parsed.hash_derivation_modulo(mask_outputs=False, input_drv_hashes=inputs)
     _remember(cache, drv_path, hashes)
     return hashes
 
@@ -100,20 +100,36 @@ async def _input_hashes(
     read: DerivationReader,
     cache: dict[str, OutputHashes],
 ) -> dict[str, list[str]] | None:
-    """Collect `{hexadecimal hash: [output name, ...]}` for the input derivations."""
-    if parsed.dynamic_input_drvs:
-        # `hash_derivation_modulo` takes a flat map, and a dynamic input is a
-        # tree. Nix keeps the tree here, so this walk cannot answer for one.
-        return None
+    """Collect `{hexadecimal hash: [output name, ...]}` for the input derivations.
+
+    **A dynamic input takes part, and its tree does not.**
+    `hashDerivationModulo` at `derivations.cc:931` walks `drv.inputDrvs.map`
+    and reads `node.value`, which holds the direct outputs alone. It puts each
+    one in a fresh map that carries no child, and `Derivation::unparse` writes
+    that map. So an input that names a dynamic output only adds nothing to the
+    text.
+
+    This walk answered `None` for a dynamic derivation, so
+    `EnsureDerivedPathGoal` could not re-key the realisation of one. The client
+    asked `queryPartialDerivationOutputMap` for the derivation it instantiated,
+    got no path, and `nix-build.cc:730` stopped the program on an assertion.
+    `dyn-drv:dep-built-drv` is the test.
+
+    The walk still reads each dynamic input, because Nix reads it as well:
+    `pathDerivationModulo` runs for every entry of the map, and the derivation
+    that it names has to be there.
+    """
     inputs: dict[str, list[str]] = {}
-    for input_drv, output_names in parsed.input_drvs.items():
-        hashes = await _closure_hashes(str(input_drv), read, cache)
+    wanted: list[tuple[str, list[str]]] = [(str(path), names) for path, names in parsed.input_drvs.items()]
+    wanted += [(str(path), node.outputs) for path, node in parsed.dynamic_input_drvs.items()]
+    for input_drv, output_names in wanted:
+        hashes = await _closure_hashes(input_drv, read, cache)
         if hashes is None:
             return None
         for output_name in output_names:
             digest = hashes.get(output_name)
             if digest is None:
-                log.debug("drv_hash_output_missing", drv_path=str(input_drv), output=output_name)
+                log.debug("drv_hash_output_missing", drv_path=input_drv, output=output_name)
                 return None
             inputs.setdefault(digest, []).append(output_name)
     return inputs

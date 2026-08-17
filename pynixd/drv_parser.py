@@ -484,14 +484,17 @@ class Derivation:
         """
         parts: list[str] = []
 
-        # Choose format: if actualInputs is provided, check if any node has
-        # dynamic deps (matching C++ logic where actualInputs can also trigger
-        # the dynamic format); otherwise fall back to self.dynamic_input_drvs.
-        if actualInputs is not None:
-            has_dynamic = any(child_map or is_dyn for _, child_map, is_dyn in actualInputs.values())
-        else:
-            has_dynamic = self._has_dynamic_drv_dep()
-        if has_dynamic:
+        # **The derivation chooses the format, and the replacement inputs do
+        # not.** `Derivation::unparse` at `derivations.cc:641` asks
+        # `hasDynamicDrvDep(*this)`, which reads the input derivations of the
+        # derivation itself.
+        #
+        # This read *actualInputs* instead, and `hashDerivationModulo` builds
+        # one that carries no child at all: it takes the direct outputs of each
+        # input and drops the tree. So a dynamic derivation unparsed as
+        # `Derive(` here and as `DrvWithVersion("xp-dyn-drv",` in Nix, and the
+        # two hashes could never agree.
+        if self._has_dynamic_drv_dep():
             parts.append("DrvWithVersion(")
             parts.append(self._print_unquoted_string("xp-dyn-drv"))
             parts.append(",")
