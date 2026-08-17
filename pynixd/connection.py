@@ -75,7 +75,7 @@ class ClientConn:
     async def send(self, msg: WireModel) -> None:
         """Send a stderr message to the client. Safe to call from multiple tasks."""
         buf = wire.BytesWriter("client")
-        await msg.to_writer(WriteContext(writer=buf, version=wire.PROTOCOL_VERSION))
+        await msg.to_writer(WriteContext(writer=buf, version=wire.PROTOCOL_VERSION, features=self.standard_features))
         data = buf.get_bytes()
         if data:
             async with self._write_lock:

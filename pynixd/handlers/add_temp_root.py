@@ -30,7 +30,7 @@ class AddTempRootHandler(Handler):
     async def handle(self, ctx: RequestContext) -> object | None:
         """Decode the path, hold it for this session, and report success."""
         req = await AddTempRootRequest.from_reader(
-            ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version),
+            ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version, features=ctx.proxy.standard_features),
         )
         await ctx.proxy.add_temp_root(str(req.path))
         return AddTempRootResponse(value=1)  # type: ignore[return-value] -- the base returns object | None

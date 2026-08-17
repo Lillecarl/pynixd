@@ -21,7 +21,7 @@ class OptimiseStoreHandler(Handler):
     async def handle(self, ctx: RequestContext) -> object | None:
         """Decode OptimiseStore request, verify admin auth, execute via daemon, return response."""
         req = await OptimiseStoreRequest.from_reader(
-            ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version),
+            ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version, features=ctx.proxy.standard_features),
         )
 
         if ctx.role < Role.ADMIN:

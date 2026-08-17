@@ -42,7 +42,7 @@ class AddToStoreNarHandler(Handler):
             await conn.apply_options(options)
             # 1. Read request header from client (serde)
             req = await AddToStoreNarRequest.from_reader(
-                ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version),
+                ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version, features=ctx.proxy.standard_features),
             )
 
             # 2. Write request header to daemon

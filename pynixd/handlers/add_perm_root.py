@@ -24,7 +24,7 @@ class AddPermRootHandler(Handler):
         """Decode AddPermRoot request, forward to daemon for admin, log no-op for others."""
         if ctx.role == Role.ADMIN:
             req = await AddPermRootRequest.from_reader(
-                ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version),
+                ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version, features=ctx.proxy.standard_features),
             )
             return await ctx.proxy.local_store.call(req)
 

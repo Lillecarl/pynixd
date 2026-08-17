@@ -22,7 +22,7 @@ class AddIndirectRootHandler(Handler):
         """Decode AddIndirectRoot request, forward to daemon for admin or return no-op for others."""
         if ctx.role == Role.ADMIN:
             req = await AddIndirectRootRequest.from_reader(
-                ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version),
+                ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version, features=ctx.proxy.standard_features),
             )
             return await ctx.proxy.local_store.call(req)
         # Non-admin: consume request body, return no-op success

@@ -33,7 +33,7 @@ class SetOptionsHandler(Handler):
         about to do the work, so nothing goes upstream here.
         """
         req = await SetOptionsRequest.from_reader(
-            ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version),
+            ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version, features=ctx.proxy.standard_features),
         )
 
         if ctx.role < Role.ADMIN:

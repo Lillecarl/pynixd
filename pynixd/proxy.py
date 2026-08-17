@@ -411,7 +411,7 @@ class DaemonProxy:
         # NEW: try serde wire registry for handler-less ops
         if wire_cls := WIRE_REGISTRY.get(op_num):
             req = await wire_cls.from_reader(
-                ReadContext(reader=self.r, version=self.version),
+                ReadContext(reader=self.r, version=self.version, features=self.standard_features),
             )
             return await self.execute(req)
 

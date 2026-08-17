@@ -105,6 +105,9 @@ class FakeProxy:
     def __init__(self, body: bytes) -> None:
         self.r = BytesReader(body, identifier="test:gc")
         self.version = VERSION
+        # What the client handshake negotiated. Empty is what Nix 2.34 names,
+        # and every codec here has the shape that goes with it. Issue #162.
+        self.standard_features: frozenset[str] = frozenset()
         self.local_store = FakeStore()
         self.errors: list[str] = []
 
