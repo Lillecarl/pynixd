@@ -395,14 +395,32 @@ error: the daemon is missing the 'realisation-with-path-not-hash' protocol
 feature, needed to support content-addressing derivations
 ```
 
-**That is issue #162, measured.** The protocol number stopped at 1.38 and each
-new capability is a feature name. 2.34 offers none of them, so every
-measurement of this suite before this one was taken against the one version
-that cannot see the gap. Against a peer that offers the feature, pynixd is
-not usable for a content-addressed derivation at all.
+**That was issue #162, measured.** The protocol number stopped at 1.38 and
+each new capability is a feature name. 2.34 offers none of them, so every
+measurement of this suite before that one was taken against the one version
+that cannot see the gap.
 
-Read the 2.34 numbers with that in mind. They say what pynixd does at the
-floor of this repository, and the floor is where no feature exists.
+### After the claim: 4 regressions
+
+pynixd names `realisation-with-path-not-hash` now, and every request that the
+feature touches carries both shapes with a gate that picks one. Same command,
+same checkout:
+
+| run     | OK | FAIL | SKIP | regressions |
+| ------- | -- | ---- | ---- | ----------- |
+| before  | 2  | 19   | 3    | 17          |
+| after   | 15 | 5    | 4    | 4           |
+
+The control answers 19 OK / 1 FAIL / 4 SKIP at both.
+
+The four left are `ca:build`, `ca:build-cache`, `ca:issue-13247` and
+`ca:new-build-cmd`. The last one is a regression against 2.34 as well, and
+issue #196 holds that one.
+
+**The floor did not move.** The same suite against 2.34 answers control
+19/1/4 and pynixd 18/2/4 after the claim, which is the number above it. Run
+both arms after a change to a codec: 2.34 says the floor holds, and 2.35 says
+the feature works.
 
 ### What moved, and what moved it
 
