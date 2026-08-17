@@ -27,6 +27,8 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from nix_daemon_protocol.store_dir import store_dir as current_store_dir
+
 from ..drv_parser import ChildMapNode, _aterm_escape
 from ..serde import BasicDerivation, DerivationOutput, StorePath as SerdeStorePath
 from ..store_path import StorePath
@@ -36,8 +38,6 @@ if TYPE_CHECKING:
     from ..drv_parser import Derivation
 
 log = structlog.get_logger(__name__)
-
-STORE_DIR = "/nix/store"
 
 
 def _output_path_name(drv_name: str, output_name: str) -> str:
@@ -115,9 +115,16 @@ def _make_store_path(
     type_str: str,
     hash_modulo: bytes,
     name: str,
-    store_dir: str = STORE_DIR,
+    store_dir: str = "",
 ) -> str:
-    """Build a store path string from a type prefix, content hash, and name (Nix makeStorePath)."""
+    """Build a store path string from a type prefix, content hash, and name (Nix makeStorePath).
+
+    The store directory is a part of the text that Nix hashes, so a wrong one
+    gives a wrong path. `current_store_dir()` reads the value of this process,
+    and a default argument cannot: Python evaluates a default once, at import,
+    and the daemon sets the directory after that.
+    """
+    store_dir = store_dir or current_store_dir()
     hash_str = "sha256:" + hash_modulo.hex()
     s = f"{type_str}:{hash_str}:{store_dir}:{name}"
     digest = hashlib.sha256(s.encode()).digest()
@@ -129,7 +136,7 @@ def _make_output_path(
     output_id: str,
     hash_modulo: bytes,
     drv_name: str,
-    store_dir: str = STORE_DIR,
+    store_dir: str = "",
 ) -> str:
     """Derive an output store path for a given output ID (Nix makeOutputPath)."""
     name = _output_path_name(drv_name, output_id)

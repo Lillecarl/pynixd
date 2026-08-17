@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .store_dir import store_prefix
 from .wire_scalar import WireScalar
 
 
@@ -43,7 +44,8 @@ class StorePath(WireScalar):
         return self.path.endswith(".drv")
 
     def with_store_prefix(self) -> StorePath:
-        """Return a StorePath guaranteed to have /nix/store/ prefix."""
-        if self.path.startswith("/nix/store/"):
+        """Return a StorePath that starts with the store directory."""
+        prefix = store_prefix()
+        if self.path.startswith(prefix):
             return self
-        return StorePath(f"/nix/store/{self.hash_part()}")
+        return StorePath(f"{prefix}{self.hash_part()}")

@@ -8,6 +8,8 @@ from typing import Any
 import structlog
 from pydantic import BaseModel
 
+from nix_daemon_protocol.store_dir import store_prefix
+
 from ..local_store_db import LocalStoreDB
 from ..serde import StorePath as SerdeStorePath
 from .local_daemon import LocalStore
@@ -214,7 +216,7 @@ class LocalDBStore(LocalStore):
 
         from .queries import QUERY_PATH_FROM_HASH_PART
 
-        prefix = f"/nix/store/{request.path}"
+        prefix = f"{store_prefix()}{request.path}"
         upper = prefix[:-1] + chr(ord(prefix[-1]) + 1)
         async with self.db.execute(QUERY_PATH_FROM_HASH_PART, (prefix, upper)) as cursor:
             row = await cursor.fetchone()

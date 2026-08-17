@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from nix_daemon_protocol.store_dir import reset_store_dir, set_store_dir, store_dir
 from pynixd.store_path import DrvOutput, StorePath
 from tests.test_features import TestFeatures as F
 
@@ -76,6 +77,41 @@ class TestStorePathWithStorePrefix:
         sp = StorePath("abc123-foo", extrainfo="test")
         result = sp.with_store_prefix()
         assert result.extrainfo == "test"
+
+
+@pytest.fixture
+def other_store():
+    """A store at a directory that is not `/nix/store`.
+
+    Issue #173: the store directory was a constant, so a path of another store
+    got `/nix/store/` in front of it and named no file at all.
+    """
+    set_store_dir("/scratch/root/nix/store")
+    yield "/scratch/root/nix/store"
+    reset_store_dir()
+
+
+@pytest.mark.covers(F.STORE_PATH_ENCODE)
+class TestStorePathStoreDir:
+    def test_default_is_nix_store(self):
+        assert store_dir() == "/nix/store"
+
+    def test_other_store_round_trips(self, other_store):
+        sp = StorePath(f"{other_store}/abc123-foo")
+        assert sp.base() == "abc123-foo"
+        assert str(sp) == f"{other_store}/abc123-foo"
+
+    def test_bare_name_takes_the_store_dir(self, other_store):
+        assert str(StorePath("abc123-foo")) == f"{other_store}/abc123-foo"
+
+    def test_path_of_another_store_is_refused(self, other_store):
+        # Silence made this a corrupt path. An error names the mistake.
+        with pytest.raises(ValueError, match="not a path of the store"):
+            StorePath("/nix/store/abc123-foo")
+
+    def test_relative_path_is_refused_nowhere(self, other_store):
+        # A bare name is how the database and the wire both spell a path.
+        assert StorePath("abc123-foo").hash_part() == "abc123"
 
 
 class TestStorePathEquality:

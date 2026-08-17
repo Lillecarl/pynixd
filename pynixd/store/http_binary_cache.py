@@ -16,6 +16,8 @@ import anyio
 import structlog
 import zstandard as zstd
 
+from nix_daemon_protocol.store_dir import store_dir
+
 from ..exceptions import OpNotImplementedError
 from ..serde import (
     IsValidPathRequest,
@@ -248,7 +250,7 @@ class HTTPBinaryCacheStore(Store):
                 text = await response.text()
         except (TimeoutError, aiohttp.ClientError, OSError, RuntimeError):
             log.warning("http_cache_info_fetch_failed", store_id=self.store_id, url=self.url, exc_info=True)
-            return {"WantMassQuery": "0", "Priority": str(int(self.priority)), "StoreDir": "/nix/store"}
+            return {"WantMassQuery": "0", "Priority": str(int(self.priority)), "StoreDir": store_dir()}
 
         result: dict[str, str] = {}
         for line in text.splitlines():
@@ -258,7 +260,7 @@ class HTTPBinaryCacheStore(Store):
             result[key.strip()] = value.strip()
         result.setdefault("WantMassQuery", "0")
         result.setdefault("Priority", str(int(self.priority)))
-        result.setdefault("StoreDir", "/nix/store")
+        result.setdefault("StoreDir", store_dir())
         return result
 
     async def _get_narinfo_raw(self, hash_part: str) -> str | None:

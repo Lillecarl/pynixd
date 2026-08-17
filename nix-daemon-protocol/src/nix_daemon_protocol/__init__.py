@@ -122,6 +122,24 @@ from .register_drv_output import RegisterDrvOutputResponse as RegisterDrvOutputR
 from .set_options import SetOptionsRequest as SetOptionsRequest
 from .set_options import SetOptionsResponse as SetOptionsResponse
 from .signature import Signature as Signature
+from .store_dir import (
+    DEFAULT_STORE_DIR as DEFAULT_STORE_DIR,
+)
+from .store_dir import (
+    in_store_dir as in_store_dir,
+)
+from .store_dir import (
+    reset_store_dir as reset_store_dir,
+)
+from .store_dir import (
+    set_store_dir as set_store_dir,
+)
+from .store_dir import (
+    store_dir as store_dir,
+)
+from .store_dir import (
+    store_prefix as store_prefix,
+)
 from .store_path import StorePath as StorePath
 from .valid_path_info import ValidPathInfo as ValidPathInfo
 from .verify_store import VerifyStoreRequest as VerifyStoreRequest

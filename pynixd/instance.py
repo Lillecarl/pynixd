@@ -13,6 +13,8 @@ from urllib.parse import parse_qs, urlsplit
 import anyio
 import structlog
 
+from nix_daemon_protocol.store_dir import set_store_dir
+
 from . import wire
 from .config import ExternalUnixStoreSpec, HTTPBinaryCacheSpec, LocalSocketStoreSpec, PynixdSettings
 from .context import PynixdContext
@@ -43,6 +45,26 @@ _SUN_PATH_LIMIT = {"linux": 108, "darwin": 104}
 _SUN_PATH_LIMIT_DEFAULT = 104
 """The smaller of the two, for a platform this table does not name. A path
 that a stricter limit accepts is bindable everywhere."""
+
+
+def _adopt_store_dir(local_store: Store) -> None:
+    """Take the store directory from the local store that pynixd serves.
+
+    Nix builds the layout from the root that `--store <root>` names:
+    `local-fs-store.hh:54-70` puts the store at `<root>/nix/store`. So the root
+    of the local store gives the directory of every path that pynixd handles.
+
+    A root of `/` is the default, and it means "the store of this machine". The
+    process then keeps the lazy value, which reads `NIX_STORE_DIR` and falls
+    back to `/nix/store`, as Nix does.
+
+    Issue #173 holds what a constant did instead: it put `/nix/store/` in front
+    of a path that already named another store, and reported nothing.
+    """
+    root = getattr(local_store, "store_path", None)
+    if root is None or Path(root) == Path("/"):
+        return
+    set_store_dir(Path(root) / "nix" / "store")
 
 
 def _default_http_substituter_urls(local_store: Store) -> list[str]:
@@ -126,6 +148,7 @@ class Server:
             stores[StoreId("local")] = spec.to_store(str(StoreId("local")))
 
         local_store = stores[StoreId("local")]
+        _adopt_store_dir(local_store)
 
         existing_http_urls = {
             store.url.rstrip("/") for store in stores.values() if isinstance(store, HTTPBinaryCacheStore)

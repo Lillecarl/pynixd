@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Any
 import anyio
 import structlog
 
+from nix_daemon_protocol.store_dir import store_prefix
+
 from .. import wire
 from ..exceptions import BackendError
 from ..monitor import ResourceGate, ResourceMonitor
@@ -529,8 +531,8 @@ class DaemonStore(Store):
         extra_env: dict[str, str] | None = None,
     ) -> tuple[str, bool]:
         drv_hash = random_nix32_hash()
-        out_path = f"/nix/store/{drv_hash}-{name}"
-        drv_path = SerdeStorePath(path=f"/nix/store/{drv_hash}-{name}.drv")
+        out_path = f"{store_prefix()}{drv_hash}-{name}"
+        drv_path = SerdeStorePath(path=f"{store_prefix()}{drv_hash}-{name}.drv")
 
         env: dict[str, str] = {
             "builder": "/bin/sh",

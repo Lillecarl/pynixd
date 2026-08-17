@@ -9,16 +9,18 @@ import json as _json
 from pathlib import Path
 from typing import Any
 
-_original_default = _json.JSONEncoder.default
+from nix_daemon_protocol.store_dir import store_dir, store_prefix
 
-_STORE_PREFIX = "/nix/store/"
+_original_default = _json.JSONEncoder.default
 
 
 class StorePath:
     """A Nix store path.
 
-    Stores the bare path (hash-name) internally — the ``/nix/store/`` prefix
-    is stripped on construction and re-added by ``__str__``.
+    Stores the bare path (hash-name) internally — the store directory is
+    stripped on construction and re-added by ``__str__``. Nix keeps a store
+    path the same way: ``StorePath`` in C++ holds the base name, and
+    ``Store::printStorePath`` puts the directory in front of it.
 
     Provides helpers for basename, derivation checking, etc.
     Can store optional 'extrainfo' for debugging (e.g. why this path is required).
@@ -36,14 +38,26 @@ class StorePath:
 
     @staticmethod
     def _strip_prefix(path: str) -> str:
-        if path.startswith(_STORE_PREFIX):
-            return path[len(_STORE_PREFIX) :]
+        """Remove the store directory, and refuse a path of another store.
+
+        The refusal is the point. This method kept an absolute path of another
+        store whole, and ``__str__`` then put the store directory in front of
+        it a second time. The result named no file, and nothing reported the
+        mistake. Issue #173 holds the measurement.
+        """
+        prefix = store_prefix()
+        if path.startswith(prefix):
+            return path[len(prefix) :]
+        if path.startswith("/"):
+            raise ValueError(
+                f"{path!r} is not a path of the store at {store_dir()!r}",
+            )
         return path
 
     # ── Core accessors ─────────────────────────────────────────────
 
     def base(self) -> str:
-        """The bare path (hash-name) without the ``/nix/store/`` prefix."""
+        """The bare path (hash-name), without the store directory."""
         return self._path
 
     @property
@@ -65,11 +79,11 @@ class StorePath:
         return self._path.endswith(".drv")
 
     def to_path(self) -> Path:
-        """Convert to a pathlib.Path (full ``/nix/store/...`` path)."""
+        """Convert to a pathlib.Path (the whole path, with the directory)."""
         return Path(str(self))
 
     def with_store_prefix(self) -> StorePath:
-        """Return self — ``__str__`` already guarantees the ``/nix/store/`` prefix."""
+        """Return self — ``__str__`` already puts the store directory first."""
         return self
 
     # ── str-adjacent helpers ───────────────────────────────────────
@@ -85,10 +99,10 @@ class StorePath:
     # ── Dunder methods ─────────────────────────────────────────────
 
     def __str__(self) -> str:
-        """Full store path: ``/nix/store/{bare}`` (or ``""`` when empty)."""
+        """The whole path: ``<store directory>/{bare}`` (or ``""`` when empty)."""
         if not self._path:
             return ""
-        return _STORE_PREFIX + self._path
+        return store_prefix() + self._path
 
     def __repr__(self) -> str:
         inner = repr(self._path)

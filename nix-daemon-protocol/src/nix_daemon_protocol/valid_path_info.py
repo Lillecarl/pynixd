@@ -10,6 +10,7 @@ from .io import BytesWriter
 from .nar_hash import NARHash
 from .path_info import UnkeyedValidPathInfo
 from .signature import Signature
+from .store_dir import store_prefix
 from .store_path import StorePath
 from .wire_message import WireModel
 from .wire_time import Time
@@ -56,11 +57,11 @@ class ValidPathInfo(WireModel):
             elif key == "References":
                 for ref in val.split():
                     if ref:
-                        ref_path = ref if ref.startswith("/nix/store/") else f"/nix/store/{ref}"
+                        ref_path = ref if ref.startswith(store_prefix()) else f"{store_prefix()}{ref}"
                         data["references"].add(StorePath(path=ref_path))
             elif key == "Deriver":
                 if val:
-                    deriver = val if val.startswith("/nix/store/") else f"/nix/store/{val}"
+                    deriver = val if val.startswith(store_prefix()) else f"{store_prefix()}{val}"
                     data["deriver"] = StorePath(path=deriver)
                 else:
                     data["deriver"] = None

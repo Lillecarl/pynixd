@@ -311,7 +311,10 @@ class LocalStore(DaemonStore):
         from ..drv_parser import parse_drv
 
         sp = StorePath(str(drv_store_path))
-        drv_file = self.store_path / "nix" / "store" / str(sp)
+        # `sp.base()`, and not `str(sp)`. `str(sp)` is an absolute path, and
+        # pathlib drops every part before an absolute one. So this read went to
+        # the store directory of the process, whatever store this object holds.
+        drv_file = self.store_path / "nix" / "store" / sp.base()
         try:
             contents = drv_file.read_bytes()
         except (FileNotFoundError, OSError):
