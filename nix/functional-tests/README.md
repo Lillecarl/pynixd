@@ -67,6 +67,21 @@ builder. Use `nixft.sh` there, and give it the same commands:
 ./pynixd/nix/functional-tests/nixft.sh --work /scratch/nixft-full all
 ```
 
+**`--dump PATH` writes a file of the builder to the terminal.**
+`meson test --print-errorlogs` prints the tail of the log of a failed test and
+not the whole of it, so a `log.debug` line that a request writes at its start
+does not reach the terminal. The whole log is at
+`build/meson-logs/testlog.txt`, and no directory of the builder survives the
+run, so the file has to leave in the same invocation:
+
+```sh
+./pynixd/nix/functional-tests/nixft.sh --log-level DEBUG \
+    --dump build/meson-logs/testlog.txt pynixd build
+```
+
+A path with no leading `/` is relative to the work directory. Give the option
+again for a second file.
+
 **Keep the work directory outside `$HOME`.** One run of `all --suite ca` under
 each of two paths, same checkout and same suite:
 
@@ -443,6 +458,49 @@ is worth stating once:
 `main:build` reaches line 91 now, and it started at line 8. A defect in this
 project hides the next one, so a test that moves forward is progress even
 when it still fails.
+
+### The same test, and four more defects
+
+`main:build` reached line 167 after those three, and it reaches line 247 now.
+Issue #196 holds the four, and each one is a decision of the root-goal loop
+that Nix takes differently:
+
+1. **A substituter counted as a builder.** `_build_slots` returned the number
+   of goals when any store was not the local one, so `max-jobs` reached the
+   loop in almost no configuration. Almost every configuration holds a binary
+   cache. The instrumented line reads `slots=4, goals=4, max_build_jobs=1,
+   stores=["http-cache.nixos.org", "local"]`.
+2. **The goals ran in the order of the request.**
+   `DerivationBuildingGoal::key()` at `derivation-building-goal.cc:54` builds
+   `"dd$" + name + "$" + path`, and `goal.hh:604` states the rule: `aardvark`
+   runs before `baboon`. The client sends the four derivations of
+   `fod-failing.nix` in store-path order, so pynixd built x3 where the test
+   asserts x1.
+3. **"2 dependencies failed" where Nix says 1.** `Goal::amDone` at
+   `goal.cc:242` drops every waitee that is left as soon as one fails and
+   `keep-going` is off, so the number is 1 whatever number would have failed.
+4. **A goal that the request left behind was still awaited, and reported.**
+   `Worker::run` leaves its loop when `topGoals` is empty, so that goal never
+   reaches `amDone` and `entry-points.cc:93` skips it.
+
+### A harness defect that hid a whole fixture
+
+`tests/functional/meson.build:17` runs `find_program('bash')` and writes the
+answer into `config.nix` as `shell`. Every `mkDerivation` of the suite uses
+that value as its builder. The runner named no bash in `runtimeInputs`, so
+the first one on PATH was `/run/current-system/sw/bin/bash` of the builder
+machine, and no sandbox can reach that path.
+
+`cancelled-builds` of `main:build` was therefore degenerate **in both arms**.
+`slow` must sleep 10 s so that `fast-fail` can fail while it runs; with no
+shell it died at once with "executing '/run/current-system/sw/bin/bash': No
+such file or directory", and the test asked which of two instant failures
+landed first. The control arm won that race by milliseconds, so the fixture
+reported nothing about either daemon.
+
+This is the second time the harness, and not pynixd, decided what a test
+said. The `$HOME` table above is the first. Read a control failure as a
+question about the harness before you read it as a defect of Nix.
 
 `main:multiple-outputs` is a `#174` difference now, and not one of the three
 above. `nix store delete --ignore-liveness` cannot delete a path that a temp
