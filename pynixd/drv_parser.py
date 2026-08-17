@@ -47,7 +47,7 @@ from .store_path import DrvOutput, StorePath
 from .utils import compress_hash, nix32_encode
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Collection
 
     from .serde.aliases import OutputMap, StorePathSet
 
@@ -183,6 +183,18 @@ class Derivation:
         """Return {output_name: output_path} for all outputs."""
         return {o.name: StorePath(o.path) for o in self.outputs}
 
+    def selected_output_paths(self, wanted: Collection[str]) -> dict[str, StorePath]:
+        """The path of each output that *wanted* names, by name.
+
+        `{"*"}` means every output, which is what a derived path with no
+        output list means. An output with no path is in the answer, with an
+        empty path: the name is what asks the store for a realisation.
+        """
+        paths = self.output_paths()
+        if wanted == {"*"}:
+            return paths
+        return {name: path for name, path in paths.items() if name in wanted}
+
     def output_kinds(self) -> list[OutputKind]:
         """Return the OutputKind for each output.
 
@@ -197,6 +209,94 @@ class Derivation:
             )
             result.append(dop.kind)
         return result
+
+    @property
+    def is_fixed_output(self) -> bool:
+        """True when every output takes its path from a hash the derivation names.
+
+        `DerivationType::isFixed` at `derivation-options.hh`. Such a
+        derivation has one hash for each output, and that hash does not
+        depend on the derivation at all. `hashDerivationModulo` at
+        `derivations.cc:902` branches on this.
+        """
+        return all(kind is OutputKind.CA_FIXED for kind in self.output_kinds())
+
+    @property
+    def is_impure(self) -> bool:
+        """True when no existing output of this derivation counts as built.
+
+        `DerivationGoal` at `derivation-goal.cc:87` skips `checkPathValidity`
+        for an impure derivation, and the comment there gives the reason: "We
+        don't yet have any safe way to cache an impure derivation at this
+        step." So Nix builds it every time, and the output of the last build
+        is not an answer.
+
+        pynixd read the realisation of the last build and answered with it, so
+        a second `nix build` of an impure derivation gave the first output.
+        `impure-derivations.sh:36` of the functional suite states the rule: the
+        builder writes a counter, and the second build must write `1`.
+        """
+        return OutputKind.IMPURE in self.output_kinds()
+
+    @property
+    def needs_realisations(self) -> bool:
+        """True when the store holds a realisation for each output of this.
+
+        Nix registers a realisation for every output of every derivation while
+        `ca-derivations` is on, at `derivation-builder.cc:1994` and again at
+        `derivation-goal.cc:236`. It asks the setting, and pynixd cannot: a
+        daemon with the feature off answers "experimental Nix feature
+        'ca-derivations' is disabled" to `RegisterDrvOutput`, and pynixd then
+        discards a good connection as dirty.
+
+        So this asks the derivation instead. An output with no path is the one
+        case that needs the feature, and no such derivation exists while the
+        feature is off. A floating content-addressed output names no path, a
+        deferred output names none either, and an impure output names none.
+        An input-addressed output and a fixed-output one both name theirs.
+
+        **The question is about the original derivation, and not the resolved
+        one.** pynixd fills in a deferred output before it sends the
+        derivation, so the resolved one names every path and answers False.
+        The client holds the original, and `queryPartialDerivationOutputMap`
+        at `store-api.cc:406` reads a realisation for each output that the
+        original leaves open. `ca:build` builds `dependentNonCA`, which is
+        that derivation.
+        """
+        return any(not output.path for output in self.outputs)
+
+    @property
+    def should_resolve(self) -> bool:
+        """True when Nix writes a resolved derivation for this one, and builds that.
+
+        `Derivation::shouldResolve` at `derivations.cc:1129`. A derivation with
+        no input derivation has nothing to resolve. After that the type of the
+        derivation decides: an input-addressed one resolves only when its
+        output is deferred, a content-addressed one always resolves, and an
+        impure one always resolves. An input that is the output of a dynamic
+        derivation also makes it resolve.
+
+        **An input-addressed output belongs to the hash of the derivation that
+        names it.** The resolved derivation is a different derivation, so the
+        right path for that output is a different path, and the daemon says so
+        at `derivations.cc:1324`: "derivation has incorrect output ..., should
+        be ...". pynixd stored the resolved form of every derivation that had
+        an input, and the daemon refused each input-addressed one. `main:gc` of
+        the functional suite is where that showed: the refused connection went
+        out of the pool as dirty, and the temporary root that it held stayed in
+        the file.
+
+        pynixd still resolves every derivation for the wire, because
+        `BuildDerivation` carries a `BasicDerivation` and that model holds no
+        input derivation. This decides one thing only: whether the request
+        names the path of the resolved derivation or the path of the original
+        one.
+        """
+        if not self.input_drvs and not self.dynamic_input_drvs:
+            return False
+        if self.dynamic_input_drvs:
+            return True
+        return any(kind is not OutputKind.INPUT_ADDRESSED for kind in self.output_kinds())
 
     def to_json(self, drv_path: StorePath | str) -> dict[str, NixDerivationShow]:
         """Serialize to the same JSON format as `nix derivation show`.
@@ -516,8 +616,16 @@ class Derivation:
             ``{output_name: hex_hash}`` — one SHA256 hex hash per
             derivation output.
         """
-        # Fixed-output derivations: each output gets its own hash
-        if all(o.hash_algo and o.hash_value for o in self.outputs):
+        # Fixed-output derivations: each output gets its own hash.
+        #
+        # **An impure output is not a fixed one.** `hashDerivationModulo` asks
+        # `type().isFixed()` at `derivations.cc:902`, and `DerivationType::Impure`
+        # answers no. The test here read the two raw fields instead, and an
+        # impure output carries `r:sha256` in one and the word `impure` in the
+        # other, so it read as fixed. pynixd then gave every realisation of an
+        # impure derivation an id that no Nix agrees with. `OutputKind` is the
+        # one place that classifies an output, so this asks it.
+        if self.is_fixed_output:
             result: dict[str, str] = {}
             for o in self.outputs:
                 method_algo = self._format_output_hash_algo(o)

@@ -10,6 +10,7 @@ Tests are split into two categories:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import shutil
 from pathlib import Path
@@ -347,6 +348,84 @@ class TestDerivationProperties:
             parsed = parse_drv(drv_content)
             # parsed.name is derived from to_json; verify drv_path contains the expected name
             assert parsed.env.get("name") in drv_path, f"{name}: expected {parsed.env.get('name')} in {drv_path}"
+
+
+class TestOutputClassification:
+    """What kind each output is, and what follows from that.
+
+    No `covers` marker. That marker means "this class covers these features",
+    and `tests/_conftest/subsumption.py` then skips every test after the first
+    one that passes. These state one rule each, and each one must run.
+
+    **`OutputKind` is the one place that classifies an output.** Three callers
+    read the two raw fields of the `.drv` instead, and each one got a
+    different answer for an impure output, which carries `r:sha256` in the
+    algorithm and the word `impure` in the digest. One of the three read that
+    as a content hash and called the derivation fixed-output.
+    """
+
+    def test_selected_output_paths_takes_the_named_ones(self):
+        parsed = Derivation(
+            outputs=[
+                DrvOutput(output_name="out", path="/nix/store/a-out", hash_algo="", hash_value=""),
+                DrvOutput(output_name="dev", path="/nix/store/a-dev", hash_algo="", hash_value=""),
+            ],
+        )
+
+        assert parsed.selected_output_paths({"dev"}) == {"dev": StorePath("/nix/store/a-dev")}
+        assert parsed.selected_output_paths({"*"}) == parsed.output_paths()
+
+    def test_an_impure_output_is_impure_and_not_fixed(self):
+        """`("out","","r:sha256","impure")` is what Nix writes for one.
+
+        Three places asked this question by reading the two raw fields, and
+        one of them read `impure` in the digest as a content hash and called
+        the derivation fixed-output. `OutputKind` is the one place that
+        classifies an output.
+        """
+        parsed = Derivation(
+            outputs=[DrvOutput(output_name="out", path="", hash_algo="r:sha256", hash_value="impure")],
+        )
+
+        assert parsed.output_kinds() == [OutputKind.IMPURE]
+        assert parsed.is_impure
+        assert not parsed.is_fixed_output
+        assert parsed.needs_realisations
+
+    def test_a_fixed_output_derivation_is_fixed(self):
+        parsed = Derivation(
+            outputs=[DrvOutput(output_name="out", path="/nix/store/a-out", hash_algo="sha256", hash_value="abc")],
+        )
+
+        assert parsed.is_fixed_output
+        assert not parsed.is_impure
+
+    def test_the_hash_of_an_impure_derivation_comes_from_its_aterm(self):
+        """`hashDerivationModulo` at `derivations.cc:902` asks `type().isFixed()`.
+
+        An impure derivation answers no, so its hash is the SHA-256 of the
+        masked ATerm and not `fixed:out:...`. pynixd took the fixed branch,
+        so every realisation of an impure derivation carried an id that no
+        Nix agrees with.
+        """
+        parsed = parse_drv(
+            'Derive([("out","","r:sha256","impure")],[],[],"x86_64-linux","/bin/sh",'
+            '["-c","true"],[("name","impure"),("out","/1abc")])'
+        )
+
+        expected = hashlib.sha256(parsed.unparse(maskOutputs=True).encode()).hexdigest()
+
+        assert parsed.hash_derivation_modulo(mask_outputs=True) == {"out": expected}
+
+    def test_an_input_addressed_derivation_with_an_input_does_not_resolve(self):
+        """`Derivation::shouldResolve` at `derivations.cc:1129`."""
+        plain = DrvOutput(output_name="out", path="/nix/store/a-out", hash_algo="", hash_value="")
+        deferred = DrvOutput(output_name="out", path="", hash_algo="", hash_value="")
+        inputs = {StorePath("/nix/store/b-dep.drv"): ["out"]}
+
+        assert not Derivation(outputs=[plain], input_drvs=inputs).should_resolve
+        assert not Derivation(outputs=[plain]).should_resolve
+        assert Derivation(outputs=[deferred], input_drvs=inputs).should_resolve
 
 
 @pytest.mark.covers(F.DRV_PARSE)
