@@ -10,12 +10,13 @@ import structlog
 
 from ..derived_path import DerivedPath
 from ..serde import IsValidPathRequest, QueryMissingRequest, QueryMissingResponse, StorePath as SerdeStorePath
+from ..store_path import StorePath
 from ..substitution_queue import SubstitutionAvailability
 from .goal import ExecutionGoal
+from .realisations import realisations_of
 
 if TYPE_CHECKING:
     from ..drv_parser import Derivation
-    from ..store_path import StorePath
     from .engine import GoalEngine
 
 log = structlog.get_logger(__name__)
@@ -103,15 +104,41 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
             plan.will_build.add(SerdeStorePath(path=str(drv_path)))
             return
 
+        unnamed = [name for name, path in output_paths.items() if not str(path)]
+        realised = await self._realised_paths(parsed, unnamed) if unnamed else {}
+        if realised is None:
+            plan.will_build.add(SerdeStorePath(path=str(drv_path)))
+            return
+
         needs_build = False
-        for output_path in output_paths:
-            if not str(output_path):
-                needs_build = True
-                continue
-            if not await self._classify_output_path(output_path, plan):
+        for output_name, output_path in output_paths.items():
+            path = output_path if str(output_path) else realised[output_name]
+            if not await self._classify_output_path(path, plan):
                 needs_build = True
         if needs_build:
             plan.will_build.add(SerdeStorePath(path=str(drv_path)))
+
+    async def _realised_paths(self, parsed: Derivation, wanted: list[str]) -> dict[str, StorePath] | None:
+        """The path of each output that the derivation does not name.
+
+        `Store::queryMissing` reads `queryPartialDerivationOutputMap` at
+        `misc.cc:217`, which answers the path of a content-addressed output
+        from the realisation that the build registered. When every wanted
+        output has a path, and every one of those paths is valid, the loop at
+        `misc.cc:225` returns and the derivation is in no bucket at all.
+
+        pynixd read the derivation alone. A content-addressed derivation names
+        no output path, so pynixd answered `willBuild` for one that it had
+        already built, and the client then took a different code path from the
+        one it takes with `nix-daemon`. Issue #175.
+
+        Answers `None` when a wanted output has no realisation. That is the
+        `knownOutputPaths = false` of Nix, and the derivation must be built.
+        """
+        found = await realisations_of(parsed, wanted, self.engine.ctx.local_store)
+        if found is None:
+            return None
+        return {key.rpartition("!")[2]: StorePath(str(realisation.out_path)) for key, realisation in found.items()}
 
     async def _classify_opaque_path(self, path: StorePath, plan: QueryMissingPlan) -> None:
         if not await self._classify_output_path(path, plan):
@@ -134,9 +161,14 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
         return await scheduler.substitution_queue.can_substitute(path)
 
 
-def _selected_output_paths(derived_path: DerivedPath, parsed: Derivation) -> list[StorePath]:
+def _selected_output_paths(derived_path: DerivedPath, parsed: Derivation) -> dict[str, StorePath]:
+    """The path of each output the client asked for, by name.
+
+    A content-addressed output has no path here, and the name is what asks the
+    store for its realisation.
+    """
     output_paths = parsed.output_paths()
     requested_outputs = derived_path.output_names
     if requested_outputs == {"*"}:
-        return list(output_paths.values())
-    return [path for output_name, path in output_paths.items() if output_name in requested_outputs]
+        return dict(output_paths)
+    return {name: path for name, path in output_paths.items() if name in requested_outputs}

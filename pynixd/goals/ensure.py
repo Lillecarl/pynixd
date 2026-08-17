@@ -17,7 +17,6 @@ from ..serde import (
     BuildResultStatus,
     DrvOutput,
     IsValidPathRequest,
-    QueryRealisationRequest,
     Realisation,
     RegisterDrvOutputRequest,
     StorePath as SerdeStorePath,
@@ -25,6 +24,7 @@ from ..serde import (
 from ..store_path import StorePath
 from .dependencies import DependencyGroupGoal
 from .goal import GoalHolder
+from .realisations import realisations_of
 from .resolution import _nix_drv_name, resolve_derivation, resolve_dynamic_derivation, unparse_basic_derivation
 from .results import GoalResult, goal_failure, goal_success, result_succeeded
 
@@ -257,29 +257,17 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         paths_of_drv = parsed.output_paths()
         if not wanted or any(str(paths_of_drv.get(name, "")) for name in wanted):
             return None
-        hashes = await output_hashes(parsed, self.engine.ctx.local_store.read_derivation)
-        if hashes is None:
+        built = await realisations_of(parsed, wanted, self.engine.ctx.local_store)
+        if built is None:
             return None
 
-        built: dict[str, Realisation] = {}
         resolved_outputs: dict[str, StorePath] = {}
-        for output_name in sorted(wanted):
-            digest = hashes.get(output_name)
-            if digest is None:
-                return None
-            key = f"sha256:{digest}!{output_name}"
-            response = await self.engine.ctx.local_store.execute(
-                QueryRealisationRequest(drv_output=DrvOutput(key)),
-            )
-            realisation = next(iter(response.realisations), None)
-            if realisation is None or realisation.out_path is None:
-                return None
+        for key, realisation in built.items():
             path = StorePath(str(realisation.out_path))
             valid = await self.engine.ctx.local_store.execute(IsValidPathRequest(path=SerdeStorePath(path=str(path))))
             if not valid.valid:
                 return None
-            built[key] = realisation
-            resolved_outputs[output_name] = path
+            resolved_outputs[key.rpartition("!")[2]] = path
 
         answer = goal_success()
         answer.resolved_outputs = resolved_outputs

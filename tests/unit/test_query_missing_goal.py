@@ -11,7 +11,15 @@ import pytest
 from pynixd.drv_parser import Derivation, DrvOutput
 from pynixd.goals.engine import GoalEngine
 from pynixd.goals.query_missing import QueryMissingPlanGoal
-from pynixd.serde import DerivedPath as SerdeDerivedPath, IsValidPathResponse, QueryMissingRequest
+from pynixd.serde import (
+    DerivedPath as SerdeDerivedPath,
+    IsValidPathResponse,
+    QueryMissingRequest,
+    QueryRealisationRequest,
+    QueryRealisationResponse,
+    Realisation,
+    StorePath as SerdeStorePath,
+)
 from pynixd.substitution_queue import SubstitutionAvailability
 
 if TYPE_CHECKING:
@@ -20,12 +28,29 @@ if TYPE_CHECKING:
 
 
 class FakeLocalStore:
-    def __init__(self, valid_paths: set[str], derivations: dict[str, Derivation] | None = None) -> None:
+    def __init__(
+        self,
+        valid_paths: set[str],
+        derivations: dict[str, Derivation] | None = None,
+        realisations: dict[str, str] | None = None,
+    ) -> None:
         self.valid_paths = valid_paths
         self.derivations = derivations or {}
+        # The path of each realised output, by output name. The digest in the
+        # `DrvOutput` id comes from the derivation, so a test that states it
+        # would state the hash of Nix, and the name is enough to find it.
+        self.realisations = realisations or {}
+        self.realisation_queries: list[str] = []
 
-    async def execute(self, request: Any, **kwargs: Any) -> IsValidPathResponse:
+    async def execute(self, request: Any, **kwargs: Any) -> Any:
         del kwargs
+        if isinstance(request, QueryRealisationRequest):
+            key = str(request.drv_output)
+            self.realisation_queries.append(key)
+            path = self.realisations.get(key.rpartition("!")[2])
+            if path is None:
+                return QueryRealisationResponse(realisations=[])
+            return QueryRealisationResponse(realisations=[Realisation(id=key, out_path=SerdeStorePath(path=path))])
         return IsValidPathResponse(valid=str(request.path) in self.valid_paths)
 
     async def read_derivation(self, drv_store_path: StorePath | str) -> Derivation | None:
@@ -229,6 +254,107 @@ async def test_query_missing_reports_will_build_for_dynamic_derivation() -> None
 
     assert {str(path) for path in response.will_build} == {drv_path}
     assert not substitution_queue.queries
+
+
+def _content_addressed(output_name: str = "out") -> Derivation:
+    """A derivation whose output takes its path from the build.
+
+    The path is empty, which is what a floating content-addressed output, a
+    deferred output and an impure output all look like in the `.drv` file.
+    """
+    return Derivation(outputs=[DrvOutput(output_name=output_name, path="", hash_algo="", hash_value="")])
+
+
+@pytest.mark.anyio
+async def test_a_realised_content_addressed_output_is_in_no_bucket() -> None:
+    """`nix-daemon` answers an empty `willBuild` for a derivation it built.
+
+    `Store::queryMissing` reads `queryPartialDerivationOutputMap`, and that
+    map answers from the realisation when the derivation names no path.
+    pynixd read the derivation alone, so a second `nix build` of a
+    content-addressed derivation asked for a build. `tests/parity/` recorded
+    the difference. Issue #175.
+    """
+    drv_path = "/nix/store/11111111111111111111111111111111-example.drv"
+    out_path = "/nix/store/22222222222222222222222222222222-example"
+    store = FakeLocalStore(
+        valid_paths={out_path},
+        derivations={drv_path: _content_addressed()},
+        realisations={"out": out_path},
+    )
+    ctx = cast(
+        "PynixdContext",
+        SimpleNamespace(local_store=store, scheduler=SimpleNamespace(substitution_queue=FakeSubstitutionQueue({}))),
+    )
+    request = QueryMissingRequest(derived_paths=_derived_path_set(f"{drv_path}!out"))
+
+    response = await QueryMissingPlanGoal(GoalEngine(ctx), request).result()
+
+    assert not response.will_build
+    assert not response.will_substitute
+    assert not response.unknown
+    assert len(store.realisation_queries) == 1
+    assert store.realisation_queries[0].endswith("!out")
+
+
+@pytest.mark.anyio
+async def test_a_content_addressed_output_with_no_realisation_gets_built() -> None:
+    """That is `knownOutputPaths = false` at `misc.cc:219` of Nix."""
+    drv_path = "/nix/store/11111111111111111111111111111111-example.drv"
+    store = FakeLocalStore(valid_paths=set(), derivations={drv_path: _content_addressed()})
+    ctx = cast(
+        "PynixdContext",
+        SimpleNamespace(local_store=store, scheduler=SimpleNamespace(substitution_queue=FakeSubstitutionQueue({}))),
+    )
+    request = QueryMissingRequest(derived_paths=_derived_path_set(f"{drv_path}!out"))
+
+    response = await QueryMissingPlanGoal(GoalEngine(ctx), request).result()
+
+    assert {str(path) for path in response.will_build} == {drv_path}
+
+
+@pytest.mark.anyio
+async def test_a_realisation_that_names_a_deleted_path_gets_built() -> None:
+    """A realisation stays after a garbage collection removes the path.
+
+    So the path that the realisation names is checked as well, exactly as
+    `misc.cc:222` checks it.
+    """
+    drv_path = "/nix/store/11111111111111111111111111111111-example.drv"
+    out_path = "/nix/store/22222222222222222222222222222222-example"
+    store = FakeLocalStore(
+        valid_paths=set(),
+        derivations={drv_path: _content_addressed()},
+        realisations={"out": out_path},
+    )
+    substitution_queue = FakeSubstitutionQueue({})
+    ctx = cast(
+        "PynixdContext",
+        SimpleNamespace(local_store=store, scheduler=SimpleNamespace(substitution_queue=substitution_queue)),
+    )
+    request = QueryMissingRequest(derived_paths=_derived_path_set(f"{drv_path}!out"))
+
+    response = await QueryMissingPlanGoal(GoalEngine(ctx), request).result()
+
+    assert {str(path) for path in response.will_build} == {drv_path}
+    assert substitution_queue.queries == [out_path]
+
+
+@pytest.mark.anyio
+async def test_an_input_addressed_output_asks_for_no_realisation() -> None:
+    """The derivation names the path, so the store answers nothing new."""
+    drv_path = "/nix/store/11111111111111111111111111111111-example.drv"
+    out_path = "/nix/store/22222222222222222222222222222222-example"
+    store = FakeLocalStore(valid_paths={out_path}, derivations={drv_path: _derivation(out_path)})
+    ctx = cast(
+        "PynixdContext",
+        SimpleNamespace(local_store=store, scheduler=SimpleNamespace(substitution_queue=FakeSubstitutionQueue({}))),
+    )
+    request = QueryMissingRequest(derived_paths=_derived_path_set(f"{drv_path}!out"))
+
+    await QueryMissingPlanGoal(GoalEngine(ctx), request).result()
+
+    assert store.realisation_queries == []
 
 
 @pytest.mark.anyio
