@@ -24,9 +24,10 @@ It found two defects in its first two runs:
    database, which carries the name of the algorithm, and the wire does not.
    No client complained, because `Hash::parseAny` reads both forms.
 
-**The workload builds nothing.** A build needs a builder and takes minutes,
-and the functional suite covers that ground already. This covers the
-handshake and the operations that a read-only client sends.
+**The workload builds.** One derivation, with `/bin/sh` as the builder, twice,
+and a garbage collection after it. So `BuildPathsWithResults`, the temporary
+roots that a build makes, and the answer that a second build of the same
+derivation gives are all in the comparison.
 
 Issue #175.
 """
@@ -64,6 +65,17 @@ TEMP_ROOT = Path("/private/tmp") if Path("/private/tmp").is_dir() else Path("/tm
 BASE = TEMP_ROOT / "pynixd-wire-parity"
 SOCKET_WAIT = 30.0
 
+# One derivation that builds anywhere. `/bin/sh` is the builder, so the store
+# needs no `bash` in it and the workload needs no channel.
+DERIVATION = """
+derivation {
+  name = "probe";
+  system = builtins.currentSystem;
+  builder = "/bin/sh";
+  args = [ "-c" "echo hi > $out" ];
+}
+"""
+
 
 def _config(work: Path, root: Path) -> Path:
     """The configuration that `nix/functional-tests/make-shim.sh` writes."""
@@ -94,7 +106,19 @@ def _config(work: Path, root: Path) -> Path:
 
 def _backend(role: str, work: Path, root: Path) -> tuple[list[str], dict[str, str]]:
     """The daemon that the recorder starts, and the environment it needs."""
-    env = dict(os.environ, NIX_STORE_DIR=str(root / "store"), NIX_STATE_DIR=str(root / "var/nix"))
+    env = dict(
+        os.environ,
+        NIX_STORE_DIR=str(root / "store"),
+        NIX_STATE_DIR=str(root / "var/nix"),
+        # `NIX_STATE_DIR` does not move the build logs, and the daemon writes
+        # one for each build. Without this it writes into `/nix/var/log/nix`
+        # and answers "Permission denied", which is a difference of the
+        # harness and not of pynixd.
+        NIX_LOG_DIR=str(root / "var/log/nix"),
+        # The builder is `/bin/sh`, which the sandbox does not carry, and this
+        # test runs as a user with no build users group.
+        NIX_CONFIG="sandbox = false\nbuild-users-group =\n",
+    )
     if role == "control":
         return [str(NIX), "daemon"], env
     return [str(PYNIXD), "daemon"], dict(env, PYNIXD_CONFIG=str(_config(work, root)))
@@ -151,6 +175,13 @@ async def _record(role: str, root: Path) -> Path:
             ["store", "gc", "--max", "0"],
             ["store", "gc"],
             ["store", "info"],
+            # A real build, then the same build again, so the second one reads
+            # the output that the first one made. The `gc` at the end then has
+            # to free it, and the temporary roots of the build are in the way.
+            ["build", "--impure", "--no-link", "--json", "--expr", DERIVATION],
+            ["build", "--impure", "--no-link", "--json", "--expr", DERIVATION],
+            ["path-info", "--json", "--impure", "--expr", DERIVATION],
+            ["store", "gc"],
         ):
             # A command may fail, and a failure is a fine thing to record: the
             # two daemons must fail the same way.
