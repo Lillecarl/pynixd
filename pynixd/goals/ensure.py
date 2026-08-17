@@ -331,6 +331,14 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             return substituted.with_dynamic_outputs(self.derived_path.base_store_path())
 
         build_drv_path = await self._path_of_what_it_builds(basic, drv_path) if parsed.should_resolve else drv_path
+
+        cut_off = await self._try_realise_the_resolved_one(build_drv_path, drv_path, selected_outputs)
+        if cut_off is not None:
+            log.debug("ensure_derivation_cut_off", drv_path=str(drv_path), resolved=str(build_drv_path))
+            cut_off = await self._under_the_original_id(cut_off, parsed)
+            cut_off.result = _only_wanted_outputs(cut_off.result, selected_outputs)
+            return cut_off.with_dynamic_outputs(self.derived_path.base_store_path())
+
         request = BuildDerivationRequest(
             drv_path=build_drv_path,
             derivation=basic,
@@ -459,6 +467,97 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         if parsed.is_impure:
             return None
         built = await realisations_of(parsed, wanted, self.engine.ctx.local_store, self.derived_path.base_store_path())
+        if built is None:
+            return None
+
+        resolved_outputs: dict[str, StorePath] = {}
+        for key, realisation in built.items():
+            path = StorePath(str(realisation.out_path))
+            valid = await self.engine.ctx.local_store.execute(IsValidPathRequest(path=SerdeStorePath(path=str(path))))
+            if not valid.valid:
+                return None
+            resolved_outputs[key.rpartition("!")[2]] = path
+
+        answer = goal_success()
+        answer.resolved_outputs = resolved_outputs
+        answer.produced_paths = set(resolved_outputs.values())
+        answer.result = answer.result.model_copy(update={"built_outputs": built})
+        return answer
+
+    async def _try_realise_the_resolved_one(
+        self,
+        build_drv_path: SerdeStorePath,
+        drv_path: SerdeStorePath,
+        wanted: set[str],
+    ) -> GoalResult | None:
+        """The early cut-off: ask for the realisation of the resolved derivation.
+
+        **Two derivations that resolve to the same one share an output, and
+        the id of a realisation no longer says so.** Nix 2.34 keys a
+        realisation by `sha256:<staticOutputHashes(drv)[name]>!<name>`, which
+        is a content hash of the normalised derivation, so the two carry the
+        **same** id and one lookup finds what either of them put in the cache.
+        The master branch keys it by `{drvPath, outputName}`
+        (`realisation.hh:25`), and two derivations that normalise to one thing
+        still have two paths.
+
+        Nix keeps the cut-off by asking again under the resolved path.
+        `derivation-goal.cc:199` reads `DrvOutput{pathResolved, wantedOutput}`
+        for that reason. This is the same step: the resolved derivation is in
+        the store by now, so ask the daemon behind pynixd to realise **it**,
+        and read the answer under its path.
+
+        `ca:issue-13247` measures it. The test copies the realisations of
+        `use-a-more-outputs` to a cache, deletes everything, and then
+        substitutes `use-a-prime-more-outputs^first`, whose own realisation
+        was never copied. Its comment names the mechanism: "This derivation is
+        the same after normalization, so we should get early cut-off, and thus
+        a chance to download just the output we want rather than building
+        more." Without this step pynixd builds instead, and a build makes
+        every output, so `second` appears and `issue-13247.sh:66` fails.
+
+        The caller gives the answer the id of the **original** derivation
+        afterwards, through `_under_the_original_id`. A client asks under the
+        id it knows. Issue #162.
+        """
+        if not wanted or str(build_drv_path) == str(drv_path):
+            return None
+        client = next((c for c in self._watchers if c.options is not None), None)
+        if not client_names_a_substituter(client):
+            return None
+
+        resolved = await self.engine.ctx.local_store.read_derivation(str(build_drv_path))
+        if resolved is None or resolved.is_impure:
+            return None
+
+        # **Build the derived path, and do not spell it.** `^` is the syntax a
+        # person types, and `!` is what the wire carries. A hand-made string
+        # with `^` in it reaches the daemon as one store path, and it answers
+        # "name '...drv^first' contains illegal character '^'".
+        derived = str(
+            DerivedPath._from_components(  # noqa: SLF001 -- the constructor for a path pynixd makes itself
+                drv_path=StorePath(str(build_drv_path)),
+                chain=(),
+                outputs=OutputsNames(frozenset(wanted)),
+            ),
+        )
+        log.debug("resolved_realise_asking", derived_path=derived, wanted=sorted(wanted))
+        try:
+            await self.engine.ctx.local_store.execute(
+                BuildPathsRequest(
+                    derived_paths=[SerdeDerivedPath(value=derived)],
+                    build_mode=int(self.build_mode),
+                ),
+                client=client,
+            )
+        except (DaemonProtocolError, OSError, EOFError) as ex:
+            # A miss is the ordinary answer for a derivation that the client
+            # must build. The build road is still there.
+            log.debug("resolved_realise_miss", drv_path=str(build_drv_path), reason=str(ex))
+            return None
+
+        built = await realisations_of(resolved, wanted, self.engine.ctx.local_store, StorePath(str(build_drv_path)))
+        log.debug("resolved_realise_answered", drv_path=str(build_drv_path), realised=built is not None)
         if built is None:
             return None
 
