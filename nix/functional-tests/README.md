@@ -88,6 +88,35 @@ vzrun env NIXFT_WORK=/scratch/nixft-2.34 \
     /nix/store/...-nanopynix-nixft-nix_2_34/bin/nanopynix-nixft-nix_2_34 all
 ```
 
+**Give the machine the fetch cache of the host, once for each start of the
+machine.** The evaluation reads the lockfile and fetches the
+`flake-compatish` input from the GitHub tarball endpoint. GitHub answers `429
+Too Many Requests` to that endpoint after a few runs, and a token does not
+raise the limit: the limiter is the anti-scraping one, and it counts the
+address. `nix` then waits 69 s, 121 s, 259 s and 573 s between the tries,
+which is longer than the test run.
+
+The host already holds the answer in `~/.cache/nix`. The machine wipes its
+home on a restart, so it asks GitHub again every time. The store is the one
+thing the two share, so send the cache through it:
+
+```sh
+GIT_CACHE=$(nix store add-path ~/.cache/nix/tarball-cache-v2 --name nix-tarball-cache)
+FETCHER=$(nix store add-path ~/.cache/nix/fetcher-cache-v4.sqlite --name nix-fetcher-cache)
+
+vzrun sh -c "
+    mkdir -p \$HOME/.cache/nix
+    rm -f \$HOME/.cache/nix/fetcher-cache-v4.sqlite*
+    cp -f $FETCHER \$HOME/.cache/nix/fetcher-cache-v4.sqlite
+    cp -r $GIT_CACHE \$HOME/.cache/nix/tarball-cache-v2
+    chmod -R u+w \$HOME/.cache/nix
+"
+```
+
+Remove the `-shm` and the `-wal` file of the SQLite database as well. A
+database that arrives beside the journal of a different run reads as corrupt,
+and `nix` then fetches again.
+
 ## How pynixd takes the place of the daemon
 
 `run.sh` reads `NIX_DAEMON_PACKAGE`, which is the hook Nix already has for
