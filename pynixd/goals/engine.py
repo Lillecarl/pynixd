@@ -81,7 +81,8 @@ class GoalEngine:
 
     async def build_paths(self, request: BuildPathsRequest, client: ClientConn | None = None) -> BuildPathsResponse:
         """Execute a BuildPaths request, returning a simple success/failure response."""
-        _require_normal_build_mode(request.build_mode)
+        if request.build_mode != BuildMode.NORMAL:
+            return await self._straight_to_the_store(request, client)
         response = await self.build_paths_with_results(
             BuildPathsWithResultsRequest(
                 derived_paths=request.derived_paths,
@@ -106,8 +107,36 @@ class GoalEngine:
         client: ClientConn | None = None,
     ):
         """Execute a BuildPathsWithResults request, returning per-path results."""
-        _require_normal_build_mode(request.build_mode)
+        if request.build_mode != BuildMode.NORMAL:
+            return await self._straight_to_the_store(request, client)
         return await BuildPathsWithResultsGoal(self, request, client).result()
+
+    async def _straight_to_the_store(self, request: Any, client: ClientConn | None) -> Any:
+        """A check or a repair goes to the local store, and the goal system stands aside.
+
+        `nix build --rebuild` sends `BuildMode.CHECK`, and `--repair` sends
+        `BuildMode.REPAIR`. `nix-store --realise --check`, `--repair-path` and
+        `--verify --repair` send the same two. The goal system raised
+        `RuntimeError` for each one, so every such command failed through
+        pynixd and succeeded through `nix-daemon`.
+
+        **Neither mode is a build that pynixd can schedule.** A check builds
+        the derivation again in the same store and compares the two outputs,
+        at `derivation-building-goal.cc:990`. A repair reads the closure and
+        rewrites what is corrupt, at `derivation-goal.cc:152`. Both are
+        operations on one store, and a second builder answers no part of
+        either one. The local store is a whole Nix daemon, so it does the
+        work, and pynixd carries the bytes.
+
+        The scheduling of pynixd, the dedup of a build and the fleet are all
+        out of the path here, and that is the point: they answer a question
+        that a check does not ask.
+
+        A mode that no version of Nix defines takes the same road. The store
+        answers what it answers, and pynixd invents no behaviour for a number
+        that it does not know.
+        """
+        return await self.ctx.local_store.call(request, client=client)
 
     async def query_missing(self, request: QueryMissingRequest) -> QueryMissingResponse:
         """Execute a read-only QueryMissing request, classifying paths as build/substitute/unknown."""
@@ -175,13 +204,3 @@ class GoalEngine:
             for store_id, store in sorted(self.ctx.stores.items(), key=lambda item: str(item[0]))
             if str(store_id) != local_id and str(store_id) in ids and store.is_healthy
         )
-
-
-def _require_normal_build_mode(build_mode: int) -> None:
-    if build_mode == BuildMode.NORMAL:
-        return
-    try:
-        name = BuildMode(build_mode).name
-    except ValueError:
-        name = f"unknown({build_mode})"
-    raise RuntimeError(f"pynixd goal system only supports BuildMode.NORMAL for now; got {name}")

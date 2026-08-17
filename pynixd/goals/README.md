@@ -31,8 +31,16 @@ slow side effects are still deduplicated globally at the operation that matters.
 - `build_paths_with_results()` creates a `BuildPathsWithResultsGoal`.
 - `query_missing()` creates a `QueryMissingPlanGoal`.
 
-Only `BuildMode.NORMAL` is supported for goal-driven builds right now. Other
-modes fail early with a clear error.
+**The goal system runs `BuildMode.NORMAL` alone. A check and a repair go
+straight to the local store.** `GoalEngine._straight_to_the_store` sends the
+request on the wire and reads the answer, and no goal runs.
+
+`nix build --rebuild` sends `CHECK`, `--repair` sends `REPAIR`, and
+`nix-store --realise --check`, `--repair-path` and `--verify --repair` send
+those two as well. Neither mode is a build that pynixd can schedule: a check
+builds the derivation again in the same store and compares the two outputs, a
+repair reads the closure and rewrites what is corrupt. A second builder
+answers no part of either one.
 
 ## Mutating Build Flow
 
