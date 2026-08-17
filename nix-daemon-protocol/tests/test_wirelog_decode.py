@@ -205,6 +205,64 @@ async def test_a_feature_that_pynixd_adds_is_exempt(workdir):
 
 
 @pytest.mark.anyio
+async def test_a_log_line_that_only_one_side_wrote_is_a_difference(workdir):
+    """A person reads these lines, so a line that one side dropped is a change."""
+    control = await decode(await build_tape(workdir / "a.wire", logs=("deleting garbage...", "deleting 'x'")))
+    candidate = await decode(await build_tape(workdir / "b.wire", logs=("deleting garbage...",)))
+
+    differences = compare(control, candidate)
+
+    assert len(differences) == 1
+    assert differences[0].where == "operation 0 IsValidPath logs"
+    assert "deleting 'x'" in differences[0].control
+    assert differences[0].candidate == "[]"
+
+
+@pytest.mark.anyio
+async def test_a_note_that_pynixd_writes_about_itself_is_exempt(workdir):
+    """Section 3 of `pynixd/CLAUDE.md` asks pynixd for these lines."""
+    control = await decode(await build_tape(workdir / "a.wire", logs=("deleting garbage...",)))
+    candidate = await decode(
+        await build_tape(
+            workdir / "b.wire",
+            logs=("pynixd: IsValidPath (SQLite hit)", "deleting garbage...", "pynixd: starting build on local"),
+        )
+    )
+
+    assert compare(control, candidate) == []
+
+
+@pytest.mark.anyio
+async def test_a_stale_temporary_root_line_is_exempt(workdir):
+    """The line names a pid, and the two runs have two process histories."""
+    control = await decode(
+        await build_tape(workdir / "a.wire", logs=('removing stale temporary roots file "/x/temproots/11"',))
+    )
+    candidate = await decode(
+        await build_tape(
+            workdir / "b.wire",
+            logs=(
+                'removing stale temporary roots file "/x/temproots/22"',
+                'removing stale temporary roots file "/x/temproots/33"',
+            ),
+        )
+    )
+
+    assert compare(control, candidate) == []
+
+
+@pytest.mark.anyio
+async def test_the_same_lines_in_another_order_say_so(workdir):
+    control = await decode(await build_tape(workdir / "a.wire", logs=("one", "two")))
+    candidate = await decode(await build_tape(workdir / "b.wire", logs=("two", "one")))
+
+    differences = compare(control, candidate)
+
+    assert len(differences) == 1
+    assert differences[0].where == "operation 0 IsValidPath logs (a different order)"
+
+
+@pytest.mark.anyio
 async def test_a_response_that_stops_early_names_its_operation(workdir):
     """The watchdog kills a run, and the recording then ends anywhere."""
     whole = (await build_tape(workdir / "a.wire")).read_bytes()

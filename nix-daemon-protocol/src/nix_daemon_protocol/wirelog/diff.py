@@ -6,18 +6,20 @@ contract, the two recordings agree.
 
 ## What may differ, and why
 
-pynixd is not a copy of `nix-daemon`, and four differences are on purpose.
-Each one is an entry of `EXEMPTIONS`, each entry states its reason, and the
-report says which entry it applied. A difference that no entry covers is a
-finding.
+pynixd is not a copy of `nix-daemon`, and each difference that is on purpose
+is an entry of `EXEMPTIONS`. Each entry states its reason, and the report says
+which entry it applied. A difference that no entry covers is a finding.
 
-**The comparison does not read the log messages, and that is a gap.** pynixd
-writes lines of its own -- "pynixd: starting build on local at ..." -- and it
-writes them at its own times, so a comparison of the text would report a
-difference for every build. A log that only one side wrote is still a real
-change for a person who reads the output, so this is worth doing later, with
-the timestamps and the "pynixd: " lines taken out first. `Operation.logs`
-holds the text, and it waits for that work.
+**The comparison reads the log messages as well as the answers.** A person
+reads those lines, so a line that only one of the two wrote is a change even
+when every byte of the answer agrees. Two kinds of line are exempt, and
+`EXEMPTIONS` gives the reason for each: a line that pynixd writes about
+itself, and the "removing stale temporary roots file" line, whose pid differs
+between any two runs.
+
+The comparison reads `STDERR_NEXT` alone. The activities -- `STDERR_START_ACTIVITY`,
+`STDERR_RESULT` and the rest -- carry the progress bar of `nix build`, and the
+decoder drops them. That is the gap that remains.
 
 Issue #175.
 """
@@ -76,6 +78,22 @@ EXEMPTIONS: tuple[Exemption, ...] = (
         reason=(
             "pynixd answers TRUSTED to a client of its Unix socket, because that client "
             "reached a socket that pynixd owns. A daemon decides from the user."
+        ),
+    ),
+    Exemption(
+        field="logs.pynixd_note",
+        reason=(
+            "A log line that starts with `pynixd: ` is a note of pynixd about itself, "
+            "and the daemon writes none. Section 3 of `pynixd/CLAUDE.md` asks for these: "
+            "a cached answer says so, and a build says where it goes."
+        ),
+    ),
+    Exemption(
+        field="logs.stale_temp_root",
+        reason=(
+            "`removing stale temporary roots file` names the pid of a worker that ended. "
+            "The two runs have two process histories, so the pid and the number of such "
+            "lines differ between any two runs and say nothing about pynixd."
         ),
     ),
 )
@@ -192,6 +210,39 @@ def _compare_response(where: str, control: Operation, candidate: Operation) -> l
     return found
 
 
+PYNIXD_NOTE = "pynixd: "
+STALE_TEMP_ROOT = "removing stale temporary roots file"
+
+
+def _readable_logs(logs: tuple[str, ...]) -> tuple[str, ...]:
+    """The log lines that a comparison reads, with the exempt ones taken out.
+
+    Two rules, and `EXEMPTIONS` holds the reason for each. Both rules apply to
+    both sides: a daemon writes neither kind of line, so dropping the line
+    from the control side as well changes nothing and keeps the rule one rule.
+    """
+    return tuple(line for line in logs if not line.startswith(PYNIXD_NOTE) and STALE_TEMP_ROOT not in line)
+
+
+def _compare_logs(where: str, control: Operation, candidate: Operation) -> list[Difference]:
+    """The log messages of one operation, line by line.
+
+    `nix-daemon` writes these as `STDERR_NEXT`, and a person reads them. A
+    line that only one of the two wrote is a change to that person even when
+    every byte of the answer agrees, so the comparison reads them.
+    """
+    one = _readable_logs(control.logs)
+    two = _readable_logs(candidate.logs)
+    if one == two:
+        return []
+
+    only_control = [line for line in one if line not in two]
+    only_candidate = [line for line in two if line not in one]
+    if not only_control and not only_candidate:
+        return [Difference(f"{where} logs (a different order)", repr(one), repr(two))]
+    return [Difference(f"{where} logs", repr(only_control), repr(only_candidate))]
+
+
 def _compare_operation(control: Operation, candidate: Operation) -> list[Difference]:
     where = f"operation {control.index} {control.name}"
     found: list[Difference] = []
@@ -211,6 +262,7 @@ def _compare_operation(control: Operation, candidate: Operation) -> list[Differe
         found.extend(_compare_response(where, control, candidate))
     if (control.error is None) != (candidate.error is None):
         found.append(Difference(f"{where} error", repr(control.error), repr(candidate.error)))
+    found.extend(_compare_logs(where, control, candidate))
     return found
 
 

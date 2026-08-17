@@ -89,7 +89,7 @@ class Operation:
     """The bytes after `STDERR_LAST`. Empty when the daemon reported an error."""
 
     logs: tuple[str, ...]
-    """The text of each `STDERR_NEXT`. A comparison does not read these."""
+    """The text of each `STDERR_NEXT`. `diff._compare_logs` reads these."""
 
     error: str | None
     """The message of `STDERR_ERROR`, or None."""
@@ -144,7 +144,8 @@ def _flatten(value: object, prefix: str, out: dict[str, str]) -> None:
         for name in type(value).model_fields:
             if name == "logs":
                 # The stream of log messages, which the decoder already read
-                # and which the comparison does not compare.
+                # into `Operation.logs`. `diff._compare_logs` reads it there,
+                # so a copy here would report each difference twice.
                 continue
             _flatten(getattr(value, name), f"{prefix}.{name}" if prefix else name, out)
         return
