@@ -82,6 +82,26 @@ run, so the file has to leave in the same invocation:
 A path with no leading `/` is relative to the work directory. Give the option
 again for a second file.
 
+**`--nix-version` picks which Nix the suite measures.** `nix_2_34` is the
+default, because `supportedNixFloor` in `default.nix` names 2.34 as the floor
+of this repository. `nix_2_35` and `git` are the other two.
+
+```sh
+./pynixd/nix/functional-tests/nixft.sh --nix-version nix_2_35 \
+    --work /scratch/nixft-235 all --suite ca
+```
+
+**2.35 is the only arm that can see the gap of issue #162.** The protocol
+number stopped at 1.38 and each new capability is a feature name; 2.34 offers
+none of them, so a run against 2.34 measures nothing about the features that
+`DrvOutput` and `UnkeyedRealisation` now hang on. 2.35 offers
+`realisation-with-path-not-hash`, so it is the version that reads what pynixd
+does with a peer that names it.
+
+Give a separate `--work` for each version. The work directory holds the
+checked-out test scripts of one Nix, and `setup` runs only when the build
+directory is absent.
+
 **Keep the work directory outside `$HOME`.** One run of `all --suite ca` under
 each of two paths, same checkout and same suite:
 

@@ -43,6 +43,15 @@
 #   --dump PATH   write this file of the builder to the terminal after the
 #                 command. Give the option again for a second file. A path
 #                 with no leading `/` is relative to the work directory.
+#   --nix-version V
+#                 the attribute of `nixFunctionalTests` to run, such as
+#                 `nix_2_34` (the default), `nix_2_35` or `git`. 2.34 is the
+#                 floor of this repository, so the default measures the floor.
+#                 2.35 offers the protocol features that 2.34 does not, so it
+#                 is the only arm that can see the gap of issue #162. Give a
+#                 separate `--work` for each version: the work directory holds
+#                 the checked-out test scripts of one Nix, and `setup` runs
+#                 only when the build directory is absent.
 #
 # **`--dump` is how a debug line of pynixd reaches this host.**
 # `meson test --print-errorlogs` prints the tail of the log of a failed test
@@ -63,6 +72,7 @@ LOG_LEVEL=-
 # A colon separates the names, because the list travels as one argument and a
 # path of the builder holds no colon.
 DUMP=-
+NIX_VERSION=-
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 
 while (( $# > 0 )); do
@@ -72,6 +82,7 @@ while (( $# > 0 )); do
         --repo) REPO=$2; shift 2 ;;
         --log-level) LOG_LEVEL=$2; shift 2 ;;
         --dump) if [[ "$DUMP" == "-" ]]; then DUMP=$2; else DUMP=$DUMP:$2; fi; shift 2 ;;
+        --nix-version) NIX_VERSION=$2; shift 2 ;;
         --) shift; break ;;
         *) break ;;
     esac
@@ -124,7 +135,8 @@ for (( attempt = 1; attempt <= TRIES; attempt++ )); do
     say "attempt $attempt of $TRIES: $*"
     # `|| true`, because the exit code of the transport says only whether the
     # command reached the end. The sentinel below is the answer.
-    vzrun bash "$remote" "$src" "$WORK" "$git_cache" "$fetch_cache" "$LOG_LEVEL" "$DUMP" "$@" \
+    vzrun bash "$remote" "$src" "$WORK" "$git_cache" "$fetch_cache" "$LOG_LEVEL" "$DUMP" \
+        "$NIX_VERSION" "$@" \
         2>&1 | tee "$log" || true
 
     sentinel=$(grep -E '^NIXFT-DONE [0-9]+$' "$log" | tail -1 || true)

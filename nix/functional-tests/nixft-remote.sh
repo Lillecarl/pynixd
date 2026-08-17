@@ -19,6 +19,8 @@
 #   LOG_LEVEL    the log level of pynixd, or `-` for the default
 #   DUMP         files to write to stdout after the command, `:` between
 #                them, or `-`. A relative name goes under the work directory.
+#   NIX_VERSION  the attribute of `nixFunctionalTests` to build, such as
+#                `nix_2_34`, `nix_2_35` or `git`, or `-` for the default.
 #   ...          the arguments of the runner, for example `pynixd --suite ca`
 #
 # The last line it writes is `NIXFT-DONE <code>`. The host reads that line to
@@ -32,7 +34,16 @@ GIT_CACHE=$3
 FETCH_CACHE=$4
 LOG_LEVEL=$5
 DUMP=$6
-shift 6
+NIX_VERSION=$7
+shift 7
+
+# **2.34 is the floor of this repository, and the suite measures the floor.**
+# `supportedNixFloor` in `default.nix` names it. A run against another version
+# measures something else on purpose: 2.35 offers the protocol features that
+# 2.34 does not, so it is the only arm that can see the gap of issue #162.
+if [[ "$NIX_VERSION" == "-" ]]; then
+    NIX_VERSION=nix_2_34
+fi
 
 # **`WARNING` is the default, and a debug run is how a goal question gets an
 # answer.** `build_waits_for_a_local_slot` and `build_assigned_to_store` are
@@ -160,9 +171,9 @@ seed_the_fetch_cache
 # next step needs. `FLAKE_COMPATISH_DISABLE_OVERRIDES=1` makes this evaluation
 # agree with a flake evaluation: it reads the lockfile rather than the local
 # checkout.
-say "building the runner from $SRC"
+say "building the runner for $NIX_VERSION from $SRC"
 if ! runner=$(FLAKE_COMPATISH_DISABLE_OVERRIDES=1 \
-    nix build --file "$SRC" nixFunctionalTests.nix_2_34 \
+    nix build --file "$SRC" "nixFunctionalTests.$NIX_VERSION" \
     --no-link --print-out-paths 2>&1 | tail -1); then
     say "the runner did not build"
     echo "NIXFT-DONE 3"
