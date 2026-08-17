@@ -157,6 +157,7 @@ def impure_expr(counter: Path) -> str:
 
     `__impure` makes it impure, so the output path comes from what the build
     wrote and every build writes something else.
+
     """
     return f"""
 derivation {{
@@ -347,6 +348,28 @@ async def _modes(run: Runner, root: Path, work: Path) -> None:
         await run(words)
 
 
+async def _substitute(run: Runner, root: Path, work: Path) -> None:
+    """Copy a build to a binary cache, delete it, and get it back.
+
+    `ca:build-cache` and `ca:issue-13247` of the functional suite do this with
+    a content-addressed derivation. `--max-jobs 0` states the rule: the second
+    build must take every path from the cache, and a build there is a defect.
+
+    A content-addressed output needs its realisation in the cache as well, and
+    `nix copy` writes one only when the command names the installable. So this
+    copies the expression, and not the output path.
+    """
+    del work
+    cache = f"file://{root}/cache"
+    substitute = ["--substituters", cache, "--no-require-sigs", "--max-jobs", "0", "--substitute"]
+    for expr, extra in ((DERIVATION, []), (CONTENT_ADDRESSED, CA_FLAGS)):
+        await run([str(NIX), "build", "--impure", "--no-link", "--json", *extra, "--expr", expr])
+        await run([str(NIX), "copy", "--to", cache, "--impure", *extra, "--expr", expr])
+        await run([str(NIX), "store", "gc"])
+        await run([str(NIX), "build", "--impure", "--no-link", "--json", *extra, *substitute, "--expr", expr])
+        await run([str(NIX), "store", "gc"])
+
+
 async def _impure(run: Runner, root: Path, work: Path) -> None:
     """An impure derivation builds every time, and the counter proves it.
 
@@ -428,8 +451,18 @@ async def clean_base() -> AsyncIterator[None]:
 
 @pytest.mark.parametrize(
     "workload",
-    [_builds, _queries, _modes, _impure],
-    ids=["builds", "queries", "modes", "impure"],
+    [
+        _builds,
+        _queries,
+        _modes,
+        _impure,
+        # **Issue #187.** pynixd reads the substituters of its own
+        # configuration alone, so it answers `willBuild` where `nix-daemon`
+        # answers `willSubstitute`, and it then builds. `strict`, so the
+        # marker goes away with the correction and does not hide it.
+        pytest.param(_substitute, marks=pytest.mark.xfail(strict=True, reason="issue #187")),
+    ],
+    ids=["builds", "queries", "modes", "impure", "substitute"],
 )
 @pytest.mark.usefixtures("clean_base")
 async def test_the_two_daemons_answer_the_same_bytes(workload: Workload) -> None:
