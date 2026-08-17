@@ -375,6 +375,32 @@ class TestOutputClassification:
         assert parsed.selected_output_paths({"dev"}) == {"dev": StorePath("/nix/store/a-dev")}
         assert parsed.selected_output_paths({"*"}) == parsed.output_paths()
 
+    def test_an_impure_derivation_registers_no_realisation(self):
+        """Nix guards the registration, at `derivation-goal.cc:226`.
+
+        Every build of an impure derivation makes a new output, so one id
+        cannot hold two. The daemon answers "Trying to register a realisation
+        of '...', but we already have another one locally", and the connection
+        goes out of the pool as dirty.
+
+        An impure output names no path, which is the rule that
+        `needs_realisations` reads, so the answer needs the exception.
+        """
+        parsed = Derivation(
+            outputs=[DrvOutput(output_name="out", path="", hash_algo="r:sha256", hash_value="impure")],
+        )
+
+        assert all(not output.path for output in parsed.outputs)
+        assert parsed.needs_realisations is False
+
+    def test_a_floating_output_does_register_a_realisation(self):
+        parsed = Derivation(
+            outputs=[DrvOutput(output_name="out", path="", hash_algo="r:sha256", hash_value="")],
+        )
+
+        assert parsed.output_kinds() == [OutputKind.CA_FLOATING]
+        assert parsed.needs_realisations is True
+
     def test_an_impure_output_is_impure_and_not_fixed(self):
         """`("out","","r:sha256","impure")` is what Nix writes for one.
 
@@ -390,7 +416,6 @@ class TestOutputClassification:
         assert parsed.output_kinds() == [OutputKind.IMPURE]
         assert parsed.is_impure
         assert not parsed.is_fixed_output
-        assert parsed.needs_realisations
 
     def test_a_fixed_output_derivation_is_fixed(self):
         parsed = Derivation(

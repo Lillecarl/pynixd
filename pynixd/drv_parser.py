@@ -251,9 +251,19 @@ class Derivation:
 
         So this asks the derivation instead. An output with no path is the one
         case that needs the feature, and no such derivation exists while the
-        feature is off. A floating content-addressed output names no path, a
-        deferred output names none either, and an impure output names none.
-        An input-addressed output and a fixed-output one both name theirs.
+        feature is off. A floating content-addressed output names no path, and
+        a deferred output names none either. An input-addressed output and a
+        fixed-output one both name theirs.
+
+        **An impure derivation is the exception, and it names no path.** Nix
+        guards the registration with `if (!drv->type().isImpure())` at
+        `derivation-goal.cc:226`, because every build of an impure derivation
+        makes a new output and one id cannot hold two. pynixd registered one
+        anyway, and the daemon answered "Trying to register a realisation of
+        '...', but we already have another one locally". The refusal made the
+        connection dirty, so the pool discarded it and the temporary roots it
+        held stayed in the file. `main:impure-derivations` reaches line 50 of
+        its script with this corrected, and it stopped at line 36 before.
 
         **The question is about the original derivation, and not the resolved
         one.** pynixd fills in a deferred output before it sends the
@@ -263,6 +273,8 @@ class Derivation:
         original leaves open. `ca:build` builds `dependentNonCA`, which is
         that derivation.
         """
+        if self.is_impure:
+            return False
         return any(not output.path for output in self.outputs)
 
     @property
