@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from ..drv_parser import Derivation
     from .build_derivation import BuildDerivationGoal
     from .engine import GoalEngine
+    from .results import DynamicPathMap
 
 log = structlog.get_logger(__name__)
 
@@ -175,8 +176,8 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         needs_resolution = _needs_placeholder_resolution(parsed)
         if parsed.dynamic_input_drvs and dynamic_paths:
             basic = resolve_dynamic_derivation(parsed, domain_drv_path, dynamic_paths)
-        elif dynamic_paths and needs_resolution:
-            basic = resolve_derivation(parsed, domain_drv_path, dynamic_paths)
+        elif needs_resolution and parsed.input_drvs:
+            basic = resolve_derivation(parsed, domain_drv_path, await self._input_paths(parsed, dynamic_paths))
         else:
             basic = await to_basic_derivation(parsed, store_path)
 
@@ -213,6 +214,33 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         result = result.with_dynamic_outputs(self.derived_path.base_store_path())
         result.result = _only_wanted_outputs(result.result, selected_outputs)
         return result
+
+    async def _input_paths(self, parsed: Derivation, dynamic_paths: DynamicPathMap) -> DynamicPathMap:
+        """Name the store path of each output of each input derivation.
+
+        `resolve_derivation` needs one path for each of them, and a child goal
+        gives a path only for the outputs that it built.
+        `_input_outputs_requiring_goals` starts no goal for an output that is
+        valid already, and a content-addressed input has no path in its own
+        derivation. So neither source answers alone.
+        """
+        answer: DynamicPathMap = {}
+        for input_drv_path, output_names in parsed.input_drvs.items():
+            drv_path = StorePath(input_drv_path)
+            static: dict[str, StorePath] | None = None
+            for output_name in output_names:
+                key = (drv_path, output_name)
+                built = dynamic_paths.get(key)
+                if built is not None:
+                    answer[key] = built
+                    continue
+                if static is None:
+                    input_parsed = await self.engine.ctx.local_store.read_derivation(str(drv_path))
+                    static = input_parsed.output_paths() if input_parsed is not None else {}
+                path = static.get(output_name)
+                if path:
+                    answer[key] = path
+        return answer
 
     async def _realise_input_derivations(self, parsed) -> list[GoalResult]:
         child_goals: list[EnsureDerivedPathGoal] = []
@@ -398,6 +426,23 @@ def _only_wanted_outputs(result: BuildResult, wanted: set[str]) -> BuildResult:
 
 
 def _needs_placeholder_resolution(parsed) -> bool:
+    """True when the derivation must be resolved before the daemon builds it.
+
+    `Derivation::shouldResolve` of Nix answers the same question, at
+    `derivations.cc:1129`. A deferred output must resolve, a floating
+    content-addressed output must resolve, and an input of a dynamic
+    derivation must resolve. An output of the first two kinds names no path,
+    so `output.path == "" and output.hash_value == ""` states both.
+
+    Only the deferred kind was here. A floating output therefore went to
+    `to_basic_derivation`, which moves paths and rewrites no placeholder, so
+    the builder read `${placeholder-of-the-input}/foo` and found nothing. The
+    same function also drops an input whose derivation names no path, so the
+    input was not even in `inputSrcs`. Issue #183.
+
+    An impure output writes `hash_value` as `impure`, so this does not see it,
+    and `main:impure-derivations` still fails.
+    """
     if parsed.dynamic_input_drvs:
         return True
-    return any(output.path == "" and output.hash_algo == "" and output.hash_value == "" for output in parsed.outputs)
+    return any(output.path == "" and output.hash_value == "" for output in parsed.outputs)

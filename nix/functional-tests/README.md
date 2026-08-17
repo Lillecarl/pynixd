@@ -146,8 +146,8 @@ the two daemons: they add the same path at two times.
 the GC tests read that as a defect.** Issue #174 records the decision: a
 long-lived daemon that holds a path is not a fault, and `max_lifetime` bounds
 how long it lasts. `simple`, `gc`, `ca/gc`, `dependencies`, `build-delete`,
-`gc-concurrent`, `optimise-store` and `selfref-gc` differ for this reason and
-will keep differing.
+`gc-concurrent`, `optimise-store`, `multiple-outputs` and `selfref-gc` differ
+for this reason and will keep differing.
 
 The first run of this mode found issue #177: `BuildPaths` answered a status
 where Nix answers a constant `1`, so a failed build read as a successful one.
@@ -162,18 +162,17 @@ with the relocated store layout that the suite itself sets.
 | run     | OK  | FAIL | SKIP |
 | ------- | --- | ---- | ---- |
 | control | 149 | 22   | 36   |
-| pynixd  | 116 | 57   | 34   |
+| pynixd  | 118 | 54   | 35   |
 
-**33 regressions**: a test that the control passes and pynixd fails. 12 in the
+**31 regressions**: a test that the control passes and pynixd fails. 10 in the
 `ca` suite, 2 in `flakes`, 2 in `dyn-drv`, and 17 in `main`.
 
 Removing the layout patch of #176 moved `nix-channel` from FAIL to OK in the
 control run, so that patch was breaking a test of Nix on its own.
 `nested-sandboxing` still fails, and its cause is not the layout.
 
-The count was 40 before issues #178, #179, #180 and #182. Each one is below.
-The `ca` line of the count comes from a run of that suite alone, and the whole
-suite has not run again since #182.
+The count was 40 before issues #178, #179, #180, #182 and #183. Each one is
+below.
 
 ### The 22 control failures
 
@@ -245,10 +244,16 @@ Assertion 'maybeOutputPath' failed at nix-build.cc:730       (4 tests)
 ```
 
 Issue #182 gives each id its original hash again, as Nix does at
-`derivation-goal.cc:193-236`. Both assertions are gone. The `ca` suite moved
-from 5 OK / 16 FAIL to 7 OK / 13 FAIL, against a control of 19 OK / 1 FAIL, so
-the regressions of that suite went from 14 to 12. Each test that an assertion
-killed reaches a later line now.
+`derivation-goal.cc:193-236`. Both assertions are gone, and each test that
+they killed reaches a later line now.
+
+Issue #183 is the other half. `Derivation::shouldResolve` at
+`derivations.cc:1129` states which derivations Nix resolves before it builds
+them, and pynixd asked a narrower question: a deferred output alone. A
+floating content-addressed output therefore went unresolved, so the builder
+read a `DownstreamPlaceholder` as a path and the input was not in `inputSrcs`.
+
+The two together took the `ca` regressions from 14 to 10.
 
 ## The store of each test
 
