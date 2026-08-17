@@ -12,7 +12,7 @@ and that is a statement about the bytes. A script of the functional suite says
 "pass" or "fail" for reasons that are not the wire, and it needs Linux and a
 builder. This needs neither, so it runs in the dev shell on any host.
 
-It found two defects in its first two runs:
+It found three defects:
 
 1. `nix store add-file` and then `nix store gc` deleted the file against
    `nix-daemon`, and deleted nothing against pynixd. An idle pooled connection
@@ -23,11 +23,17 @@ It found two defects in its first two runs:
    digest alone. The fast path of pynixd read the `narHash` column of the
    database, which carries the name of the algorithm, and the wire does not.
    No client complained, because `Hash::parseAny` reads both forms.
+3. The second build of a content-addressed derivation answered
+   `willBuild: [cad.drv]` to `QueryMissing`, and `nix-daemon` answers an
+   empty set. The client then took a different code path, so every operation
+   after it differed too. `pynixd/goals/realisations.py` holds the rule.
 
-**The workload builds.** One derivation, with `/bin/sh` as the builder, twice,
-and a garbage collection after it. So `BuildPathsWithResults`, the temporary
-roots that a build makes, and the answer that a second build of the same
-derivation gives are all in the comparison.
+**The workload builds.** Four derivations, with `/bin/sh` as the builder: one
+plain one twice, one with two outputs, one that fails, and one that is
+content-addressed twice. A garbage collection follows each group. So
+`BuildPathsWithResults`, the temporary roots that a build makes, a failure,
+and the answer that a second build of the same derivation gives are all in
+the comparison.
 
 Issue #175.
 """
@@ -65,8 +71,8 @@ TEMP_ROOT = Path("/private/tmp") if Path("/private/tmp").is_dir() else Path("/tm
 BASE = TEMP_ROOT / "pynixd-wire-parity"
 SOCKET_WAIT = 30.0
 
-# One derivation that builds anywhere. `/bin/sh` is the builder, so the store
-# needs no `bash` in it and the workload needs no channel.
+# Each derivation builds anywhere. `/bin/sh` is the builder, so the store needs
+# no `bash` in it and the workload needs no channel.
 DERIVATION = """
 derivation {
   name = "probe";
@@ -75,6 +81,44 @@ derivation {
   args = [ "-c" "echo hi > $out" ];
 }
 """
+
+# Two outputs, so `BuildPathsWithResults` answers more than one path and the
+# temporary roots of the build cover both.
+MULTI = """
+derivation {
+  name = "multi";
+  system = builtins.currentSystem;
+  builder = "/bin/sh";
+  outputs = [ "out" "dev" ];
+  args = [ "-c" "echo a > $out; echo b > $dev" ];
+}
+"""
+
+# A build that fails. The two daemons must report the failure the same way.
+FAILS = """
+derivation {
+  name = "fails";
+  system = builtins.currentSystem;
+  builder = "/bin/sh";
+  args = [ "-c" "exit 3" ];
+}
+"""
+
+# A content-addressed derivation, which names no output path. The second build
+# of it is the one that matters: the store then holds a realisation, and
+# `QueryMissing` has to read that realisation to know the output is there.
+CONTENT_ADDRESSED = """
+derivation {
+  name = "cad";
+  system = builtins.currentSystem;
+  builder = "/bin/sh";
+  args = [ "-c" "echo ca > $out" ];
+  __contentAddressed = true;
+  outputHashMode = "recursive";
+  outputHashAlgo = "sha256";
+}
+"""
+CA_FLAGS = ["--extra-experimental-features", "ca-derivations"]
 
 
 def _config(work: Path, root: Path) -> Path:
@@ -181,6 +225,11 @@ async def _record(role: str, root: Path) -> Path:
             ["build", "--impure", "--no-link", "--json", "--expr", DERIVATION],
             ["build", "--impure", "--no-link", "--json", "--expr", DERIVATION],
             ["path-info", "--json", "--impure", "--expr", DERIVATION],
+            ["store", "gc"],
+            ["build", "--impure", "--no-link", "--json", "--expr", MULTI],
+            ["build", "--impure", "--no-link", "--json", "--expr", FAILS],
+            ["build", "--impure", "--no-link", "--json", "--expr", CONTENT_ADDRESSED, *CA_FLAGS],
+            ["build", "--impure", "--no-link", "--json", "--expr", CONTENT_ADDRESSED, *CA_FLAGS],
             ["store", "gc"],
         ):
             # A command may fail, and a failure is a fine thing to record: the
