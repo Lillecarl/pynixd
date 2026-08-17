@@ -412,12 +412,16 @@ same checkout:
 | the claim             | 15 | 5    | 4    | 4           |
 | the built-output key  | 16 | 4    | 4    | 3           |
 | the early cut-off     | 17 | 3    | 4    | 2           |
+| the path spelling     | 18 | 2    | 4    | 1           |
 
 The control answers 19 OK / 1 FAIL / 4 SKIP at every one of them.
 
-The two left are `ca:build-cache` and `ca:new-build-cmd`. The second is a
-regression against 2.34 as well, and issue #196 holds it, so one belongs to
-the feature work.
+**The two arms agree now.** The one regression left is `ca:new-build-cmd`,
+and it is the same regression that 2.34 has, which issue #196 holds. So the
+feature work of issue #162 costs nothing that the floor does not cost too.
+
+Run both arms after a change to a codec. They should give the same two
+numbers, and a difference between them is the report.
 
 **The floor did not move.** The same suite against 2.34 answers control
 19/1/4 and pynixd 18/2/4 after the claim, which is the number above it. Run
