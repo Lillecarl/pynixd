@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import anyio
@@ -21,6 +22,7 @@ from pynixd.serde import (
     BuildResultStatus,
     DerivedPath as SerdeDerivedPath,
 )
+from pynixd.serde.ids import LOCAL_STORE_ID, StoreId
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -55,6 +57,9 @@ class FakeEnsureGoal(Goal[GoalResult]):
 class FakeEngine:
     def __init__(self, goals: dict[str, FakeEnsureGoal]) -> None:
         self.goals = goals
+        # A backend is present, so `max-jobs` of the client does not reach the
+        # loop of the root goals. `_build_slots` gives the reason. Issue #190.
+        self.ctx = SimpleNamespace(stores={LOCAL_STORE_ID: object(), StoreId("builder"): object()})
 
     def substituter_ids(self) -> tuple[str, ...]:
         return ()
