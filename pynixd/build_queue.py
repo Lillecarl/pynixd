@@ -258,19 +258,30 @@ class QueuedBuild:
         Replays the full logged history so far, then the client
         receives new entries in real-time via post_log_bytes.
         If replay fails (broken connection), the subscriber is not added.
+
+        **One client subscribes many times to one build, and the replay runs
+        once.** A build is shared: a client asks for it as a root goal, and it
+        asks for it again as the input derivation of another goal. The count
+        in `_subscriber_refs` stopped the fan-out of a new line to that client
+        twice, and it did not stop the replay. Each further subscription sent
+        the whole log again, so the client printed the error of one build two
+        or three times. `build.sh:167` of the functional suite counts the
+        `error:` lines. Issue #196.
         """
         async with self._sub_lock:
             if cancel_on_unsubscribe:
                 self.cancel_when_unsubscribed = True
+            if client in self._subscriber_refs:
+                self._subscriber_refs[client] += 1
+                return
             if self._log_writer.tell():
                 try:
                     await client.send_raw(self._log_writer.get_bytes())
                 except (OSError, BrokenPipeError, ConnectionResetError):
                     log.debug("subscriber_replay_failed", build_id=self.build_id)
                     return
-            if client not in self._subscriber_refs:
-                self.subscribers.append(client)
-            self._subscriber_refs[client] = self._subscriber_refs.get(client, 0) + 1
+            self.subscribers.append(client)
+            self._subscriber_refs[client] = 1
 
     async def remove_subscriber(self, client: ClientConn) -> bool:
         """Remove one subscription reference for a client.
