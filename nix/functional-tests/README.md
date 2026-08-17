@@ -162,16 +162,18 @@ with the relocated store layout that the suite itself sets.
 | run     | OK  | FAIL | SKIP |
 | ------- | --- | ---- | ---- |
 | control | 149 | 22   | 36   |
-| pynixd  | 114 | 59   | 34   |
+| pynixd  | 116 | 57   | 34   |
 
-**35 regressions**: a test that the control passes and pynixd fails. 14 in the
+**33 regressions**: a test that the control passes and pynixd fails. 12 in the
 `ca` suite, 2 in `flakes`, 2 in `dyn-drv`, and 17 in `main`.
 
 Removing the layout patch of #176 moved `nix-channel` from FAIL to OK in the
 control run, so that patch was breaking a test of Nix on its own.
 `nested-sandboxing` still fails, and its cause is not the layout.
 
-The count was 40 before issues #178, #179 and #180. Each one is below.
+The count was 40 before issues #178, #179, #180 and #182. Each one is below.
+The `ca` line of the count comes from a run of that suite alone, and the whole
+suite has not run again since #182.
 
 ### The 22 control failures
 
@@ -229,6 +231,24 @@ when it still fails.
 above. `nix store delete --ignore-liveness` cannot delete a path that a temp
 root holds: `collectGarbage` of Nix reads the temp roots whatever that option
 says. Add it to the list of GC tests above.
+
+### The `ca` suite, and one id
+
+pynixd resolves a derivation before it sends it, and the daemon then hashes a
+different ATerm. Each realisation came back under that other hash, so the
+client asked for the original id and found nothing. Nine of sixteen failures
+were two assertions of Nix, and both stopped the program:
+
+```
+Assertion 'thisRealisation' failed at built-path.cc:122      (5 tests)
+Assertion 'maybeOutputPath' failed at nix-build.cc:730       (4 tests)
+```
+
+Issue #182 gives each id its original hash again, as Nix does at
+`derivation-goal.cc:193-236`. Both assertions are gone. The `ca` suite moved
+from 5 OK / 16 FAIL to 7 OK / 13 FAIL, against a control of 19 OK / 1 FAIL, so
+the regressions of that suite went from 14 to 12. Each test that an assertion
+killed reaches a later line now.
 
 ## The store of each test
 

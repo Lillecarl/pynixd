@@ -8,9 +8,11 @@ from typing import TYPE_CHECKING
 import anyio
 import structlog
 
+from ..drv_hash import output_hashes
 from ..serde import (
     BuildDerivationRequest,
     BuildResultStatus,
+    DrvOutput,
     IsValidPathRequest,
     OutputKind,
     RegisterDrvOutputRequest,
@@ -21,7 +23,10 @@ from .goal import ExecutionGoal
 from .results import GoalResult, goal_failure
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from ..connection import ClientConn
+    from ..serde import Realisation
     from ..serde.ids import BuildId
     from .engine import GoalEngine
 
@@ -106,7 +111,11 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
                 produced.add(path)
 
         if response.result.built_outputs:
-            for key, realisation in response.result.built_outputs.items():
+            built_outputs = await self._under_the_original_id(response.result.built_outputs)
+            if built_outputs is not response.result.built_outputs:
+                response.result = response.result.model_copy(update={"built_outputs": built_outputs})
+
+            for key, realisation in built_outputs.items():
                 output_name = realisation.id.output_name or key.split("!", 1)[-1]
                 if realisation.out_path:
                     path = StorePath(str(realisation.out_path)).with_store_prefix()
@@ -141,6 +150,52 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
             resolved_outputs=resolved,
             produced_paths=produced,
         )
+
+    async def _under_the_original_id(self, built: Mapping[str, Realisation]) -> Mapping[str, Realisation]:
+        """Give each realisation the id that the original derivation makes.
+
+        pynixd resolves a derivation before it sends it: `to_basic_derivation`
+        puts the output path of each input derivation into `inputSrcs` and
+        leaves `inputDrvs` empty. The daemon that builds it therefore reads a
+        different ATerm, so `staticOutputHashes` of the daemon answers a
+        different hash, and the daemon registers each realisation under that
+        hash. The client holds the original derivation and queries
+        `DrvOutput{staticOutputHashes(original)[name], name}`, at
+        `Store::queryPartialDerivationOutputMap` in `store-api.cc:406`. It
+        found no realisation, and `nix-build.cc:730` and `built-path.cc:122`
+        both stop the program with an assertion.
+
+        Nix makes the same correction. `DerivationGoal` builds the resolved
+        derivation and then re-registers each output under the hash of the
+        original one, at `derivation-goal.cc:193-236`. The signatures go,
+        because a signature covers the id. Issue #182.
+        """
+        parsed = await self.engine.ctx.local_store.read_derivation(str(self.request.drv_path))
+        if parsed is None:
+            return built
+        hashes = await output_hashes(parsed, self.engine.ctx.local_store.read_derivation)
+        if hashes is None:
+            return built
+
+        answer: dict[str, Realisation] = {}
+        changed = False
+        for key, realisation in built.items():
+            output_name = realisation.id.output_name or key.split("!", 1)[-1]
+            digest = hashes.get(output_name)
+            wanted = f"sha256:{digest}!{output_name}"
+            if digest is None or wanted == key:
+                answer[key] = realisation
+                continue
+            changed = True
+            answer[wanted] = realisation.model_copy(update={"id": DrvOutput(wanted), "signatures": []})
+            log.debug(
+                "realisation_rekeyed",
+                drv_path=str(self.request.drv_path),
+                output=output_name,
+                sent=key,
+                original=wanted,
+            )
+        return answer if changed else built
 
     async def _wait_for_local_paths(self, paths: set[StorePath]) -> None:
         if not paths:
