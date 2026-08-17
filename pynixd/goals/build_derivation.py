@@ -12,6 +12,7 @@ from ..serde import (
     BuildDerivationRequest,
     BuildResultStatus,
     IsValidPathRequest,
+    OutputKind,
     RegisterDrvOutputRequest,
     StorePath as SerdeStorePath,
 )
@@ -114,7 +115,7 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
 
         await self._wait_for_local_paths(produced)
 
-        if response.result.built_outputs:
+        if response.result.built_outputs and self._needs_realisations():
             for realisation in response.result.built_outputs.values():
                 if realisation.out_path is None:
                     continue
@@ -150,6 +151,26 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
             if all(valid_paths):
                 return
             await anyio.sleep(0.05)
+
+    def _needs_realisations(self) -> bool:
+        """True when this derivation has an output that has a realisation.
+
+        A realisation belongs to `ca-derivations`, and only a floating output
+        or a deferred one uses it. An input-addressed output has none, and a
+        fixed-output derivation has none either: its path comes from the hash
+        the derivation states, so it needs no map from a derivation output to a
+        store path.
+
+        pynixd sent `RegisterDrvOutput` for every output of every build. A
+        daemon with `ca-derivations` off answers "experimental Nix feature
+        'ca-derivations' is disabled" to each one, and pynixd then discards the
+        upstream connection as dirty. So an ordinary build made a failed
+        request and threw away a good connection.
+        """
+        return any(
+            output.kind in (OutputKind.CA_FLOATING, OutputKind.DEFERRED)
+            for output in self.request.derivation.outputs.values()
+        )
 
     async def _is_valid_local_path(self, path: StorePath) -> bool:
         response = await self.engine.ctx.local_store.execute(IsValidPathRequest(path=SerdeStorePath(path=str(path))))
