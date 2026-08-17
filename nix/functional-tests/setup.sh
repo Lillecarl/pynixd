@@ -42,7 +42,13 @@ insert_after() {
     mv "$file.new" "$file"
 }
 
-rm -rf "${WORK:?}"
+# A store path holds no write permission, so a plain `rm -rf` of a previous
+# run fails on the store of a test and `set -e` then ends this script. `run.sh`
+# and `init.sh` of Nix take the same two steps, for the same reason.
+if [[ -e "$WORK" ]]; then
+    chmod -R u+w "${WORK:?}"
+    rm -rf "${WORK:?}"
+fi
 mkdir -p "$WORK"
 # Nix refuses a store when a parent directory of it is a symbolic link, and it
 # says so: "the path ... is a symlink; this is not allowed for the Nix store

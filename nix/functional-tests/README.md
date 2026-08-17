@@ -47,6 +47,15 @@ that `supportedNixFloor` in `default.nix` selects. The commands are:
 | `compare` | state which tests pynixd alone fails                    |
 | `all`     | all four, in that order                                 |
 
+The stream mode reads the wire instead of the verdict of each script:
+
+| command          | what it does                                      |
+| ---------------- | ------------------------------------------------- |
+| `record-control` | run against a plain `nix daemon`, and record       |
+| `record-pynixd`  | run against pynixd, and record                     |
+| `diff-streams`   | state which tests differ on the wire               |
+| `streams`        | setup, both records, and the comparison            |
+
 Each further argument goes to `meson test`, so `control --suite ca` runs one
 suite and `control gc fetchurl` runs two tests.
 
@@ -98,6 +107,51 @@ finds none.
 **Compare against the control.** A test that fails in both runs is not a
 defect of pynixd. Only a test that passes the control and fails through pynixd
 is one. `compare.py` states that difference, and `compare` calls it.
+
+## The stream mode
+
+**A script says "pass" or "fail" for reasons that are not the wire.** It reads
+a message, it counts the store paths on the disk, it wants a path to be dead.
+The contract of pynixd is narrower: a client must not be able to tell pynixd
+from `nix-daemon`, and that is a statement about the bytes.
+
+So `streams` runs the same workload twice with a recorder between the client
+and the daemon, and compares the two streams of operations. A test whose
+script fails in both runs still gives an answer here.
+
+```
+client -> $NIX_DAEMON_SOCKET_PATH -> recorder -> iSocket -> the daemon
+```
+
+`make-record-shim.sh` builds the recorder into the `NIX_DAEMON_PACKAGE` place,
+over an inner package. The inner package is the plain Nix in one run and the
+pynixd shim in the other, so the two runs differ in the daemon and in nothing
+else. The recorder starts the inner daemon as its own child, so `killDaemon`
+kills one pid and both go away.
+
+The recordings go to `$NIXFT_WORK/streams/{control,pynixd}/<suite>/<test>/
+daemon-N/conn-NNNN.wire`. `<suite>` and `<test>` come from `TEST_SUITE_NAME`
+and `TEST_NAME`, which meson sets, so the two runs write the same names.
+`daemon-N` counts the daemons of one test, because `restartDaemon` starts a
+second one.
+
+**Some differences are on purpose, and `wirelog compare` lists each one with
+its reason.** The name and the version of pynixd, the protocol version it
+presents, the features it adds, the trust it reports, and the registration
+time of a store path. The last one is a difference of the two runs and not of
+the two daemons: they add the same path at two times.
+
+**A build holds its temporary roots for the lifetime of the connection, and
+the GC tests read that as a defect.** Issue #174 records the decision: a
+long-lived daemon that holds a path is not a fault, and `max_lifetime` bounds
+how long it lasts. `simple`, `gc`, `ca/gc`, `dependencies`, `build-delete`,
+`gc-concurrent`, `optimise-store` and `selfref-gc` differ for this reason and
+will keep differing.
+
+The first run of this mode found issue #177: `BuildPaths` answered a status
+where Nix answers a constant `1`, so a failed build read as a successful one.
+No script could find it, because the client of Nix reads that number and drops
+it.
 
 ## The control measurement
 

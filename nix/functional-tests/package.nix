@@ -55,9 +55,14 @@ let
       ./setup.sh
       ./run.sh
       ./make-shim.sh
+      ./make-record-shim.sh
       ./compare.py
     ];
   };
+  # The interpreter of the pynixd application, which has
+  # `nix_daemon_protocol` in it. The recorder of the `streams` mode is a
+  # module of that package, and it has no entry point of its own.
+  wirelogPython = "${pynixd.venv}/bin/python";
 in
 writeShellApplication {
   name = "nanopynix-nixft-${version}";
@@ -88,6 +93,7 @@ writeShellApplication {
     NIX_PKG=${lib.escapeShellArg nix}
     NIX_SRC=${lib.escapeShellArg nix.src}
     PYNIXD_BIN=${lib.escapeShellArg (lib.getExe' pynixd "pynixd")}
+    WIRELOG_PYTHON=${lib.escapeShellArg wirelogPython}
     SCRIPTS=${lib.escapeShellArg scripts}
 
     # The client must be the Nix that owns the test scripts, so it goes in
@@ -104,6 +110,13 @@ writeShellApplication {
     CONTROL_LOG=$WORK/control.testlog.json
     PYNIXD_LOG=$WORK/pynixd.testlog.json
 
+    # The recordings of the `streams` mode. They sit outside `$WORK/tmp`,
+    # because `run.sh` wipes that directory when the next run starts, and the
+    # comparison needs the control recordings after the candidate run.
+    STREAMS=$WORK/streams
+    STREAMS_CONTROL=$STREAMS/control
+    STREAMS_PYNIXD=$STREAMS/pynixd
+
     usage() {
       cat >&2 <<USAGE
     nanopynix-nixft-$NIXFT_VERSION -- Nix's functional tests against a daemon
@@ -116,6 +129,13 @@ writeShellApplication {
       detail NAME [WHICH]  the whole output of one test. WHICH is
                          \`control\` (default) or \`pynixd\`.
       all     [ARGS]     setup, control, pynixd, compare
+
+    The stream mode. It reads the wire and not the verdict of each script:
+
+      record-control [ARGS]  run against a plain nix daemon, and record
+      record-pynixd  [ARGS]  run against pynixd, and record
+      diff-streams           state which tests differ on the wire
+      streams [ARGS]         setup, record-control, record-pynixd, diff-streams
 
     Each ARGS goes to \`meson test\`, so \`control --suite ca\` runs one suite
     and \`control gc fetchurl\` runs two tests.
@@ -135,6 +155,28 @@ writeShellApplication {
       NIX_SRC=$NIX_SRC WORK=$WORK bash "$SCRIPTS/setup.sh"
     }
 
+    # The pynixd package for the `NIX_DAEMON_PACKAGE` place. Both the plain
+    # mode and the stream mode need it, so it is one function.
+    make_pynixd_shim() {
+      WORK=$WORK PYNIXD_BIN=$PYNIXD_BIN REAL_NIX=$NIX_PKG/bin/nix \
+        bash "$SCRIPTS/make-shim.sh"
+    }
+
+    # **A passing test proves nothing until pynixd was in the path.** The shim
+    # sends `nix daemon` to pynixd and everything else to the real Nix, and
+    # three defects in that one decision made the whole suite go green while
+    # pynixd served no request at all. pynixd writes its config beside each
+    # test store, so the file is the proof.
+    check_pynixd_served() {
+      local served
+      served=$(find "$WORK/tmp" -name pynixd-test-config.json 2>/dev/null | wc -l)
+      echo "pynixd served $served test store(s)"
+      if [ "$served" -eq 0 ]; then
+        echo "ERROR: pynixd served no test at all. The result above is meaningless." >&2
+        return 1
+      fi
+    }
+
     do_control() {
       echo "=== control: a plain nix daemon, $NIXFT_VERSION ==="
       WORK=$WORK NIX_DAEMON_PACKAGE=$NIX_PKG SAVE_LOG=$CONTROL_LOG \
@@ -144,23 +186,10 @@ writeShellApplication {
     do_pynixd() {
       echo "=== candidate: pynixd, $NIXFT_VERSION ==="
       local shim
-      shim=$(WORK=$WORK PYNIXD_BIN=$PYNIXD_BIN REAL_NIX=$NIX_PKG/bin/nix \
-        bash "$SCRIPTS/make-shim.sh")
+      shim=$(make_pynixd_shim)
       WORK=$WORK NIX_DAEMON_PACKAGE=$shim SAVE_LOG=$PYNIXD_LOG \
         bash "$SCRIPTS/run.sh" "$@"
-
-      # **A passing test proves nothing until pynixd was in the path.** The
-      # shim sends `nix daemon` to pynixd and everything else to the real Nix,
-      # and three defects in that one decision made the whole suite go green
-      # while pynixd served no request at all. pynixd writes its config beside
-      # each test store, so the file is the proof.
-      local served
-      served=$(find "$WORK/tmp" -name pynixd-test-config.json 2>/dev/null | wc -l)
-      echo "pynixd served $served test store(s)"
-      if [ "$served" -eq 0 ]; then
-        echo "ERROR: pynixd served no test at all. The result above is meaningless." >&2
-        return 1
-      fi
+      check_pynixd_served
     }
 
     # meson writes `testlog.json` while the run goes on, so this reads a run
@@ -212,6 +241,93 @@ writeShellApplication {
         "$log"
     }
 
+    # ── The stream mode ─────────────────────────────────────────────────
+    #
+    # `compare` above reads the verdict of each script, and a script says
+    # "pass" or "fail" for reasons that are not the wire: it reads a message,
+    # it counts the store paths on the disk, it wants a path to be dead. The
+    # contract of pynixd is narrower than that. A client must not be able to
+    # tell pynixd from `nix-daemon`, and that is a statement about the bytes.
+    #
+    # So this mode runs the same workload twice with a recorder in the middle,
+    # and compares the two streams of operations. A test whose script fails in
+    # both runs still gives a usable answer here. Issue #175.
+
+    wirelog() {
+      "$WIRELOG_PYTHON" -m nix_daemon_protocol.wirelog "$@"
+    }
+
+    # Build the recording shim over one inner package, and run the suite.
+    record_run() {
+      local inner=$1 out_root=$2 shim_dir=$3 save_log=$4
+      shift 4
+      rm -rf "''${out_root:?}"
+      mkdir -p "$out_root"
+      local shim
+      shim=$(WORK=$WORK INNER=$inner OUT_ROOT=$out_root SHIM_DIR=$shim_dir \
+        PYTHON=$WIRELOG_PYTHON REAL_NIX=$NIX_PKG/bin/nix \
+        bash "$SCRIPTS/make-record-shim.sh")
+      WORK=$WORK NIX_DAEMON_PACKAGE=$shim SAVE_LOG=$save_log \
+        bash "$SCRIPTS/run.sh" "$@"
+    }
+
+    do_record_control() {
+      echo "=== control, recorded: a plain nix daemon, $NIXFT_VERSION ==="
+      record_run "$NIX_PKG" "$STREAMS_CONTROL" "$WORK/record-shim-control" \
+        "$CONTROL_LOG" "$@"
+    }
+
+    do_record_pynixd() {
+      echo "=== candidate, recorded: pynixd, $NIXFT_VERSION ==="
+      local inner
+      inner=$(make_pynixd_shim)
+      record_run "$inner" "$STREAMS_PYNIXD" "$WORK/record-shim-pynixd" \
+        "$PYNIXD_LOG" "$@"
+      check_pynixd_served
+    }
+
+    # One verdict for each test, from the recordings alone.
+    do_diff_streams() {
+      if [ ! -d "$STREAMS_CONTROL" ] || [ ! -d "$STREAMS_PYNIXD" ]; then
+        echo "diff-streams: run \`record-control\` and \`record-pynixd\` first" >&2
+        return 2
+      fi
+
+      local report=$STREAMS/report.txt
+      local one=$STREAMS/one.txt
+      : > "$report"
+
+      local same=0 different=0 missing=0
+      local dir key
+      # `%h` of each `daemon-N` directory is the directory of the test, and
+      # `sort -u` then names each test once however many daemons it started.
+      while IFS= read -r dir; do
+        key=''${dir#"$STREAMS_CONTROL/"}
+        if [ ! -d "$STREAMS_PYNIXD/$key" ]; then
+          echo "MISSING   $key" | tee -a "$report"
+          missing=$((missing + 1))
+          continue
+        fi
+        if wirelog compare "$STREAMS_CONTROL/$key" "$STREAMS_PYNIXD/$key" > "$one" 2>&1; then
+          same=$((same + 1))
+        else
+          different=$((different + 1))
+          echo "DIFFERENT $key"
+          { echo "=== $key ==="; cat "$one"; echo; } >> "$report"
+        fi
+      done < <(find "$STREAMS_CONTROL" -mindepth 2 -type d -name 'daemon-*' -printf '%h\n' | sort -u)
+
+      rm -f "$one"
+      echo "=== STREAM SUMMARY ==="
+      echo "same:      $same"
+      echo "different: $different"
+      echo "missing:   $missing"
+      echo "the differences are at $report"
+      if [ "$different" -ne 0 ] || [ "$missing" -ne 0 ]; then
+        return 1
+      fi
+    }
+
     do_compare() {
       if [ ! -e "$CONTROL_LOG" ] || [ ! -e "$PYNIXD_LOG" ]; then
         echo "compare: run \`control\` and \`pynixd\` first" >&2
@@ -239,6 +355,15 @@ writeShellApplication {
         do_control "$@"
         do_pynixd "$@"
         do_compare
+        ;;
+      record-control) do_record_control "$@" ;;
+      record-pynixd)  do_record_pynixd "$@" ;;
+      diff-streams)   do_diff_streams ;;
+      streams)
+        do_setup
+        do_record_control "$@"
+        do_record_pynixd "$@"
+        do_diff_streams
         ;;
       ""|-h|--help|help) usage; exit 1 ;;
       *) echo "nanopynix-nixft: no command named '$command'" >&2; usage; exit 2 ;;
