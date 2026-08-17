@@ -249,6 +249,28 @@ purpose.
 So this test counts as a regression in every run, and no correction is
 planned. The GC tests above are the other permanent group.
 
+### A log line that stays different
+
+`nix-build` on a dynamic derivation writes the warning "Ignoring dynamic
+derivation ... while querying missing paths" **twice** with `nix-daemon`, and
+**once** with pynixd. Nothing else of that command differs.
+
+Nix walks the request twice. The client calls `printMissing` at
+`shared.cc:57`, which is one `QueryMissing` on the wire, and `Worker::run` at
+`worker.cc:340` calls `store.queryMissing` again inside the daemon to warm
+the cache of the substituters. The second walk answers the same question, and
+each walk writes the warning. pynixd answers the request and runs no worker,
+so it walks once.
+
+**pynixd keeps one walk.** A second walk of the closure buys one log line, and
+pynixd already holds the answer in its substitution queue. Writing the line a
+second time without the walk would be a line that no work produced. The
+marker at `pynixd/goals/query_missing.py:209` names the defect of Nix, and
+issue #191 tracks the list of such markers.
+
+No script of the suite reads this line, so no test moves either way. Issue
+#189 holds the measurement.
+
 ### The 22 control failures
 
 **A failure here is a failure of Nix or of this harness, and not of pynixd.**
