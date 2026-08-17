@@ -31,9 +31,17 @@ FEATURES_OF_BUILDER_RPC_V0 = {
     ndp.FEATURE_ADD_TO_STORE_SCANNING,
     ndp.FEATURE_SUBMIT_OUTPUT,
 }
-"""What `WorkerProto::builderRpcV0` offers, which recursive Nix uses.
+"""What `WorkerProto::builderRpcV0` offers.
 
 That set is frozen, because a change to it would be visible to a derivation.
+
+**It is not recursive Nix.** `builder-rpc-v0` is a derivation feature of
+dynamic derivations, and it is a much smaller surface. A derivation names it
+in `requiredSystemFeatures`, and Nix then gives the builder a restricted
+daemon socket and no output path in the environment. The builder registers
+each output itself, with `SubmitOutput` and `AddToStoreScanning`, and it
+cannot start a build through that socket. `docs/notes/reentrancy.md` holds
+the detail, as Fact 9.
 """
 
 MISSING_CODECS = {
@@ -46,9 +54,16 @@ MISSING_CODECS = {
     ndp.FEATURE_DELETE_DEAD_SPECIFIC_REFERRERS: (
         "`CollectGarbage` gains the referrers of a named set of paths, and `collect_garbage.py` has no field for them."
     ),
-    ndp.FEATURE_DISABLE_SET_OPTIONS: "`SetOptions` must become a no-op, which recursive Nix needs.",
-    ndp.FEATURE_ADD_TO_STORE_SCANNING: "The `AddToStoreScanning` operation, code 1001, has no codec.",
-    ndp.FEATURE_SUBMIT_OUTPUT: "The `SubmitOutput` operation, code 1000, has no codec.",
+    ndp.FEATURE_DISABLE_SET_OPTIONS: (
+        "`SetOptions` must become a no-op. A builder cannot change the settings of the daemon that serves it."
+    ),
+    ndp.FEATURE_ADD_TO_STORE_SCANNING: (
+        "The `AddToStoreScanning` operation, code 1001, has no codec. A builder adds a store object with it, and "
+        "Nix scans that object for references."
+    ),
+    ndp.FEATURE_SUBMIT_OUTPUT: (
+        "The `SubmitOutput` operation, code 1000, has no codec. A builder registers one of its own outputs with it."
+    ),
 }
 """Each standard feature that pynixd does not claim, and the codec it needs.
 

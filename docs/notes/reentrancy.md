@@ -278,14 +278,28 @@ The three constants:
 
 | Constant | Number | Features |
 |---|---|---|
-| `latest` | 1.38 | `realisation-with-path-not-hash`, `delete-dead-specific-referrers`, `build-result-memory` |
+| `latest` | 1.38 | `realisation-with-path-not-hash`, `delete-dead-specific-referrers` |
 | `minimum` | 1.18 | none |
 | `builderRpcV0` | 1.38 | `realisation-with-path-not-hash`, `disable-set-options`, `add-to-store-scanning`, `submit-output` |
+
+Read again at `origin/master` `4401a297c`, 2026-08-16. This table gave
+`latest` a third feature, `build-result-memory`. That name is in no file of
+`src/`, and `worker-protocol.cc:26-30` gives `latest` the two above. The
+correction is here rather than in a new fact, because a wrong row is worse
+than a missing one.
 
 `builderRpcV0` is pinned, and the comment at `worker-protocol.hh:122-125` says
 why: *"Should never change, as any modification would be derivation-visible."*
 
-The six feature names are at `worker-protocol.hh:132-158`.
+**`builderRpcV0` is not the recursive-nix connection.** It serves the
+`builder-rpc-v0` derivation feature of Fact 9, and that surface starts no
+build. `processDaemonConnection` takes a `daemon::RecursiveFlag` and serves
+both from one call site, which is what makes the two easy to confuse. Nix's
+own comment at `worker-protocol.hh:140` names recursive-nix for
+`disable-set-options`, and both surfaces take that feature for the same
+reason: a builder cannot change the settings of the daemon that serves it.
+
+The five feature names are at `worker-protocol.hh:132-152`.
 
 `nix-daemon-protocol` holds `PROTOCOL_VERSION = proto(1, 38)` as one integer
 (`constants.py:20`), and `SUPPORTED_PROTOCOL_VERSIONS` is a range of minors
