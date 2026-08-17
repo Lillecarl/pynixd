@@ -103,6 +103,13 @@ def test_the_manifest_leaves_out_only_what_no_client_sends() -> None:
 
     Each entry names why it is out. `worker-protocol.hh` of Nix is the list to
     compare against.
+
+    **A new operation of Nix comes with a feature name, and not with a new
+    protocol number.** `worker-protocol.hh:105` states that rule, and 1.38 is
+    the number that Nix 2.34, Nix 2.35 and the master branch all report. The
+    last two entries below are therefore gated by a name that pynixd does not
+    claim in the handshake. `tests/unit/test_protocol_features.py` holds the
+    ledger of those names, and issue #162 holds the work.
     """
     left_out = {
         8: "AddTextToStore, obsolete since protocol 1.25; the floor is 1.32",
@@ -110,8 +117,8 @@ def test_the_manifest_leaves_out_only_what_no_client_sends() -> None:
         18: "QueryDeriver, obsolete",
         22: "QueryDerivationOutputs, obsolete",
         28: "QueryDerivationOutputNames, obsolete",
-        1000: "SubmitOutput; protocol 1.39 and a derivation feature",
-        1001: "AddToStoreScanning; protocol 1.39",
+        1000: "SubmitOutput; the `submit-output` feature, which recursive Nix uses",
+        1001: "AddToStoreScanning; the `add-to-store-scanning` feature",
     }
     named = {op.code for op in STANDARD_OPERATIONS}
     assert not named & set(left_out)
