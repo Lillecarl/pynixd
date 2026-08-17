@@ -41,6 +41,12 @@ the comparison.
 it exports the closure to a file and imports it again. `nix-store` is the old
 command, and it reaches operations that `nix store` does not.
 
+**`modes`** checks and repairs, signs a path, and copies a closure to a second
+store and back. It found the fourth defect: `BuildMode.CHECK` and
+`BuildMode.REPAIR` both raised `RuntimeError` in the goal system, so
+`nix build --rebuild`, `--repair`, `nix-store --realise --check`,
+`--repair-path` and `--verify --repair` all failed through pynixd.
+
 Issue #175.
 """
 
@@ -271,6 +277,34 @@ async def _queries(run: Runner, root: Path, work: Path) -> None:
         await run(words)
 
 
+async def _modes(run: Runner, root: Path, work: Path) -> None:
+    """Check, repair, sign, and copy to a second store and back.
+
+    `--rebuild` is `BuildMode.CHECK` and `--repair` is `BuildMode.REPAIR`.
+    The goal system of pynixd raised `RuntimeError` for both, so every one of
+    these commands failed through pynixd and passed through `nix-daemon`.
+    """
+    referrer = await run([str(NIX), "build", "--impure", "--no-link", "--print-out-paths", "--expr", REFERRER])
+    other = work / "other"
+    key = root / "probe.key"
+    for words in (
+        [str(NIX), "build", "--impure", "--no-link", "--rebuild", "--expr", REFERRER],
+        [str(NIX), "build", "--impure", "--no-link", "--repair", "--expr", REFERRER],
+        ["nix-store", "--realise", "--check", referrer],
+        ["nix-store", "--repair-path", referrer],
+        ["nix-store", "--verify", "--check-contents", "--repair"],
+        # `nix store sign` is `AddSignatures` on the wire.
+        [str(NIX), "store", "sign", "--key-file", str(key), referrer],
+        [str(NIX), "path-info", "--json", "--sigs", referrer],
+        [str(NIX), "store", "verify", "--all"],
+        # A second store, which is `AddToStoreNar` and `NarFromPath`.
+        [str(NIX), "copy", "--no-check-sigs", "--to", f"local?root={other}", referrer],
+        [str(NIX), "copy", "--no-check-sigs", "--from", f"local?root={other}", referrer],
+        [str(NIX), "store", "gc"],
+    ):
+        await run(words)
+
+
 async def _record(role: str, root: Path, workload: Workload) -> Path:
     """Run the workload once, and answer the directory of the recording."""
     work = BASE / role
@@ -326,7 +360,7 @@ async def clean_base() -> AsyncIterator[None]:
     shutil.rmtree(BASE, ignore_errors=True)
 
 
-@pytest.mark.parametrize("workload", [_builds, _queries], ids=["builds", "queries"])
+@pytest.mark.parametrize("workload", [_builds, _queries, _modes], ids=["builds", "queries", "modes"])
 @pytest.mark.usefixtures("clean_base")
 async def test_the_two_daemons_answer_the_same_bytes(workload: Workload) -> None:
     """Each connection of the pynixd run agrees with the control run.
@@ -336,9 +370,16 @@ async def test_the_two_daemons_answer_the_same_bytes(workload: Workload) -> None
     answer would differ for a reason that is not pynixd.
     """
     root = BASE / "store-root"
+    # One signing key for both runs. `nix key generate-secret` makes a new key
+    # each time, so two keys would give two signatures for a reason that is
+    # not pynixd. Ed25519 is deterministic, so one key gives one signature.
+    key = (await anyio.run_process([str(NIX), "key", "generate-secret", "--key-name", "probe"])).stdout.decode()
+
     recordings: dict[str, Path] = {}
     for role in ("control", "pynixd"):
         shutil.rmtree(root, ignore_errors=True)
+        await anyio.Path(root).mkdir(parents=True)
+        await anyio.Path(root / "probe.key").write_text(key.strip())
         recordings[role] = await _record(role, root, workload)
 
     control = sorted(p.relative_to(recordings["control"]) for p in recordings["control"].rglob("conn-*.wire"))
