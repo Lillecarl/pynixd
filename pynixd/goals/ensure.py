@@ -17,6 +17,7 @@ from ..serde import (
     BuildResultStatus,
     DrvOutput,
     IsValidPathRequest,
+    LogNext,
     Realisation,
     RegisterDrvOutputRequest,
     StorePath as SerdeStorePath,
@@ -387,7 +388,19 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             log.warning("resolved_derivation_not_stored", drv_path=str(original), exc_info=True)
             return original
         log.debug("resolved_derivation_stored", original=str(original), resolved=path)
+        # **The client reads which derivation the daemon really builds.**
+        # `DerivationResolutionGoal` starts an activity with this text at
+        # `derivation-resolution-goal.cc:150`, and the plain logger of the
+        # client prints the text of an activity with three points after it.
+        await self._say(f"resolved derivation: '{original}' -> '{path}'...\n")
         return SerdeStorePath(path=path)
+
+    async def _say(self, text: str) -> None:
+        """Send one line to each client that watches this goal."""
+        async with self._lock:
+            subscribers = list(self._subscribers)
+        for client in subscribers:
+            await client.send(LogNext(text=text))
 
     async def _refuse_an_impure_input(self, parsed: Derivation, drv_path: SerdeStorePath) -> GoalResult | None:
         """A pure derivation cannot depend on an impure one.

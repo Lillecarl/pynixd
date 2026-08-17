@@ -1,13 +1,16 @@
-"""The client watches the build of each input derivation.
+"""What a client that watches one derivation reads while pynixd builds it.
+
+Two lines were missing.
 
 `nix-daemon` writes `building '<input>.drv'...` and, when the input fails, the
 reason it failed. A client of pynixd read "1 dependency failed" for the
 derivation it asked for, and nothing at all about the dependency, because
 `_realise_input_derivations` started a goal for each input and subscribed
-nobody to it.
+nobody to it. `_ensure_nested` already subscribed the next level of a dynamic
+derivation, so one of the two roads carried the logs and the other did not.
 
-`_ensure_nested` already subscribed the next level of a dynamic derivation, so
-one of the two roads carried the logs and the other did not.
+`nix-daemon` also writes `resolved derivation: 'A' -> 'B'...`, which names the
+derivation that it really builds. pynixd resolved and said nothing.
 
 Refs #175.
 """
@@ -34,6 +37,7 @@ TOP_DRV = "/nix/store/00000000000000000000000000000001-top.drv"
 INPUT_DRV = "/nix/store/00000000000000000000000000000002-input.drv"
 TOP_OUT = "/nix/store/11111111111111111111111111111111-top"
 INPUT_OUT = "/nix/store/22222222222222222222222222222222-input"
+RESOLVED_PREFIX = "/nix/store/33333333333333333333333333333333"
 
 
 def _input() -> Derivation:
@@ -47,8 +51,15 @@ def _input() -> Derivation:
 
 
 def _top() -> Derivation:
+    """The output is deferred, so `shouldResolve` answers yes for it.
+
+    `Derivation::shouldResolve` at `derivations.cc:1129` gives a resolved
+    derivation to an input-addressed derivation only when the output path is
+    not known yet. An input of a dynamic derivation is one road to that, and a
+    plain deferred output is the shorter one to write here.
+    """
     return Derivation(
-        outputs=[DrvOutput(hash_algo="", hash_value="", output_name="out", path=TOP_OUT)],
+        outputs=[DrvOutput(hash_algo="", hash_value="", output_name="out", path="")],
         input_drvs={StorePath(INPUT_DRV): ["out"]},  # pyright: ignore[reportArgumentType] -- StorePath is a str
         platform="x86_64-linux",
         builder="/bin/sh",
@@ -57,9 +68,24 @@ def _top() -> Derivation:
     )
 
 
+class FakeClient:
+    """A client that watches the goal, and keeps what the goal said."""
+
+    def __init__(self) -> None:
+        self.lines: list[str] = []
+
+    async def send(self, msg: Any) -> None:
+        self.lines.append(str(msg.text))
+
+
 class FakeLocalStore:
     def __init__(self) -> None:
         self.store_path = "/"
+
+    async def add_text_to_store(self, name: str, text: str, references: set[str]) -> str:
+        """Answer the path of the resolved derivation, as the daemon does."""
+        del text, references
+        return f"{RESOLVED_PREFIX}-{name}"
 
     async def read_derivation(self, drv_path: str) -> Derivation | None:
         if str(drv_path) == TOP_DRV:
@@ -140,10 +166,28 @@ async def test_the_client_watches_the_goal_of_each_input() -> None:
         build_mode=BuildMode.NORMAL,
         substituter_ids=(),
     )
-    client = object()
+    client = FakeClient()
     await goal.subscribe(cast("Any", client))
 
     await goal.result()
 
     assert len(engine.child_goals) == 1
     assert engine.child_goals[0].subscribers == [client]
+
+
+@pytest.mark.anyio
+async def test_the_client_reads_which_derivation_pynixd_really_builds() -> None:
+    """`DerivationResolutionGoal` says this at `derivation-resolution-goal.cc:150`."""
+    engine = FakeEngine()
+    goal = EnsureDerivedPathGoal(
+        engine=cast("GoalEngine", engine),
+        derived_path=DerivedPath(f"{TOP_DRV}!out"),
+        build_mode=BuildMode.NORMAL,
+        substituter_ids=(),
+    )
+    client = FakeClient()
+    await goal.subscribe(cast("Any", client))
+
+    await goal.result()
+
+    assert client.lines == [f"resolved derivation: '{TOP_DRV}' -> '{RESOLVED_PREFIX}-top.drv'...\n"]
