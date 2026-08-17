@@ -205,6 +205,16 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         chain_output = self.derived_path.chain[-1]
         inner_drv = outer_result.resolved_outputs.get(chain_output)
         if inner_drv is None:
+            # `DerivationTrampolineGoal` at `derivation-trampoline-goal.cc:107`
+            # answers this when the goal that makes the derivation failed. The
+            # reason itself reaches the client from that goal, which writes it
+            # as an error message. `dyn-drv:failing-outer` reads the sentence,
+            # and pynixd gave it an internal note with a `!` in the path.
+            if not result_succeeded(outer_result.result):
+                return goal_failure(
+                    f"failed to obtain derivation of '{self.derived_path.outer.to_string()}'",
+                    BuildResultStatus.DEPENDENCY_FAILED,
+                )
             return goal_failure(
                 f"pynixd: nested derived path did not produce {chain_output}: {self.derived_path}",
                 BuildResultStatus.UNKNOWN,
