@@ -43,11 +43,14 @@ if TYPE_CHECKING:
 ROOT_DRV = "/nix/store/00000000000000000000000000000001-rootCA.drv"
 DEP_DRV = "/nix/store/00000000000000000000000000000002-dependent.drv"
 LEGACY_DRV = "/nix/store/00000000000000000000000000000003-legacy.drv"
+FIXED_DRV = "/nix/store/00000000000000000000000000000004-fixed.drv"
 ROOT_OUT = "/nix/store/44444444444444444444444444444444-rootCA"
 LEGACY_OUT = "/nix/store/55555555555555555555555555555555-legacy"
+FIXED_OUT = "/nix/store/66666666666666666666666666666666-fixed"
 
 PLACEHOLDER = downstream_placeholder(StorePath(ROOT_DRV), "out")
 BUILD_COMMAND = f"mkdir -p $out\ncat {PLACEHOLDER}/dep {LEGACY_OUT}/hello > $out/dep\n"
+FIXED_COMMAND = f"cat {PLACEHOLDER}/dep > $out\n"
 
 
 def _floating(name: str) -> DrvOutput:
@@ -90,6 +93,22 @@ def _dependent() -> Derivation:
     )
 
 
+def _fixed() -> Derivation:
+    """A fixed-output derivation that reads a content-addressed input.
+
+    Its output names a path, because the hash of the content states that path.
+    `ca/content-addressed.nix` calls this one `dependentFixedOutput`.
+    """
+    return Derivation(
+        outputs=[DrvOutput(hash_algo="r:sha256", hash_value="00" * 32, output_name="out", path=FIXED_OUT)],
+        input_drvs={StorePath(ROOT_DRV): ["out"]},  # pyright: ignore[reportArgumentType] -- StorePath is a str
+        platform="x86_64-linux",
+        builder="/bin/sh",
+        args=["-e", "-c", FIXED_COMMAND],
+        env={"out": FIXED_OUT, "name": "fixed", "buildCommand": FIXED_COMMAND},
+    )
+
+
 class FakeLocalStore:
     def __init__(self) -> None:
         self.store_path = "/"
@@ -101,6 +120,8 @@ class FakeLocalStore:
             return _legacy()
         if drv_path == DEP_DRV:
             return _dependent()
+        if drv_path == FIXED_DRV:
+            return _fixed()
         return None
 
     async def execute(self, request: Any, **kwargs: Any) -> Any:
@@ -161,11 +182,11 @@ class FakeEngine:
         return FakeSubstituteGoal()
 
 
-async def _sent() -> Any:
+async def _sent(drv_path: str = DEP_DRV) -> Any:
     engine = FakeEngine()
     goal = EnsureDerivedPathGoal(
         engine=cast("GoalEngine", engine),
-        derived_path=DerivedPath(f"{DEP_DRV}!out"),
+        derived_path=DerivedPath(f"{drv_path}!out"),
         build_mode=BuildMode.NORMAL,
         substituter_ids=(),
     )
@@ -212,6 +233,22 @@ async def test_an_input_that_needed_no_build_is_a_source_as_well() -> None:
     sent = await _sent()
 
     assert LEGACY_OUT in {str(path) for path in sent.input_srcs}
+
+
+@pytest.mark.anyio
+async def test_a_fixed_output_derivation_is_resolved_as_well() -> None:
+    """Its own output names a path, and its input still does not.
+
+    The kind of the output says nothing about the inputs, so a rule that reads
+    the outputs alone leaves this one unresolved. `ca:build`, `ca:build-cache`,
+    `ca:nix-copy` and `ca:signatures` all build one.
+    """
+    sent = await _sent(FIXED_DRV)
+
+    assert PLACEHOLDER not in sent.env["buildCommand"]
+    assert ROOT_OUT in sent.env["buildCommand"]
+    assert ROOT_OUT in {str(path) for path in sent.input_srcs}
+    assert sent.outputs["out"].path == FIXED_OUT, "a fixed output keeps the path its hash states"
 
 
 @pytest.mark.anyio

@@ -239,6 +239,11 @@ def _hash_derivation_modulo(
     return dict.fromkeys(drv.outputs, h)
 
 
+def _is_deferred(output: DerivationOutput) -> bool:
+    """True for `DerivationOutput::Deferred`, which the ATerm writes as three empty strings."""
+    return output.path == "" and output.method == "" and output.hash_digest == ""
+
+
 def _resolve_deferred_outputs(
     resolved: BasicDerivation,
     drv_name: str,
@@ -248,12 +253,19 @@ def _resolve_deferred_outputs(
     Given a resolved BasicDerivation, computes hashDerivationModulo and
     replaces any Deferred outputs (``("", "", "")``) with concrete
     InputAddressed paths derived from the hash.
+
+    A derivation with no deferred output returns as it is. Every derivation
+    with an input derivation comes through here now, and the hash reads the
+    whole ATerm, so the early answer is worth taking.
     """
+    if not any(_is_deferred(o) for o in resolved.outputs.values()):
+        return resolved
+
     hash_modulo = _hash_derivation_modulo(resolved, mask_outputs=True)
 
     new_outputs: dict[str, DerivationOutput] = {}
     for name, o in resolved.outputs.items():
-        if o.path == "" and o.method == "" and o.hash_digest == "":
+        if _is_deferred(o):
             h = hash_modulo[name]
             out_path = _make_output_path(name, h, drv_name)
             new_outputs[name] = DerivationOutput(
