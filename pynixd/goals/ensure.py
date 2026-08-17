@@ -273,6 +273,9 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             return refusal
 
         child_results = await self._realise_input_derivations(parsed)
+        failed_inputs = await self._refuse_a_failed_input(child_results, drv_path)
+        if failed_inputs is not None:
+            return failed_inputs
 
         store_path = Path(self.engine.ctx.local_store.store_path)
         dynamic_paths = {}
@@ -604,6 +607,44 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
                 if path:
                     answer[key] = path
         return answer
+
+    async def _refuse_a_failed_input(
+        self,
+        child_results: list[GoalResult],
+        drv_path: SerdeStorePath,
+    ) -> GoalResult | None:
+        """Answer a failure when an input derivation did not build.
+
+        **A derivation with a failed input is not built.**
+        `DerivationBuildingGoal::inputsRealised` of Nix counts the failed
+        dependencies and fails the goal, and it starts no builder.
+
+        pynixd read the results of its input goals for their dynamic paths
+        alone and then went on. Two things followed from that, and the
+        recorded output of `main:build` holds both. `resolve_derivation` used
+        the output path of an input that nothing built, so `AddToStore` of the
+        resolved derivation failed with "path '...-x3' is not valid" and
+        `_path_of_what_it_builds` wrote `resolved_derivation_not_stored`. The
+        build request then went to the daemon, which refused it with "Cannot
+        build '...-x4.drv'. Reason: 2 dependencies failed."
+
+        The answer was therefore right and the road to it was wrong: pynixd
+        asked a daemon to tell it something it already knew. Issue #196.
+        """
+        failed = [result for result in child_results if not result_succeeded(result.result)]
+        if not failed:
+            return None
+        # The shape that `_build_failure_message` of `goals/engine.py` uses
+        # for `BuildPaths`. The child that failed has written its own reason
+        # already, through `_tell_the_client_it_failed`, so this names the
+        # count and does not repeat the text.
+        log.debug("input_derivation_failed", drv_path=str(drv_path), failed=len(failed))
+        count = len(failed)
+        dependency = "dependency" if count == 1 else "dependencies"
+        return goal_failure(
+            f"Cannot build '{drv_path}'.\n       Reason: {count} {dependency} failed.",
+            BuildResultStatus.DEPENDENCY_FAILED,
+        )
 
     async def _realise_input_derivations(self, parsed) -> list[GoalResult]:
         child_goals: list[EnsureDerivedPathGoal] = []
