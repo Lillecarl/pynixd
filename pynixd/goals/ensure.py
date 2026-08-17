@@ -365,6 +365,10 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             return result
         detail = str(result.result.error_msg)
         if detail:
+            # The second site that writes a failure block, beside
+            # `_tell_the_client_it_failed`. Counted for the same reason:
+            # `main:build` reads the number of `error:` lines of the client.
+            log.debug("told_the_client_the_resolved_reason", original=str(original), built=str(built))
             await self._say(_as_an_error(detail))
         return GoalResult(
             result=result.result.model_copy(
