@@ -745,7 +745,17 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
                             output_name=realisation.id.output_name,
                         ),
                         unkeyed_realisation=UnkeyedRealisation(
-                            out_path=realisation.out_path,
+                            # **The whole path, and not the bare name.**
+                            # `Realisation` carries `<hash>-<name>`, which is
+                            # `StorePath::to_string` of Nix, because the JSON
+                            # shape writes it that way. The feature shape
+                            # writes a `StorePath` on the wire, and that is
+                            # the whole path. Sending the bare name made the
+                            # daemon answer "not an absolute path:
+                            # 'bb36hywi...-dependent-fixed-output'", and
+                            # `ca:build-cache` read it. `out_path` above is
+                            # the same value with the store directory on it.
+                            out_path=SerdeStorePath(path=str(out_path)),
                             signatures=set(realisation.signatures),
                         ),
                     ),

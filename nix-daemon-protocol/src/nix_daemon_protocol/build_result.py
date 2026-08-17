@@ -9,6 +9,7 @@ from enum import IntEnum
 from .constants import FEATURE_REALISATION_WITH_PATH, proto
 from .opt_microseconds import OptMicroseconds
 from .realisation import Realisation
+from .store_dir import store_prefix
 from .store_path import StorePath
 from .unkeyed_realisation import UnkeyedRealisation
 from .wire_message import WireField, WireModel
@@ -116,6 +117,29 @@ class BuiltOutput:
         return str(self.out_path)
 
 
+def _whole_path(path: object) -> StorePath:
+    """A store path with the store directory in front of it.
+
+    **The two shapes of a realisation spell a path differently.** The JSON of
+    `Realisation` carries `<hash>-<name>`, which is `StorePath::to_string` of
+    Nix, and `UnkeyedRealisation` carries a `StorePath` on the wire, which is
+    the whole path. A bare name where the wire wants a whole path makes the
+    peer answer "not an absolute path: '...'", and `ca:build-cache` read that.
+    Issue #162.
+    """
+    text = str(path)
+    if not text or text.startswith("/"):
+        return StorePath(text)
+    return StorePath(store_prefix() + text)
+
+
+def _bare_path(path: object) -> StorePath:
+    """A store path with the store directory taken off. See `_whole_path`."""
+    text = str(path)
+    prefix = store_prefix()
+    return StorePath(text.removeprefix(prefix))
+
+
 class BuildResult(WireModel):
     """Nix daemon protocol BuildResult.
 
@@ -160,8 +184,12 @@ class BuildResult(WireModel):
 
     The key of `built_outputs` is a whole `DrvOutput`; this one names the
     output of the derivation that the answer is already about, so it needs no
-    derivation in the key. `SUPPORTED_STANDARD_FEATURES` is empty, so nothing
-    fills this in yet.
+    derivation in the key.
+
+    **The two spell a path differently.** This one carries a whole store path,
+    because the wire writes it as a `StorePath`. The JSON of `Realisation`
+    carries the bare `<hash>-<name>`. `_whole_path` and `_bare_path` are the
+    translation, and `ca:build-cache` measured what skipping it costs.
     """
 
     def realised_outputs(self) -> dict[str, Realisation]:
@@ -182,7 +210,7 @@ class BuildResult(WireModel):
         """
         if self.built_outputs_by_name:
             return {
-                name: Realisation(out_path=value.out_path, signatures=sorted(value.signatures))
+                name: Realisation(out_path=_bare_path(value.out_path), signatures=sorted(value.signatures))
                 for name, value in self.built_outputs_by_name.items()
             }
         if self.built_outputs:
@@ -240,7 +268,7 @@ class BuildResult(WireModel):
             wants_the_feature = FEATURE_REALISATION_WITH_PATH in features
             if wants_the_feature and self.built_outputs_by_name is None:
                 update["built_outputs_by_name"] = {
-                    name: UnkeyedRealisation(out_path=value.out_path, signatures=set(value.signatures))
+                    name: UnkeyedRealisation(out_path=_whole_path(value.out_path), signatures=set(value.signatures))
                     for name, value in self.realised_outputs().items()
                     if value.out_path is not None
                 }
