@@ -164,6 +164,31 @@ class BuildResult(WireModel):
     fills this in yet.
     """
 
+    def realised_outputs(self) -> dict[str, Realisation]:
+        """Every output this result realised, keyed by the **output name**.
+
+        One accessor for the two wire shapes, so a caller needs no branch.
+        `built_outputs` keys by a whole `DrvOutput`, which is
+        `"<drvHash>!<output>"`, and `built_outputs_by_name` keys by the output
+        name alone. This takes the part after the `!` in the first case.
+
+        **A realisation of the feature shape carries no id.** The request
+        already named the derivation, so `worker-protocol.cc:268` writes the
+        output name as the key and an `UnkeyedRealisation` as the value. The
+        `Realisation` this builds therefore has an empty `id`, and a caller
+        that needs the id must build it from the derivation it already holds.
+        No caller in this repository does: each one reads `out_path` and the
+        key. Issue #162.
+        """
+        if self.built_outputs_by_name:
+            return {
+                name: Realisation(out_path=value.out_path, signatures=sorted(value.signatures))
+                for name, value in self.built_outputs_by_name.items()
+            }
+        if self.built_outputs:
+            return {key.rpartition("!")[2] or key: value for key, value in self.built_outputs.items()}
+        return {}
+
     def wire_status(self) -> int:
         """The status byte to send, which is not always the one held.
 
@@ -179,8 +204,8 @@ class BuildResult(WireModel):
             return self.status
         return int(BuildResultStatus.MISC_FAILURE)
 
-    def for_the_wire(self) -> BuildResult:
-        """This result, with a status a client can decode.
+    def for_the_wire(self, features: frozenset[str] | None = None) -> BuildResult:
+        """This result, with a status a client can decode and a map it can read.
 
         Call this before sending a result to a client. It is a method and not a
         `to_writer` override on purpose: `experimental_compiled` refuses to
@@ -189,8 +214,39 @@ class BuildResult(WireModel):
         correctness fix that quietly turned off the fast path for the hottest
         model on the wire would be a poor trade, so the knowledge of what is
         wire-safe lives here and the caller decides when to apply it.
+
+        **A proxy reads a result on one connection and writes it on another,
+        and the two negotiate their features apart.** A backend that offers
+        `realisation-with-path-not-hash` fills `built_outputs_by_name` and
+        leaves `built_outputs` at `None`; a client that offers nothing then
+        reads `built_outputs`, and a `None` where a map belongs raises in the
+        writer. Give *features* the set of the peer this result is going to,
+        and this fills the field that peer will read.
+
+        **The fill from the feature shape to the old one is lossy.** The old
+        key is a whole `DrvOutput`, which carries the hash of the derivation,
+        and the feature shape carries no hash anywhere. This keys by the
+        output name and leaves the id empty, so the output path survives and
+        the id does not. Building the real id means reading the derivation
+        and hashing it, which this model cannot do. Issue #162.
         """
+        update: dict[str, object] = {}
+
         wire_status = self.wire_status()
-        if wire_status == self.status:
+        if wire_status != self.status:
+            update["status"] = wire_status
+
+        if features is not None:
+            wants_the_feature = FEATURE_REALISATION_WITH_PATH in features
+            if wants_the_feature and self.built_outputs_by_name is None:
+                update["built_outputs_by_name"] = {
+                    name: UnkeyedRealisation(out_path=value.out_path, signatures=set(value.signatures))
+                    for name, value in self.realised_outputs().items()
+                    if value.out_path is not None
+                }
+            elif not wants_the_feature and self.built_outputs is None:
+                update["built_outputs"] = dict(self.realised_outputs())
+
+        if not update:
             return self
-        return self.model_copy(update={"status": wire_status})
+        return self.model_copy(update=update)

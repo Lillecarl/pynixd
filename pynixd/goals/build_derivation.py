@@ -108,13 +108,13 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
                 resolved[name] = path
                 produced.add(path)
 
-        if response.result.built_outputs:
-            for key, realisation in response.result.built_outputs.items():
-                output_name = realisation.id.output_name or key.split("!", 1)[-1]
-                if realisation.out_path:
-                    path = StorePath(str(realisation.out_path)).with_store_prefix()
-                    resolved[output_name] = path
-                    produced.add(path)
+        # `realised_outputs` keys by the output name, whichever of the two
+        # wire shapes the answer carried. Issue #162.
+        for output_name, realisation in response.result.realised_outputs().items():
+            if realisation.out_path:
+                path = StorePath(str(realisation.out_path)).with_store_prefix()
+                resolved[output_name] = path
+                produced.add(path)
 
         await self._wait_for_local_paths(produced)
 

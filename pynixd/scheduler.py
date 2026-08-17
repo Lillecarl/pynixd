@@ -656,14 +656,17 @@ class Scheduler:
 
         # Pull outputs from remote store to local store
         ca_output_paths: StorePathSet = set()
-        if resp.result.built_outputs:
-            for realisation in resp.result.built_outputs.values():
+        # `realised_outputs` reads whichever of the two wire shapes the answer
+        # carried. Issue #162.
+        realised = resp.result.realised_outputs()
+        if realised:
+            for realisation in realised.values():
                 out_path = StorePath(str(realisation.out_path)) if realisation.out_path else StorePath("")
                 if out_path:
                     ca_output_paths.add(
                         out_path.with_store_prefix(),
                     )
-            build.ca_realisations = list(resp.result.built_outputs.values())
+            build.ca_realisations = list(realised.values())
 
         outputs = build.request.derivation.output_paths()
         static_paths = {p for p in outputs.values() if p != StorePath("")}

@@ -103,14 +103,23 @@ the thing recursive Nix exists for. Every output of such a build is
 content-addressed. `docs/notes/reentrancy.md` holds the detail, as Fact 9.
 """
 
-SUPPORTED_STANDARD_FEATURES: Final[frozenset[str]] = frozenset()
+SUPPORTED_STANDARD_FEATURES: Final[frozenset[str]] = frozenset({FEATURE_REALISATION_WITH_PATH})
 """The standard features that this package has a codec for.
 
-**It is empty, and that is the whole of the gap.** This package speaks the
-Nix 2.34 shape of every operation, and Nix 2.34 offers no feature. A name
-belongs here when the codec that the name gates is in this package, and not
-before: a peer that reads the name then sends the new shape, and a codec that
-cannot read it drops the connection. Issue #162.
+A name belongs here when the codec that the name gates is in this package,
+and not before: a peer that reads the name then sends the new shape, and a
+codec that cannot read it drops the connection. Issue #162.
+
+**This says what the codecs can do, and not what a proxy may claim.** pynixd
+speaks to a backend as well as to a client, and it honours a feature only
+when the backend reads the same shape. `DaemonProxy.honourable_features`
+narrows this set to what every store that a build can go to offers, and the
+handshake with the client uses that narrower answer.
+
+`realisation-with-path-not-hash` covers `DrvOutput`, `UnkeyedRealisation`,
+`BuildResult.builtOutputs`, `QueryRealisation` and `RegisterDrvOutput`. Each
+one carries both shapes as two fields, and `needs_features` and
+`unless_features` pick one.
 """
 
 

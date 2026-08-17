@@ -22,10 +22,12 @@ from ..serde import (
     DrvOutput,
     EnsurePathRequest,
     IsValidPathRequest,
+    KeyedDrvOutput,
     LogNext,
     Realisation,
     RegisterDrvOutputRequest,
     StorePath as SerdeStorePath,
+    UnkeyedRealisation,
 )
 from ..store_path import StorePath
 from .dependencies import DependencyGroupGoal
@@ -410,7 +412,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             return None
         if parsed.is_impure:
             return None
-        built = await realisations_of(parsed, wanted, self.engine.ctx.local_store)
+        built = await realisations_of(parsed, wanted, self.engine.ctx.local_store, self.derived_path.base_store_path())
         if built is None:
             return None
 
@@ -572,7 +574,26 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             if not valid.valid:
                 continue
             try:
-                await self.engine.ctx.local_store.execute(RegisterDrvOutputRequest(realisation=realisation))
+                # **Both shapes go in, and the codec writes the one the peers
+                # agreed on.** `realisation-with-path-not-hash` decides
+                # whether the wire carries one JSON string or a derivation
+                # path, an output name, an output path and the signatures.
+                # `needs_features` and `unless_features` on the fields pick
+                # one and drop the other, so this code needs no branch of its
+                # own. Issue #162.
+                await self.engine.ctx.local_store.execute(
+                    RegisterDrvOutputRequest(
+                        realisation=realisation,
+                        keyed_drv_output=KeyedDrvOutput(
+                            drv_path=SerdeStorePath(path=str(self.derived_path.base_store_path())),
+                            output_name=realisation.id.output_name,
+                        ),
+                        unkeyed_realisation=UnkeyedRealisation(
+                            out_path=realisation.out_path,
+                            signatures=set(realisation.signatures),
+                        ),
+                    ),
+                )
             except Exception:
                 log.warning("register_drv_output_failed", drv_output=str(realisation.id), exc_info=True)
 

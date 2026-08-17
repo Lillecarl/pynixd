@@ -236,7 +236,7 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
             return
 
         unnamed = [name for name, path in output_paths.items() if not str(path)]
-        realised = await self._realised_paths(parsed, unnamed) if unnamed else {}
+        realised = await self._realised_paths(parsed, unnamed, drv_path) if unnamed else {}
         if realised is None:
             if await self._substituter_holds_a_realisation(derived_path, walk):
                 return
@@ -306,7 +306,12 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
         )
         return True
 
-    async def _realised_paths(self, parsed: Derivation, wanted: list[str]) -> dict[str, StorePath] | None:
+    async def _realised_paths(
+        self,
+        parsed: Derivation,
+        wanted: list[str],
+        drv_path: StorePath,
+    ) -> dict[str, StorePath] | None:
         """The path of each output that the derivation does not name.
 
         `Store::queryMissing` reads `queryPartialDerivationOutputMap` at
@@ -326,7 +331,7 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
         """
         if parsed.is_impure:
             return None
-        found = await realisations_of(parsed, wanted, self.engine.ctx.local_store)
+        found = await realisations_of(parsed, wanted, self.engine.ctx.local_store, drv_path)
         if found is None:
             return None
         return {key.rpartition("!")[2]: StorePath(str(realisation.out_path)) for key, realisation in found.items()}

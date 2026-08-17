@@ -106,7 +106,9 @@ class FakeEngine:
 
 
 def _client(options: SetOptionsRequest | None) -> ClientConn:
-    return cast("ClientConn", SimpleNamespace(options=options))
+    # `standard_features` is what the client handshake negotiated. Empty is
+    # what Nix 2.34 names, and `for_the_wire` reads it. Issue #162.
+    return cast("ClientConn", SimpleNamespace(options=options, standard_features=frozenset()))
 
 
 async def _run(

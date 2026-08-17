@@ -26,14 +26,15 @@ from typing import TYPE_CHECKING
 import structlog
 
 from ..drv_hash import output_hashes
-from ..serde import DrvOutput, QueryRealisationRequest
+from ..serde import DrvOutput, KeyedDrvOutput, QueryRealisationRequest, Realisation, StorePath as SerdeStorePath
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
     from ..drv_parser import Derivation
-    from ..serde import Realisation
+    from ..serde import QueryRealisationResponse
     from ..store.base import Store
+    from ..store_path import StorePath
 
 log = structlog.get_logger(__name__)
 
@@ -42,6 +43,7 @@ async def realisations_of(
     parsed: Derivation,
     wanted: Iterable[str],
     store: Store,
+    drv_path: StorePath,
 ) -> dict[str, Realisation] | None:
     """The realisation of each wanted output, keyed by its `DrvOutput` id.
 
@@ -71,10 +73,45 @@ async def realisations_of(
         if digest is None:
             return None
         key = f"sha256:{digest}!{output_name}"
-        response = await store.execute(QueryRealisationRequest(drv_output=DrvOutput(key)))
-        realisation = next(iter(response.realisations), None)
+        # **Both shapes go in, and the codec writes the one the peers agreed
+        # on.** `realisation-with-path-not-hash` decides whether the wire
+        # carries `"<drvHash>!<output>"` as one string or a derivation path
+        # and an output name as two. This code does not know which connection
+        # it will take, and it does not have to: `needs_features` and
+        # `unless_features` on the fields of the request pick one and drop the
+        # other. Issue #162.
+        response = await store.execute(
+            QueryRealisationRequest(
+                drv_output=DrvOutput(key),
+                keyed_drv_output=KeyedDrvOutput(drv_path=SerdeStorePath(str(drv_path)), output_name=output_name),
+            ),
+        )
+        realisation = _the_realisation(response, DrvOutput(key))
         if realisation is None or realisation.out_path is None:
             log.debug("realisation_missing", drv_output=key)
             return None
         answer[key] = realisation
     return answer
+
+
+def _the_realisation(response: QueryRealisationResponse, drv_output: DrvOutput) -> Realisation | None:
+    """The one realisation of the answer, whichever shape carried it.
+
+    Nix 2.34 answers a set, and the master branch answers an
+    `optional<UnkeyedRealisation>`: a tag, and the body when the tag is 1
+    (`daemon.cc:1024`). The caller asked about one output either way.
+
+    **The feature shape carries no id, and this puts *drv_output* back.** The
+    request already named the output, so the answer does not name it again.
+    A `Realisation` of pynixd carries its own id, and `_register_realisations`
+    reads `id.output_name`, so an answer with an empty id would register the
+    output under no name at all. The caller built that id to ask the
+    question, so it is the right one to give back. Issue #162.
+    """
+    if response.realisation is not None:
+        return Realisation(
+            id=drv_output,
+            out_path=response.realisation.out_path,
+            signatures=sorted(response.realisation.signatures),
+        )
+    return next(iter(response.realisations), None)

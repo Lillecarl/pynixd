@@ -127,9 +127,17 @@ class BuildPathsWithResultsGoal(ExecutionGoal[BuildPathsWithResultsResponse]):
         # whose `exitCode` is still `ecBusy`, which is the goal that the first
         # failure stopped. The answer then holds fewer entries than the
         # request, and `build.sh:167` reads the count of `error:` lines.
+        #
+        # **`for_the_wire` also takes the feature set of this client.** A proxy
+        # reads a result on one connection and writes it on another, and the
+        # two negotiate apart. A backend that offers
+        # `realisation-with-path-not-hash` fills one `builtOutputs` field and
+        # leaves the other at `None`, and a client that offers nothing reads
+        # the one that is `None`. Issue #162.
+        client_features = self.client.standard_features if self.client is not None else frozenset()
         return BuildPathsWithResultsResponse(
             results=[
-                KeyedBuildResult(path=serde_path, result=result.result.for_the_wire())
+                KeyedBuildResult(path=serde_path, result=result.result.for_the_wire(client_features))
                 for (serde_path, _goal), result in zip(self._root_goals, root_results, strict=True)
                 if result is not None
             ]
