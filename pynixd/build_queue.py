@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
     from .connection import ClientConn
     from .derived_path import DerivedPath
-    from .serde import BuildDerivationRequest, Realisation
+    from .serde import BuildDerivationRequest, Realisation, SetOptionsRequest
     from .serde.logs import LogMessage
 log = structlog.get_logger(__name__)
 
@@ -81,6 +81,7 @@ class QueuedBuild:
         future: asyncio.Future[BuildDerivationResponse],
         expected_duration: int | None = None,
         scheduler_request_ids: set[RequestId] | None = None,
+        options: SetOptionsRequest | None = None,
     ) -> None:
         """Track a single derivation build through its lifecycle.
 
@@ -90,9 +91,21 @@ class QueuedBuild:
             future: Resolved when the build completes or fails.
             expected_duration: Hint from the scheduler for store assignment.
             scheduler_request_ids: Request IDs this build belongs to (dedup).
+            options: The option set of the client that asked for the build.
         """
         self.build_id = build_id
         self.request = request
+        self.options = options
+        """The option set that the connection of this build must carry.
+
+        A build runs after the request of the client returned, so the client
+        is not on the stack any more. The queue keeps the set instead.
+
+        **A build is shared between the clients that ask for it, and each one
+        has its own options.** The first client to ask decides, and a second
+        client with another set gets the set of the first. Nix builds for one
+        client at a time and has no answer to copy. Issue #192.
+        """
         self.future = future
         self.expected_duration = expected_duration
         self.enqueued_at = time.monotonic()
@@ -349,6 +362,7 @@ class BuildQueue:
         scheduler_request_id: RequestId | None = None,
         derived_paths_for_request: set[DerivedPath] | None = None,
         from_goal_path: bool = False,
+        options: SetOptionsRequest | None = None,
     ) -> tuple[BuildId, asyncio.Future[BuildDerivationResponse]]:
         """Add a build to the queue (deduplicates if already present).
 
@@ -394,6 +408,7 @@ class BuildQueue:
                 future=future,
                 expected_duration=expected_duration,
                 scheduler_request_ids=scheduler_request_ids,
+                options=options,
             )
             build.from_goal_path = from_goal_path
             self.next_id += 1

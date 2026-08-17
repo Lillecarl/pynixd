@@ -20,7 +20,18 @@ class SetOptionsHandler(Handler):
     op: ClassVar[int] = 19
 
     async def handle(self, ctx: RequestContext) -> object | None:
-        """Decode SetOptions request, log no-op for regular users, forward to daemon for admin."""
+        """Keep the options of this session, and answer the client.
+
+        **The options belong to the session, and not to one connection.**
+        This sent the request over the pool, so it reached whichever
+        connection was free, and every later operation of the client reached
+        another one. A client that set `--post-build-hook` then saw the hook
+        run for three of the five derivations that its request built, because
+        pynixd built the five on several connections. Issue #192.
+
+        `Connection.apply_options` now sends the set on the connection that is
+        about to do the work, so nothing goes upstream here.
+        """
         req = await SetOptionsRequest.from_reader(
             ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version),
         )
@@ -30,4 +41,5 @@ class SetOptionsHandler(Handler):
             resp.logs.add(LogNext(text="pynixd: SetOptions ignored (no-op)"))
             return resp
 
-        return await ctx.proxy.local_store.call(req)
+        ctx.proxy.client.options = req
+        return SetOptionsResponse()

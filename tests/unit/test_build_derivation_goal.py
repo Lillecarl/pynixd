@@ -18,6 +18,7 @@ from pynixd.serde import (
     BuildMode,
     BuildResult,
     BuildResultStatus,
+    SetOptionsRequest,
     StorePath as SerdeStorePath,
 )
 from pynixd.serde.ids import BuildId
@@ -38,8 +39,9 @@ class FakeScheduler:
         request: BuildDerivationRequest,
         *,
         from_goal_path: bool = False,
+        options: SetOptionsRequest | None = None,
     ) -> tuple[BuildId, asyncio.Future[BuildDerivationResponse]]:
-        del request
+        del request, options
         if not from_goal_path:
             raise RuntimeError("BuildDerivationGoal must mark scheduler builds as goal-owned")
         self.future = asyncio.get_running_loop().create_future()

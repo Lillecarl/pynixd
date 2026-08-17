@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from .serde import (
         BuildDerivationRequest,
         BuildDerivationResponse,
+        SetOptionsRequest,
     )
     from .serde.aliases import StorePathSet
     from .serde.ids import BuildId, RequestId, StoreId
@@ -163,6 +164,7 @@ class Scheduler:
         scheduler_request_id: RequestId | None = None,
         derived_paths_for_request: set[DerivedPath] | None = None,
         from_goal_path: bool = False,
+        options: SetOptionsRequest | None = None,
     ) -> tuple[BuildId, asyncio.Future[BuildDerivationResponse]]:
         """Add a build to the queue and trigger the scheduler."""
         t0 = time.monotonic()
@@ -182,6 +184,7 @@ class Scheduler:
             scheduler_request_id=scheduler_request_id,
             derived_paths_for_request=derived_paths_for_request,
             from_goal_path=from_goal_path,
+            options=options,
         )
         t_enqueue = time.monotonic()
         self.trigger()
@@ -539,7 +542,7 @@ class Scheduler:
         if build.wait_time is not None:
             metrics.QUEUE_WAIT_DURATION.observe(build.wait_time)
 
-        resp = await conn.call(build.request)
+        resp = await conn.call(build.request, options=build.options)
         if resp.logs.messages:
             for msg in resp.logs.messages:
                 await build.post_log_and_fanout(msg)

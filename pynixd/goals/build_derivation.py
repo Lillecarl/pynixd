@@ -72,9 +72,14 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
         if self.engine.ctx.scheduler is None:
             return goal_failure("pynixd: BuildDerivation requires a configured scheduler")
 
+        # **The build carries the options of the client that asked for it.**
+        # A build runs after the request of the client returned, so the
+        # connection that runs it must get the set from the queue. Issue #192.
+        options = next((c.options for c in self._subscribers if c.options is not None), None)
         build_id, future = await self.engine.ctx.scheduler.build_derivation(
             self.request,
             from_goal_path=True,
+            options=options,
         )
         async with self._lock:
             self._build_id = build_id
