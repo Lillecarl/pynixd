@@ -125,6 +125,7 @@ class Connection:
         self.version: int = wire.PROTOCOL_VERSION
         self.nix_version: str = ""
         self.features: set[str] = set()
+        self.standard_features: frozenset[str] = frozenset()
         self.r = r
         self.w = w
         self.connected: bool = False
@@ -304,11 +305,21 @@ class Connection:
         self.w.write_uint64(wire.PROTOCOL_VERSION)
 
         # Feature negotiation (1.38+) — before CPU/reserveSpace
-        if self.version >= wire.proto(1, 38):
-            self.w.write_string_set(get_extension_features())  # our features
+        if self.version >= wire.FEATURE_EXCHANGE_PROTOCOL:
+            self.w.write_string_set(get_extension_features() | set(wire.SUPPORTED_STANDARD_FEATURES))
             await w.drain()
             self.features = await self.r.read_string_set()
-            log.debug("daemon_features", server_features=self.features)
+            # `self.features` holds what the daemon named, because the
+            # extension names are a capability list that `store/daemon.py`
+            # reads, and the `feature_matrix:` entries under it are data.
+            # `standard_features` is the intersection that Nix computes, and
+            # only that answers what a codec may send.
+            self.standard_features = wire.negotiate_features(self.features, wire.SUPPORTED_STANDARD_FEATURES)
+            log.debug(
+                "daemon_features",
+                server_features=self.features,
+                standard_features=sorted(self.standard_features),
+            )
         self.w.write_uint64(0)  # sendCpu
         self.w.write_uint64(0)  # reserveSpace
         await w.drain()

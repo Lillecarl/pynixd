@@ -109,6 +109,7 @@ class DaemonProxy:
         self.client = ClientConn(w=self.w)
         self.ctx = ctx
         self.version: int = wire.PROTOCOL_VERSION
+        self.standard_features: frozenset[str] = frozenset()
         self.role: Role = role
         self.username: str = username
         self.schedule_mode: ScheduleMode = schedule_mode
@@ -212,11 +213,20 @@ class DaemonProxy:
         )
 
         # Feature negotiation (1.38+) — before CPU/reserveSpace
-        if self.version >= wire.proto(1, 38):
+        if self.version >= wire.FEATURE_EXCHANGE_PROTOCOL:
             client_features = await self.r.read_string_set()
-            log.debug("client_features", client_features=client_features)
+            # The intersection, and not what the client named. A client that
+            # names `realisation-with-path-not-hash` gets the new codec only
+            # when pynixd names it back, which is `intersectFeatures` at
+            # `worker-protocol-connection.cc:148`. Issue #162.
+            self.standard_features = wire.negotiate_features(client_features, wire.SUPPORTED_STANDARD_FEATURES)
+            log.debug(
+                "client_features",
+                client_features=client_features,
+                standard_features=sorted(self.standard_features),
+            )
 
-            our_features = get_extension_features()
+            our_features = get_extension_features() | set(wire.SUPPORTED_STANDARD_FEATURES)
 
             # Only build-capable stores contribute scheduling capabilities.
             # Substituters are deliberately non-scheduleable; advertising

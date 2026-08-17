@@ -4,6 +4,22 @@ Nix daemon protocol constants and magic numbers.
 
 from typing import Final
 
+# The feature names are wire constants, and `nix_daemon_protocol` holds them
+# with the reference to the Nix source of each one. This module states the
+# rest of the wire constants itself, and a second copy of the feature names
+# would be a second thing to keep true.
+from nix_daemon_protocol.constants import (
+    FEATURE_ADD_TO_STORE_SCANNING as FEATURE_ADD_TO_STORE_SCANNING,
+    FEATURE_DELETE_DEAD_SPECIFIC_REFERRERS as FEATURE_DELETE_DEAD_SPECIFIC_REFERRERS,
+    FEATURE_DISABLE_SET_OPTIONS as FEATURE_DISABLE_SET_OPTIONS,
+    FEATURE_EXCHANGE_PROTOCOL as FEATURE_EXCHANGE_PROTOCOL,
+    FEATURE_REALISATION_WITH_PATH as FEATURE_REALISATION_WITH_PATH,
+    FEATURE_SUBMIT_OUTPUT as FEATURE_SUBMIT_OUTPUT,
+    STANDARD_FEATURES as STANDARD_FEATURES,
+    SUPPORTED_STANDARD_FEATURES as SUPPORTED_STANDARD_FEATURES,
+    negotiate_features as negotiate_features,
+)
+
 
 def proto(major: int, minor: int) -> int:
     """Encode a protocol version as a single int."""
