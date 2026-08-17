@@ -406,16 +406,18 @@ pynixd names `realisation-with-path-not-hash` now, and every request that the
 feature touches carries both shapes with a gate that picks one. Same command,
 same checkout:
 
-| run     | OK | FAIL | SKIP | regressions |
-| ------- | -- | ---- | ---- | ----------- |
-| before  | 2  | 19   | 3    | 17          |
-| after   | 15 | 5    | 4    | 4           |
+| run                   | OK | FAIL | SKIP | regressions |
+| --------------------- | -- | ---- | ---- | ----------- |
+| before the claim      | 2  | 19   | 3    | 17          |
+| the claim             | 15 | 5    | 4    | 4           |
+| the built-output key  | 16 | 4    | 4    | 3           |
+| the early cut-off     | 17 | 3    | 4    | 2           |
 
-The control answers 19 OK / 1 FAIL / 4 SKIP at both.
+The control answers 19 OK / 1 FAIL / 4 SKIP at every one of them.
 
-The four left are `ca:build`, `ca:build-cache`, `ca:issue-13247` and
-`ca:new-build-cmd`. The last one is a regression against 2.34 as well, and
-issue #196 holds that one.
+The two left are `ca:build-cache` and `ca:new-build-cmd`. The second is a
+regression against 2.34 as well, and issue #196 holds it, so one belongs to
+the feature work.
 
 **The floor did not move.** The same suite against 2.34 answers control
 19/1/4 and pynixd 18/2/4 after the claim, which is the number above it. Run
