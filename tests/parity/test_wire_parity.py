@@ -158,13 +158,17 @@ def impure_expr(counter: Path) -> str:
     `__impure` makes it impure, so the output path comes from what the build
     wrote and every build writes something else.
 
+    **Two outputs, as `impure-derivations.nix` of the functional suite has.**
+    That test builds `impure.all` and then `impure`, so the second command
+    asks for one output of a derivation that the first one built whole.
     """
     return f"""
 derivation {{
   name = "impure";
   system = builtins.currentSystem;
   builder = "/bin/sh";
-  args = [ "-c" "read n < {counter} || n=0; echo $((n + 1)) > {counter}; echo $n > $out" ];
+  outputs = [ "out" "stuff" ];
+  args = [ "-c" "read n < {counter} || n=0; echo $((n + 1)) > {counter}; echo $n > $out; echo $n > $stuff" ];
   __impure = true;
   outputHashMode = "recursive";
   outputHashAlgo = "sha256";
@@ -388,10 +392,13 @@ async def _impure(run: Runner, root: Path, work: Path) -> None:
     # The counter goes under the store root, which is one path for both runs
     # and which the test wipes between them. A path under the work directory
     # would differ between the two runs, and the two derivations with it.
-    del work
     counter = root / "counter"
-    for _ in range(3):
-        await run([str(NIX), "build", "--no-link", "--json", *IMPURE_FLAGS, "--expr", impure_expr(counter)])
+    # A file, and not `--expr`, because `^*` needs an attribute path. The
+    # path of the file reaches no derivation, so the two roles agree.
+    recipe = work / "impure.nix"
+    await anyio.Path(recipe).write_text(f"{{ impure = {impure_expr(counter)}; }}\n")
+    for attribute in ("impure^*", "impure", "impure^*", "impure^stuff"):
+        await run([str(NIX), "build", "--no-link", "--json", *IMPURE_FLAGS, "--file", str(recipe), attribute])
 
 
 async def _record(role: str, root: Path, workload: Workload) -> Path:
