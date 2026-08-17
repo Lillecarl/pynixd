@@ -14,8 +14,11 @@ The host probe of the stream mode found this. `nix store add-file` and then
 against pynixd, and the two recordings differed in `paths_deleted` and in
 `bytes_freed`.
 
-A connection that is in flight stays. A build really holds its paths, and
-issue #174 records that this difference is on purpose.
+**The rule narrows the window and does not close it.** A connection in flight
+keeps its roots, another client may take a connection and add a root a moment
+later, and a client that reaches the store with no pynixd in the path never
+asks pynixd anything. Issue #174 holds the answer that closes it: one upstream
+connection for each client session, closed with the session.
 """
 
 from __future__ import annotations
@@ -36,6 +39,7 @@ from pynixd.serde.auth import Role
 from pynixd.serde.context import WriteContext
 from pynixd.serde.protocol import GCAction
 from pynixd.store.base import Store
+from pynixd.store.daemon import DaemonStore
 from pynixd.wire import BytesReader, BytesWriter
 
 VERSION = 0x126
@@ -154,6 +158,35 @@ async def test_a_client_that_may_not_collect_retires_nothing():
 
     assert proxy.local_store.calls == []
     assert proxy.errors
+
+
+@pytest.mark.anyio
+async def test_a_query_of_the_roots_retires_them_as_well():
+    """`nix-store -q --roots` prints `{temp:NNN}` for a root that a worker holds.
+
+    `gc.sh:16` of the functional tests of Nix compares that output with one
+    line, so a root of pynixd there fails the test.
+    """
+
+    class FakeDaemonStore:
+        find_roots = DaemonStore.find_roots
+
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def retire_idle_connections(self) -> int:
+            self.calls.append("retire")
+            return 1
+
+        async def call(self, request: Any, client: Any = None, suppress_last: bool = False) -> str:
+            del request, client, suppress_last
+            self.calls.append("call")
+            return "answered"
+
+    store = FakeDaemonStore()
+
+    assert await store.find_roots(object()) == "answered"
+    assert store.calls == ["retire", "call"]
 
 
 @pytest.mark.anyio

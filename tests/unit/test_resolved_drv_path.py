@@ -10,6 +10,19 @@ answered every question about its outputs from the unresolved one.
 Nix writes the resolved derivation to the store and builds that path, at
 `derivation-resolution-goal.cc`. These tests state that pynixd does the same.
 
+**Nix does that for some derivations only, and `Derivation::shouldResolve` at
+`derivations.cc:1129` names them.** An input-addressed output belongs to the
+hash of the derivation that names it, so the resolved derivation needs a
+different path for that output, and `checkDerivationOutputs` at
+`derivations.cc:1324` refuses the one it has: "derivation has incorrect output
+..., should be ...". So an input-addressed derivation keeps its own path, and
+a derivation whose output is deferred, floating or fixed content-addressed
+gets the resolved one.
+
+pynixd stored the resolved form of every derivation that had an input, and the
+daemon refused each input-addressed one. `main:gc` of the functional suite is
+where that showed.
+
 Issue #184.
 """
 
@@ -24,7 +37,7 @@ from pynixd.drv_parser import Derivation, parse_drv
 from pynixd.goals.ensure import EnsureDerivedPathGoal
 from pynixd.goals.results import GoalResult, goal_success
 from pynixd.goals.substitute import SubstituteAttempt
-from pynixd.serde import BuildMode, IsValidPathResponse
+from pynixd.serde import BuildMode, IsValidPathResponse, QueryRealisationRequest, QueryRealisationResponse
 from pynixd.store_path import DrvOutput, StorePath
 
 if TYPE_CHECKING:
@@ -34,10 +47,11 @@ if TYPE_CHECKING:
 BASE_DRV = "/nix/store/00000000000000000000000000000001-base.drv"
 TOP_DRV = "/nix/store/00000000000000000000000000000002-top.drv"
 LEAF_DRV = "/nix/store/00000000000000000000000000000003-leaf.drv"
+DEFER_DRV = "/nix/store/00000000000000000000000000000004-defer.drv"
 BASE_OUT = "/nix/store/44444444444444444444444444444444-base"
 TOP_OUT = "/nix/store/55555555555555555555555555555555-top"
 LEAF_OUT = "/nix/store/66666666666666666666666666666666-leaf"
-STORED = "/nix/store/99999999999999999999999999999999-top.drv"
+STORED = "/nix/store/99999999999999999999999999999999-defer.drv"
 
 
 def _base() -> Derivation:
@@ -51,8 +65,29 @@ def _base() -> Derivation:
     )
 
 
+def _defer() -> Derivation:
+    """A derivation whose output is deferred, so Nix resolves it and stores it.
+
+    Three empty strings in the ATerm. The path of the output is not known
+    until the inputs are built, so nothing in the derivation names it and the
+    resolved form may name what it likes.
+    """
+    return Derivation(
+        outputs=[DrvOutput(hash_algo="", hash_value="", output_name="out", path="")],
+        input_drvs={StorePath(BASE_DRV): ["out"]},  # pyright: ignore[reportArgumentType] -- StorePath is a str
+        platform="x86_64-linux",
+        builder="/bin/sh",
+        args=["-e", "-c", f"cat {BASE_OUT} > $out"],
+        env={"out": "", "name": "defer"},
+    )
+
+
 def _top() -> Derivation:
-    """A derivation with an input derivation, so pynixd resolves it."""
+    """An input-addressed derivation with an input derivation.
+
+    Its output path is the hash of this derivation, so the resolved form of it
+    cannot carry that path. It keeps its own path.
+    """
     return Derivation(
         outputs=[DrvOutput(hash_algo="", hash_value="", output_name="out", path=TOP_OUT)],
         input_drvs={StorePath(BASE_DRV): ["out"]},  # pyright: ignore[reportArgumentType] -- StorePath is a str
@@ -87,6 +122,8 @@ class FakeLocalStore:
             return _top()
         if drv_path == LEAF_DRV:
             return _leaf()
+        if drv_path == DEFER_DRV:
+            return _defer()
         return None
 
     async def add_text_to_store(self, name: str, text: str, references: Any) -> str:
@@ -98,6 +135,9 @@ class FakeLocalStore:
     async def execute(self, request: Any, **kwargs: Any) -> Any:
         """The output of the input is in the store, and no other output is."""
         del kwargs
+        if isinstance(request, QueryRealisationRequest):
+            # No output is realised, so every derivation here is built.
+            return QueryRealisationResponse(realisations=[])
         return IsValidPathResponse(valid=str(request.path) == BASE_OUT)
 
 
@@ -142,7 +182,7 @@ class _Ctx:
         self.local_store = local_store
 
 
-async def _request(drv_path: str = TOP_DRV, *, takes_text: bool = True) -> tuple[FakeEngine, Any]:
+async def _request(drv_path: str = DEFER_DRV, *, takes_text: bool = True) -> tuple[FakeEngine, Any]:
     engine = FakeEngine(takes_text=takes_text)
     goal = EnsureDerivedPathGoal(
         engine=cast("GoalEngine", engine),
@@ -160,7 +200,7 @@ async def test_the_build_names_the_resolved_derivation() -> None:
     engine, request = await _request()
 
     assert str(request.drv_path) == STORED
-    assert str(request.drv_path) != TOP_DRV
+    assert str(request.drv_path) != DEFER_DRV
     assert len(engine.local_store.added) == 1
 
 
@@ -170,7 +210,7 @@ async def test_the_name_keeps_the_drv_suffix() -> None:
     engine, _ = await _request()
     name, _text, _refs = engine.local_store.added[0]
 
-    assert name == "top.drv"
+    assert name == "defer.drv"
 
 
 @pytest.mark.anyio
@@ -210,6 +250,32 @@ async def test_a_derivation_with_no_input_keeps_its_own_path() -> None:
 
 
 @pytest.mark.anyio
+async def test_an_input_addressed_derivation_keeps_its_own_path() -> None:
+    """Its output path states the hash of this derivation, and not of another.
+
+    The daemon refuses the resolved form: "derivation has incorrect output
+    ..., should be ...", at `derivations.cc:1324`. Nix does not write one
+    either, because `shouldResolve` answers false for it.
+    """
+    engine, request = await _request(TOP_DRV)
+
+    assert str(request.drv_path) == TOP_DRV
+    assert engine.local_store.added == []
+
+
+@pytest.mark.anyio
+async def test_the_wire_still_carries_the_resolved_derivation() -> None:
+    """`BuildDerivation` holds a `BasicDerivation`, which names no input drv.
+
+    The path that the request names and the derivation that it carries are two
+    decisions. This one does not change.
+    """
+    _engine, request = await _request(TOP_DRV)
+
+    assert BASE_OUT in {str(path) for path in request.derivation.input_srcs}
+
+
+@pytest.mark.anyio
 async def test_a_store_that_takes_no_text_keeps_the_original_path() -> None:
     """The build then reads the unresolved derivation, which is what pynixd did before.
 
@@ -219,4 +285,4 @@ async def test_a_store_that_takes_no_text_keeps_the_original_path() -> None:
     """
     _engine, request = await _request(takes_text=False)
 
-    assert str(request.drv_path) == TOP_DRV
+    assert str(request.drv_path) == DEFER_DRV

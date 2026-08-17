@@ -324,8 +324,19 @@ class ConnectionPool:
         connection keeps a worker alive, so the collector reads a root that no
         client asked for and frees nothing.
 
-        A connection that is in flight stays. A build really holds its paths,
-        and issue #174 records that this difference is on purpose.
+        **This narrows the window, and it does not close it.** A connection
+        that is in flight stays, so its roots stay. Nothing stops another
+        client from taking a connection and adding a root between this call
+        and the moment the collector reads the file. And a client that reaches
+        the store directly, with no pynixd in the path, never calls this at
+        all: `multiple-outputs.sh:80` of Nix runs
+        `env -u NIX_REMOTE nix store delete --ignore-liveness`, and it fails
+        for that reason.
+
+        The lifetime of the connection is the mechanism, so the answer is the
+        one that issue #174 states: give each client session its own upstream
+        connection, and close it with the session. Then a root lives as long
+        as the client that made it, as in `nix-daemon`, and no window is left.
         """
         idle = self.idle_conns
         self.idle_conns = []

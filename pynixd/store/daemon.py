@@ -656,7 +656,16 @@ class DaemonStore(Store):
         return await self.call(request, client=client, suppress_last=suppress_last)
 
     async def find_roots(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
-        """FindRoots (op 14) — delegate to daemon."""
+        """FindRoots (op 14) — delegate to daemon.
+
+        The idle connections go first, for the reason that
+        `retire_idle_connections` gives: each one keeps a worker of the daemon
+        alive, and that worker holds a temporary root for every path that it
+        took. `nix-store -q --roots` reads those roots and prints `{temp:NNN}`
+        beside the root that the client really made. `gc.sh:16` of the
+        functional tests of Nix compares that output with one line.
+        """
+        await self.retire_idle_connections()
         return await self.call(request, client=client, suppress_last=suppress_last)
 
     async def set_options(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:

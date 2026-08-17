@@ -192,14 +192,12 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         # (#183), and it missed a fixed-output derivation with a
         # content-addressed input, which carries a placeholder as well.
         domain_drv_path = StorePath(str(drv_path))
-        resolved = True
         if parsed.dynamic_input_drvs and dynamic_paths:
             basic = resolve_dynamic_derivation(parsed, domain_drv_path, dynamic_paths)
         elif parsed.input_drvs:
             basic = resolve_derivation(parsed, domain_drv_path, await self._input_paths(parsed, dynamic_paths))
         else:
             basic = await to_basic_derivation(parsed, store_path)
-            resolved = False
 
         # **Every output of the derivation goes on the wire, and the wanted
         # ones alone do not.** `BuildDerivation` carries no set of wanted
@@ -218,7 +216,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             substituted = await self._say_what_it_produced(substituted, parsed, selected_outputs)
             return substituted.with_dynamic_outputs(self.derived_path.base_store_path())
 
-        build_drv_path = await self._path_of_what_it_builds(basic, drv_path) if resolved else drv_path
+        build_drv_path = await self._path_of_what_it_builds(basic, drv_path) if _should_resolve(parsed) else drv_path
         request = BuildDerivationRequest(
             drv_path=build_drv_path,
             derivation=basic,
@@ -631,6 +629,40 @@ def _needs_realisations(parsed: Derivation) -> bool:
     `ca:build` builds `dependentNonCA`, which is that derivation.
     """
     return any(not output.path for output in parsed.outputs)
+
+
+def _should_resolve(parsed: Derivation) -> bool:
+    """True when Nix writes a resolved derivation for this one, and builds that.
+
+    `Derivation::shouldResolve` at `derivations.cc:1129`. A derivation with no
+    input derivation has nothing to resolve. After that the type of the
+    derivation decides: an input-addressed one resolves only when its output
+    is deferred, a content-addressed one always resolves, and an impure one
+    always resolves. An input that is the output of a dynamic derivation also
+    makes it resolve.
+
+    **An input-addressed output belongs to the hash of the derivation that
+    names it.** The resolved derivation is a different derivation, so the
+    right path for that output is a different path, and the daemon says so at
+    `derivations.cc:1324`: "derivation has incorrect output ..., should be
+    ...". pynixd stored the resolved form of every derivation that had an
+    input, and the daemon refused each input-addressed one. `main:gc` of the
+    functional suite is where that showed: the refused connection went out of
+    the pool as dirty, and the temporary root that it held stayed in the file.
+
+    pynixd still resolves every derivation for the wire, because
+    `BuildDerivation` carries a `BasicDerivation` and that model holds no
+    input derivation. This decides one thing only: whether the request names
+    the path of the resolved derivation or the path of the original one.
+    """
+    if not parsed.input_drvs and not parsed.dynamic_input_drvs:
+        return False
+    if parsed.dynamic_input_drvs:
+        return True
+    # An output with no path is deferred, floating or impure. An output with a
+    # hash digest is fixed content-addressed, and its path comes from that
+    # digest rather than from the hash of the derivation.
+    return any(not output.path or output.hash_value for output in parsed.outputs)
 
 
 def _realisation_output_name(key: str, realisation) -> str:
