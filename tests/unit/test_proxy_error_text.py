@@ -1,0 +1,33 @@
+"""What the client reads after the word "error:".
+
+`DaemonProxy` caught an exception and sent `repr(ex)`. A client of pynixd then
+read `error: BackendError("Cannot build '\\x1b[35;1m/nix/store/...")` -- the
+name of a Python class, a quoted string, and every escape of the message
+doubled. Nix sends the message alone.
+
+Refs #175, #188.
+"""
+
+from __future__ import annotations
+
+from pynixd.exceptions import BackendError, InfrastructureError
+from pynixd.proxy import _error_text  # noqa: PLC2701 -- the format is the unit under test
+
+
+def test_a_pynixd_error_sends_its_message_alone() -> None:
+    message = "build of resolved derivation '/nix/store/aaa-x.drv' failed"
+    assert _error_text(BackendError(message)) == message
+
+
+def test_every_pynixd_error_reads_the_same_way() -> None:
+    assert _error_text(InfrastructureError("the builder went away")) == "the builder went away"
+
+
+def test_a_fault_of_pynixd_names_the_class() -> None:
+    """A reader has to know that this one is not a message from Nix."""
+    assert _error_text(KeyError("out")) == "KeyError: 'out'"
+
+
+def test_the_message_keeps_its_escapes() -> None:
+    """`repr` doubled each one, so the client printed the text of an escape."""
+    assert _error_text(BackendError("a \x1b[31;1mred\x1b[0m word")) == "a \x1b[31;1mred\x1b[0m word"

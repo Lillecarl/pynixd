@@ -16,7 +16,7 @@ import structlog
 from . import wire
 from .config import ScheduleMode
 from .connection import ClientConn
-from .exceptions import OpNotImplementedError
+from .exceptions import OpNotImplementedError, PynixdError
 from .goals import GoalEngine
 from .handlers._base import HANDLER_REGISTRY
 from .protocol import get_extension_features
@@ -52,6 +52,25 @@ if TYPE_CHECKING:
 from .store import DaemonStore as DaemonStore
 
 log = structlog.get_logger(__name__)
+
+
+def _error_text(ex: Exception) -> str:
+    """The text that `STDERR_ERROR` carries for *ex*.
+
+    **A client prints this text after the word "error:", so it must read as
+    one.** This was `repr(ex)`, which gave the client
+    `error: BackendError("Cannot build '\\x1b[35;1m/nix/store/...")` -- the
+    name of a Python class, a quoted string, and every escape of the message
+    doubled. Nix writes the message alone.
+
+    A `PynixdError` carries a message that pynixd wrote for a reader, so the
+    message is the whole text. Any other exception is a fault of pynixd, and
+    the name of the class is the part that says so.
+    """
+    if isinstance(ex, PynixdError):
+        return str(ex)
+    return f"{type(ex).__name__}: {ex}"
+
 
 NIX_VERSION: str = "pynixd-0.1.0"
 
@@ -250,7 +269,7 @@ class DaemonProxy:
             except Exception as ex:
                 log.exception("handle_op_error", name=op_name)
                 await self.client.flush()
-                await self.send_error(repr(ex))
+                await self.send_error(_error_text(ex))
             finally:
                 elapsed = time.monotonic() - t0
                 count, acc = self._op_timing.get(op_num, (0, 0.0))
