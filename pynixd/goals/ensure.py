@@ -710,16 +710,43 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
 
         The answer was therefore right and the road to it was wrong: pynixd
         asked a daemon to tell it something it already knew. Issue #196.
+
+        **The number in the message is not the number of inputs that failed.**
+        `Goal::amDone` at `goal.cc:242` gives the rule: the first waitee that
+        fails increments `nrFailed`, and when `keep-going` is off the same
+        branch drops every waitee that is left. The goal then wakes with
+        `nrFailed == 1`, whatever number of inputs would have failed. With
+        `keep-going` on no waitee is dropped, and the number is the whole
+        count.
+
+        `main:build` measured it. `nix build -f fod-failing.nix -L x4` builds
+        x2 and x3, both give a hash mismatch, and `build.sh:196` asserts
+        "Reason: 1 dependency failed." pynixd counted both and wrote 2.
+
+        pynixd waits for each input goal and Nix stops waiting at the first
+        failure. The message is the same, and the timing is not: a second
+        input that is still building holds this goal until it ends. Nix does
+        not cancel that build either -- it only removes the edge -- so no
+        client sees a different set of builds, and a slow second input costs
+        pynixd the wait that Nix saves.
         """
         failed = [result for result in child_results if not result_succeeded(result.result)]
         if not failed:
             return None
+        client = next((c for c in self._watchers if c.options is not None), None)
+        keep_going = bool(client.options.keep_going) if client is not None and client.options is not None else False
         # The shape that `_build_failure_message` of `goals/engine.py` uses
         # for `BuildPaths`. The child that failed has written its own reason
         # already, through `_tell_the_client_it_failed`, so this names the
         # count and does not repeat the text.
-        log.debug("input_derivation_failed", drv_path=str(drv_path), failed=len(failed))
-        count = len(failed)
+        count = len(failed) if keep_going else 1
+        log.debug(
+            "input_derivation_failed",
+            drv_path=str(drv_path),
+            failed=len(failed),
+            reported=count,
+            keep_going=keep_going,
+        )
         dependency = "dependency" if count == 1 else "dependencies"
         return goal_failure(
             f"Cannot build '{drv_path}'.\n       Reason: {count} {dependency} failed.",
