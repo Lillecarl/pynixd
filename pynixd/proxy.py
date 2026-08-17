@@ -36,7 +36,8 @@ from .serde.context import ReadContext, RequestContext as RequestContext, WriteC
 from .serde.ids import StoreId
 from .serde.protocol import OptTrusted, Verbosity
 from .serde.wire_ops import WIRE_REGISTRY, WireResponse
-from .temp_roots import TempRoots, state_dir
+from .store_layout import StoreLayout
+from .temp_roots import TempRoots
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -377,7 +378,11 @@ class DaemonProxy:
         file works.
         """
         if self._temp_roots is None:
-            self._temp_roots = TempRoots(state_dir(getattr(self.local_store, "store_path", None)))
+            # The state directory of the store that pynixd serves, which is
+            # `<root>/nix/var/nix` for a chroot store and `NIX_STATE_DIR` for
+            # a relocated one. `StoreLayout` answers both. Issue #176.
+            layout = getattr(self.local_store, "layout", None) or StoreLayout.chroot(None)
+            self._temp_roots = TempRoots(layout.state_dir)
         await self._temp_roots.add(path)
 
     # ── Helpers ───────────────────────────────────────────────────────

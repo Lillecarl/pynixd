@@ -38,6 +38,7 @@ from pynixd.serde import (
 )
 from pynixd.serde.ids import BuildId, StoreId
 from pynixd.store import LocalDBStore
+from pynixd.store_layout import StoreLayout
 from pynixd.store_path import StorePath
 from tests.conftest import STORE_PREFIX, make_test_spec, rmtree_robust, serde_path
 from tests.test_features import TestFeatures as F
@@ -316,7 +317,7 @@ async def test_build_stats_hint_by_pname(tmp_path: Path) -> None:
     pynixd_local = LocalDBStore(
         make_test_spec(store_id="local", store_path=pynixd_local_path, no_probe=True),
     )
-    db = await LocalStoreDB.open(pynixd_local_path)
+    db = await LocalStoreDB.open(StoreLayout.chroot(pynixd_local_path))
     pynixd_local.db = db
 
     assert db.active

@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, urlsplit
 import anyio
 import structlog
 
-from nix_daemon_protocol.store_dir import set_real_store_dir
+from nix_daemon_protocol.store_dir import set_real_store_dir, set_store_dir
 
 from . import wire
 from .config import ExternalUnixStoreSpec, HTTPBinaryCacheSpec, LocalSocketStoreSpec, PynixdSettings
@@ -27,6 +27,7 @@ from .serde.ids import StoreId
 from .serde.protocol import PynixdGCAction
 from .ssh_server import start_ssh_server
 from .store import DaemonStore, ExternalUnixStore, HTTPBinaryCacheStore, LocalDBStore, LocalStore, Store
+from .store_layout import DEFAULT_STORE_DIR
 from .unix_server import start_unix_server
 
 if TYPE_CHECKING:
@@ -48,28 +49,33 @@ that a stricter limit accepts is bindable everywhere."""
 
 
 def _adopt_store_dir(local_store: Store) -> None:
-    """Take the real store directory from the local store that pynixd serves.
+    """Take the two store directories from the store that pynixd serves.
 
-    **The real one, and not the one that a store path names.** `--store <root>`
-    puts the files at `<root>/nix/store`, and it leaves `builtins.storeDir` at
-    `/nix/store`. Measured against Nix 2.34.8: `nix --store $T eval --expr
+    **They are not always the same directory, and which one moves depends on
+    the shape of the store.** `--store <root>` puts the files at
+    `<root>/nix/store` and leaves `builtins.storeDir` at `/nix/store`.
+    Measured against Nix 2.34.8: `nix --store $T eval --expr
     builtins.storeDir` answers `"/nix/store"`, and the layout appears under
-    `$T/nix/store`. So the root gives the directory of the files, and nothing
-    else.
+    `$T/nix/store`. `NIX_STORE_DIR` moves both, because a relocated store
+    keeps its files at the directory that its paths name.
 
-    `NIX_STORE_DIR` is what moves the other one, and the managed daemon
-    inherits the environment of this process, so `store_dir()` reads the same
-    value the daemon does with no help from here.
+    `StoreLayout` answers both, so this reads the layout of the store rather
+    than a root. It used to set the real directory alone, from the root, and
+    a relocated store then got `/nix/store` for the logical one and answered
+    a store path that no client could read. Issue #176.
 
-    A root of `/` changes neither, and it is the default.
+    A store at `/` changes neither, and it is the default.
 
     Issue #173 holds what one constant did instead: it put `/nix/store/` in
     front of a path that already named another store, and reported nothing.
     """
-    root = getattr(local_store, "store_path", None)
-    if root is None or Path(root) == Path("/"):
+    layout = getattr(local_store, "layout", None)
+    if layout is None:
         return
-    set_real_store_dir(Path(root) / "nix" / "store")
+    if layout.real_store_dir != DEFAULT_STORE_DIR:
+        set_real_store_dir(layout.real_store_dir)
+    if layout.store_dir != DEFAULT_STORE_DIR:
+        set_store_dir(layout.store_dir)
 
 
 def _default_http_substituter_urls(local_store: Store) -> list[str]:

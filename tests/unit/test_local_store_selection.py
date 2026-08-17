@@ -20,6 +20,7 @@ from pynixd.local_store_db import LocalStoreDB, resolve_db_path
 from pynixd.serde.ids import StoreId
 from pynixd.store.local_daemon import LocalStore
 from pynixd.store.local_db import LocalDBStore
+from pynixd.store_layout import StoreLayout
 
 
 def test_the_implicit_local_store_uses_the_database() -> None:
@@ -114,8 +115,8 @@ async def test_a_store_root_pynixd_cannot_write_yields_an_inactive_instance() ->
     unwritable = Path("/nonexistent-store-root-for-this-test")
     assert not unwritable.exists(), "this test needs a root that is not there"
 
-    assert resolve_db_path(unwritable) is None
-    db = await LocalStoreDB.open(unwritable)
+    assert resolve_db_path(StoreLayout.chroot(unwritable)) is None
+    db = await LocalStoreDB.open(StoreLayout.chroot(unwritable))
     assert not db.active
     assert db.db_path is None
 
@@ -127,12 +128,12 @@ async def test_a_writable_store_root_is_resolved(tmp_path: Path) -> None:
     A managed daemon writes its database there, so the directory has to exist.
     The correction above is about what happens when it cannot be made.
     """
-    db_path = resolve_db_path(tmp_path)
+    db_path = resolve_db_path(StoreLayout.chroot(tmp_path))
     assert db_path == tmp_path / "nix" / "var" / "nix" / "db" / "db.sqlite"
     assert db_path.parent.is_dir()
 
 
 def test_the_inactive_constructor_answers_nothing() -> None:
-    db = LocalStoreDB.inactive(Path("/"))
+    db = LocalStoreDB.inactive(StoreLayout.chroot(None))
     assert not db.active
     assert db.read_only

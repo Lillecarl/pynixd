@@ -58,14 +58,21 @@ class LocalStore(DaemonStore):
         """Configure local daemon paths, socket management, and monitor."""
         super().__init__(spec)
 
-        socket_path = spec.socket_path or Path("nix/var/nix/daemon-socket/pynixd-nix")
-        self.managed = self.store_path != Path("/")
-        if not self.managed and not socket_path.is_absolute():
-            self.socket_path = Path("/nix/var/nix/daemon-socket/socket")
-        elif not socket_path.is_absolute():
-            self.socket_path = self.store_path / socket_path
-        else:
+        socket_path = spec.socket_path or Path("pynixd-nix")
+        # A relocated store is always ours to start: `NIX_STORE_DIR` names a
+        # store that no daemon of the machine serves.
+        self.managed = self.layout.relocated or self.store_path != Path("/")
+        if socket_path.is_absolute():
             self.socket_path = socket_path
+        elif not self.managed:
+            self.socket_path = Path("/nix/var/nix/daemon-socket/socket")
+        else:
+            # A relative path is a name under the `daemon-socket` directory
+            # of the state of this store. The old default joined
+            # `nix/var/nix/daemon-socket/pynixd-nix` to the store root, which
+            # gives the same path for a chroot store and the wrong one for a
+            # relocated store.
+            self.socket_path = self.layout.socket_path(socket_path.name)
 
         self.nix_bin = spec.nix_bin
         self.monitor_enabled = spec.monitor
@@ -123,18 +130,16 @@ class LocalStore(DaemonStore):
             log.info("removing_stale_socket", socket_path=str(self.socket_path))
             self.socket_path.unlink()
 
-        path = self.store_path or Path("/")
         socket_dir = self.socket_path.parent
         socket_dir.mkdir(parents=True, exist_ok=True)
 
         cmd = [
             self.nix_bin,
             "daemon",
-            "--store",
-            str(path),
+            *self.layout.daemon_arguments(),
             "--option",
             "build-dir",
-            str(path / "nix" / "var" / "nix" / "builds"),
+            str(self.layout.build_dir),
             "--log-format",
             "internal-json",
         ]
@@ -143,7 +148,10 @@ class LocalStore(DaemonStore):
         log.info(
             "spawning_managed_daemon",
             nix_bin=self.nix_bin,
-            store_path=str(path),
+            store_dir=str(self.layout.store_dir),
+            real_store_dir=str(self.layout.real_store_dir),
+            state_dir=str(self.layout.state_dir),
+            relocated=self.layout.relocated,
             socket_path=str(self.socket_path),
             builder_frontend="NIX_CONFIG" in self.extra_env,
             cmd=shlex.join(cmd),
@@ -151,12 +159,18 @@ class LocalStore(DaemonStore):
         env = os.environ.copy()
         env.update(self.extra_env)
         env["NIX_DAEMON_SOCKET_PATH"] = str(self.socket_path)
-        # NIX_DATA_DIR, NIX_LOG_DIR and NIX_STATE_DIR were set here, and Nix
-        # read none of them. `--store <root>` above gives the store a rootDir,
-        # and `local-fs-store.hh:54-70` then builds `<root>/nix/var/nix` and
-        # `<root>/nix/var/log/nix` from that root and ignores the three names.
-        # The values were wrong as well: they said `<root>/var/nix`, without
-        # the `nix` element that Nix puts there. Issue #171.
+        # A chroot store gets no name here, and Nix reads none. `--store
+        # <root>` gives the store a rootDir, and `local-fs-store.hh:54-70`
+        # then builds `<root>/nix/var/nix` and `<root>/nix/var/log/nix` from
+        # that root and ignores NIX_DATA_DIR, NIX_LOG_DIR and NIX_STATE_DIR.
+        # Setting the three was how issue #171 started, and the values were
+        # wrong as well: they said `<root>/var/nix`, without the `nix`
+        # element that Nix puts there.
+        #
+        # A relocated store is the other case. It has no root, so the two
+        # names below are the only way to say where its store and its state
+        # are. Issue #176.
+        env.update(self.layout.daemon_environment())
 
         self.daemon_proc = await asyncio.create_subprocess_exec(
             *cmd,

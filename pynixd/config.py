@@ -7,7 +7,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -16,6 +16,7 @@ from pydantic_settings import (
 
 from .nix_config import NixConfig
 from .serde.ids import StoreId
+from .store_layout import StoreLayout
 
 
 class ScheduleMode(StrEnum):
@@ -134,12 +135,63 @@ class LocalSocketStoreSpec(StoreSpecBase):
 
     type: Literal["local-socket"] = "local-socket"
     store_path: Path = Path("/")
-    socket_path: Path = Path("nix/var/nix/daemon-socket/pynixd-nix")
+    """The root of a chroot store, which `nix daemon --store` takes.
+
+    Leave `store_dir` unset to use this. `/` is the store of the machine.
+    """
+
+    store_dir: Path | None = None
+    """The directory in a store path, for a relocated store.
+
+    Set this and `state_dir` together to serve a store that `NIX_STORE_DIR`
+    moved, rather than one that `--store <root>` moved. The two shapes differ:
+    a chroot store keeps `builtins.storeDir` at `/nix/store` and puts the
+    files under the root, and a relocated store moves the store path itself.
+    `pynixd/store_layout.py` states both. Issue #176.
+    """
+
+    state_dir: Path | None = None
+    """The directory that holds `db/` and `temproots/`, for a relocated store.
+
+    Required with `store_dir`, and refused without it. Nix keeps the two
+    independent, so neither one gives the other.
+    """
+
+    socket_path: Path = Path("pynixd-nix")
+    """Where the managed daemon listens.
+
+    An absolute path is used as it is. A relative one is a name under
+    `<state_dir>/daemon-socket/`, which is where Nix puts its own socket. The
+    value was `nix/var/nix/daemon-socket/pynixd-nix` and it was joined to the
+    store root, which gives the same path for a chroot store and no path at
+    all for a relocated one.
+    """
+
     nix_config: NixConfig | None = None
     extra_env: dict[str, str] | None = None
     extra_args: list[str] | None = None
     use_db: bool = True
     monitor: bool = True
+
+    @model_validator(mode="after")
+    def _check_the_two_shapes(self) -> LocalSocketStoreSpec:
+        """A relocated store names both of its directories, or neither.
+
+        A default of `/nix/var/nix` for the state would put the temporary
+        roots and the database of a relocated store in the store of the
+        machine, and nothing would report it.
+        """
+        if self.store_dir is None and self.state_dir is not None:
+            raise ValueError("state_dir needs store_dir: it describes a relocated store")
+        if self.store_dir is not None and self.state_dir is None:
+            raise ValueError("store_dir needs state_dir: Nix keeps the two independent")
+        return self
+
+    def layout(self) -> StoreLayout:
+        """The three directories of the store that this spec names."""
+        if self.store_dir is not None and self.state_dir is not None:
+            return StoreLayout.relocated_store(self.store_dir, self.state_dir)
+        return StoreLayout.chroot(self.store_path)
 
     def to_store(self, store_id: str) -> LocalStore | LocalDBStore:
         """Build a ``LocalStore`` or ``LocalDBStore`` from this spec."""

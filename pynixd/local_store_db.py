@@ -39,6 +39,7 @@ from .db_migrations import (
     SchemaState,
     apply_migrations,
 )
+from .store_layout import StoreLayout
 from .store_path import StorePath
 
 if TYPE_CHECKING:
@@ -126,7 +127,7 @@ class LocalStoreDB:
     Operation types implement their own DB logic via ``execute_db(db)``.
     This class only manages connections and dispatches.
 
-    Use the async factory ``await LocalStoreDB.open(store_path)`` to create.
+    Use the async factory ``await LocalStoreDB.open(layout)`` to create.
     """
 
     def __init__(
@@ -169,7 +170,7 @@ class LocalStoreDB:
     @classmethod
     def inactive(
         cls,
-        store_path: Path | None,
+        layout: StoreLayout,
         *,
         reference_flush_interval: float = _DEFAULT_REFERENCE_FLUSH_INTERVAL,
     ) -> LocalStoreDB:
@@ -181,7 +182,7 @@ class LocalStoreDB:
         """
         return cls(
             db_path=None,
-            store_path=store_path,
+            store_path=layout.real_store_dir,
             read_only=True,
             reference_flush_interval=reference_flush_interval,
         )
@@ -254,7 +255,7 @@ class LocalStoreDB:
     @classmethod
     async def open(
         cls,
-        store_path: Path,
+        layout: StoreLayout,
         reference_flush_interval: float = _DEFAULT_REFERENCE_FLUSH_INTERVAL,
     ) -> LocalStoreDB:
         """Open the Nix store database. Returns an instance (possibly with no DB).
@@ -264,9 +265,9 @@ class LocalStoreDB:
         `DaemonStore.execute` uses the wire. That is what lets `use_db` default
         to true.
         """
-        db_path = resolve_db_path(store_path)
+        db_path = resolve_db_path(layout)
         if db_path is None:
-            return cls.inactive(store_path, reference_flush_interval=reference_flush_interval)
+            return cls.inactive(layout, reference_flush_interval=reference_flush_interval)
 
         db_dir = db_path.parent
         can_write = os.access(db_dir, os.W_OK)
@@ -275,7 +276,7 @@ class LocalStoreDB:
         try:
             instance = cls(
                 db_path=db_path,
-                store_path=store_path,
+                store_path=layout.real_store_dir,
                 read_only=read_only,
                 reference_flush_interval=reference_flush_interval,
             )
@@ -319,7 +320,7 @@ class LocalStoreDB:
                 db_path=db_path,
                 error=e,
             )
-            return cls.inactive(store_path, reference_flush_interval=reference_flush_interval)
+            return cls.inactive(layout, reference_flush_interval=reference_flush_interval)
 
         instance.schema = await apply_migrations(db_path, read_only=read_only)
         if not instance.schema.usable:
@@ -551,8 +552,8 @@ class LocalStoreDB:
             self.db_path = None
 
 
-def resolve_db_path(store_path: Path) -> Path | None:
-    """The `db.sqlite` of a store root, or `None` when there is none to use.
+def resolve_db_path(layout: StoreLayout) -> Path | None:
+    """The `db.sqlite` of a store, or `None` when there is none to use.
 
     Returns `None` rather than raising. `LocalStoreDB.open` is what decides
     whether the SQLite fast paths are available, and `use_db` defaults to
@@ -571,10 +572,10 @@ def resolve_db_path(store_path: Path) -> Path | None:
     the usual case is a directory that already exists. A failure to create it
     now means the fast paths are off, and nothing more.
     """
-    if store_path == Path("/") or not store_path:
-        db_path = Path("/nix/var/nix/db/db.sqlite")
-    else:
-        db_path = store_path / "nix" / "var" / "nix" / "db" / "db.sqlite"
+    # `StoreLayout` answers this for a chroot store and for a relocated one.
+    # This used to build `<root>/nix/var/nix/db/db.sqlite` itself, which named
+    # the wrong file for a store that `NIX_STORE_DIR` moved. Issue #176.
+    db_path = layout.db_path
 
     if db_path.exists():
         return db_path

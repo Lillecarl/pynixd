@@ -29,6 +29,7 @@ from pynixd.db_migrations import (
     expected_tables,
 )
 from pynixd.local_store_db import LocalStoreDB
+from pynixd.store_layout import StoreLayout
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -246,7 +247,7 @@ class TestBuildStatisticsSurviveARestart:
     async def test_a_recorded_duration_is_still_there_after_a_reopen(self, tmp_path: Path) -> None:
         _nix_database(tmp_path)
 
-        db = await LocalStoreDB.open(tmp_path)
+        db = await LocalStoreDB.open(StoreLayout.chroot(tmp_path))
         assert db.schema.usable, db.schema.reason
         await db.record_build_stats(
             pname="hello",
@@ -258,7 +259,7 @@ class TestBuildStatisticsSurviveARestart:
         )
         await db.close()
 
-        reopened = await LocalStoreDB.open(tmp_path)
+        reopened = await LocalStoreDB.open(StoreLayout.chroot(tmp_path))
         try:
             assert await reopened.get_build_stats_hint("hello", "aarch64-linux") == 1234
         finally:
@@ -267,7 +268,7 @@ class TestBuildStatisticsSurviveARestart:
     async def test_the_statistics_are_off_when_the_schema_is_not_usable(self, tmp_path: Path) -> None:
         """A store whose tables pynixd cannot bring up must not query them."""
         _nix_database(tmp_path)
-        db = await LocalStoreDB.open(tmp_path)
+        db = await LocalStoreDB.open(StoreLayout.chroot(tmp_path))
         try:
             db.schema = db_migrations.SchemaState(version=0, usable=False, reason="test")
             assert await db.get_build_stats_hint("hello", "aarch64-linux") is None

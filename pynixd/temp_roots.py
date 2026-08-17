@@ -59,21 +59,6 @@ RETRY_LIMIT = 100
 _names = itertools.count()
 
 
-def state_dir(store_path: Path | None) -> Path:
-    """The `nix/var/nix` of a store root.
-
-    `LocalStore.ensure_daemon` gives the managed daemon `--store <root>`, and
-    `local-fs-store.hh` then puts the state of that store at
-    `<root>/nix/var/nix`. The store at `/` is the system one, whose state is
-    at `/nix/var/nix`. `resolve_db_path` reads the same layout for the SQLite
-    database.
-    """
-    root = store_path or Path("/")
-    if root == Path("/"):
-        return Path("/nix/var/nix")
-    return root / "nix" / "var" / "nix"
-
-
 class TempRoots:
     """One temporary roots file, and the paths that it holds.
 

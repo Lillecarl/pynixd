@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 import structlog
@@ -69,10 +68,11 @@ class LocalDBStore(LocalStore):
         """Why this store must not use SQLite, or `None` when it may.
 
         Only the store URI can answer this, and pynixd builds the managed
-        daemon's URI itself -- `LocalStore.ensure_daemon` passes `--store
-        <store_path>`, which is always a plain local store. `extra_args` is
-        the one way a different store reaches the daemon, because it is
-        appended after that flag and a later `--store` wins.
+        daemon's URI itself -- `StoreLayout.daemon_arguments` passes `--store
+        <root>` for a chroot store and nothing at all for a relocated one, and
+        both are a plain local store. `extra_args` is the one way a different
+        store reaches the daemon, because it is appended after those arguments
+        and a later `--store` wins.
         """
         overlay = next((arg for arg in self.extra_args if "local-overlay" in arg), None)
         if overlay is not None:
@@ -89,9 +89,9 @@ class LocalDBStore(LocalStore):
         refusal = self._refuses_a_database()
         if refusal is not None:
             log.warning("local_store_db_refused", store_id=str(self.store_id), reason=refusal)
-            self.db = LocalStoreDB.inactive(self.store_path or Path("/"))
+            self.db = LocalStoreDB.inactive(self.layout)
         else:
-            self.db = await LocalStoreDB.open(self.store_path or Path("/"))
+            self.db = await LocalStoreDB.open(self.layout)
         await super().start(sync_paths=sync_paths)
 
     async def close(self) -> None:

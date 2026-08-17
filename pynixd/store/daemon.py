@@ -28,6 +28,7 @@ from ..serde import (
 )
 from ..serde.context import WriteContext
 from ..serde.wire_ops import WireRequest
+from ..store_layout import StoreLayout
 from ..system_features import KNOWN_FEATURES, PROBE_SYSTEMS
 from ..utils import random_nix32_hash
 from .base import Store
@@ -82,6 +83,16 @@ class DaemonStore(Store):
         """Initialize daemon store with pool, probing state, circuit breaker, and reconnect loop."""
         super().__init__(spec)
         self.store_path = getattr(spec, "store_path", Path("/"))
+        self.layout: StoreLayout = (
+            spec.layout() if hasattr(spec, "layout") else StoreLayout.chroot(getattr(spec, "store_path", None))
+        )
+        """The three directories of this store. Issue #176.
+
+        A store that is not local has no layout of its own, so it takes the
+        chroot layout of its root. Nothing reads the state directory of such
+        a store: the temporary roots and the SQLite fast paths belong to the
+        local store that pynixd serves.
+        """
         self.scheduleable = spec.scheduleable
         self.priority = spec.priority
         self.score_penalty = spec.score_penalty

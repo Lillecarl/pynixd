@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from pynixd.temp_roots import TempRoots, state_dir
+from pynixd.temp_roots import TempRoots
 
 PATH_A = "/nix/store/00000000000000000000000000000000-a"
 PATH_B = "/nix/store/11111111111111111111111111111111-b"
@@ -38,15 +38,6 @@ def can_write_lock(path) -> bool:
     finally:
         os.close(fd)
     return True
-
-
-def test_state_dir_of_the_system_store():
-    assert state_dir(Path("/")) == Path("/nix/var/nix")
-    assert state_dir(None) == Path("/nix/var/nix")
-
-
-def test_state_dir_of_a_store_root(tmp_path):
-    assert state_dir(tmp_path) == tmp_path / "nix" / "var" / "nix"
 
 
 @pytest.mark.anyio

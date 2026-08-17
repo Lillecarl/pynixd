@@ -32,6 +32,7 @@ from pynixd.serde import (
     StorePath as SerdeStorePath,
 )
 from pynixd.store.local_db import referenced_paths
+from pynixd.store_layout import StoreLayout
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -97,7 +98,7 @@ class TestFlushingTheReferences:
     async def test_a_marked_path_reaches_the_table_with_its_closure(self, tmp_path: Path) -> None:
         """`libc` was never named, and it is referenced because `hello` is."""
         _store_with_a_closure(tmp_path)
-        db = await LocalStoreDB.open(tmp_path)
+        db = await LocalStoreDB.open(StoreLayout.chroot(tmp_path))
         try:
             db.mark_path(HELLO)
             await db.flush_references()
@@ -109,7 +110,7 @@ class TestFlushingTheReferences:
     async def test_the_registration_time_is_refreshed_as_well(self, tmp_path: Path) -> None:
         """Both, and on purpose. `nix-collect-garbage` reads the Nix column."""
         _store_with_a_closure(tmp_path)
-        db = await LocalStoreDB.open(tmp_path)
+        db = await LocalStoreDB.open(StoreLayout.chroot(tmp_path))
         try:
             db.mark_path(HELLO)
             await db.flush_references()
@@ -120,7 +121,7 @@ class TestFlushingTheReferences:
 
     async def test_marking_nothing_writes_nothing(self, tmp_path: Path) -> None:
         _store_with_a_closure(tmp_path)
-        db = await LocalStoreDB.open(tmp_path)
+        db = await LocalStoreDB.open(StoreLayout.chroot(tmp_path))
         try:
             await db.flush_references()
             assert await _access_times(db) == {}
@@ -129,7 +130,7 @@ class TestFlushingTheReferences:
 
     async def test_a_second_reference_moves_the_time_forward(self, tmp_path: Path) -> None:
         _store_with_a_closure(tmp_path)
-        db = await LocalStoreDB.open(tmp_path)
+        db = await LocalStoreDB.open(StoreLayout.chroot(tmp_path))
         try:
             db.mark_path(HELLO)
             await db.flush_references()
@@ -146,7 +147,7 @@ class TestFlushingTheReferences:
 
     async def test_the_pending_set_is_emptied(self, tmp_path: Path) -> None:
         _store_with_a_closure(tmp_path)
-        db = await LocalStoreDB.open(tmp_path)
+        db = await LocalStoreDB.open(StoreLayout.chroot(tmp_path))
         try:
             db.mark_paths([HELLO, LIBC])
             await db.flush_references()
@@ -159,7 +160,7 @@ class TestFlushingTheReferences:
 class TestAskingTheTable:
     async def test_an_old_path_is_reported_and_a_fresh_one_is_not(self, tmp_path: Path) -> None:
         _store_with_a_closure(tmp_path)
-        db = await LocalStoreDB.open(tmp_path)
+        db = await LocalStoreDB.open(StoreLayout.chroot(tmp_path))
         try:
             db.mark_path(HELLO)
             await db.flush_references()
@@ -180,7 +181,7 @@ class TestAskingTheTable:
     async def test_a_path_the_store_no_longer_holds_is_pruned(self, tmp_path: Path) -> None:
         """The join that keeping the table inside Nix's database buys."""
         _store_with_a_closure(tmp_path)
-        db = await LocalStoreDB.open(tmp_path)
+        db = await LocalStoreDB.open(StoreLayout.chroot(tmp_path))
         try:
             async with db.acquire_conn() as conn:
                 await conn.execute(
@@ -198,7 +199,7 @@ class TestAskingTheTable:
 
     async def test_pruning_an_untouched_table_removes_nothing(self, tmp_path: Path) -> None:
         _store_with_a_closure(tmp_path)
-        db = await LocalStoreDB.open(tmp_path)
+        db = await LocalStoreDB.open(StoreLayout.chroot(tmp_path))
         try:
             db.mark_path(HELLO)
             await db.flush_references()
