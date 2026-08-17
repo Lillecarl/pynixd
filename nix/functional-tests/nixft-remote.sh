@@ -47,19 +47,35 @@ say() {
 # bytes. A long work directory therefore fails inside a test, and the failure
 # it gives says only that a socket did not appear.
 #
-# **No directory of the builder survives a restart of it, and `$HOME` is no
-# exception.** `$HOME` and `/scratch` are two paths on one ext4 image, and
-# `runVm` of the host makes that image again on every cold boot. The host
-# shares `/host-nix` and `/var/keys`, and both are read-only, so there is no
-# writable path of the host to fall back to either. `$HOME/nixft` is the
-# default because it is short, and for no other reason.
+# **The work directory goes outside `$HOME`, and that is measured.** One run
+# of `all --suite ca` under `$HOME/nixft-ca` and one under `/scratch/nixft-ca`,
+# same checkout and same suite:
+#
+# | work directory   | regressions | fails in the control as well |
+# | ---------------- | ----------- | ---------------------------- |
+# | `$HOME/nixft-ca` | 2           | 8                            |
+# | `/scratch/nixft-ca` | 4        | 1                            |
+#
+# Seven tests that a plain `nix-daemon` passes fail when the work directory
+# sits under `$HOME`: `build`, `build-cache`, `nix-copy`, `nix-shell`, `repl`,
+# `selfref-gc` and `signatures`. The mechanism is not known. What is known is
+# that the control run is the measuring instrument of this suite, and a
+# broken control hides a regression rather than reports one: two of the four
+# real regressions read as "fails in both" in that run.
+#
+# **No directory of the builder survives a restart of it, `$HOME` included.**
+# `$HOME` and `/scratch` are two paths on one ext4 image, and `runVm` of the
+# host makes that image again on every cold boot. The host shares `/host-nix`
+# and `/var/keys`, and both are read-only, so there is no writable path of the
+# host to fall back to either. So the choice between the two names buys no
+# durability, and the measurement above is the whole reason for it.
 #
 # The property that does hold is narrower, and the design above rests on it:
 # the builder shuts down after 60 seconds with **no open connection**. One
 # invocation holds one connection for its whole life, so a suite that runs
 # inside a single invocation cannot lose its work directory halfway.
 if [[ "$WORK" == "-" ]]; then
-    WORK=$HOME/nixft
+    WORK=/scratch/nixft
 fi
 mkdir -p "$WORK"
 WORK=$(readlink -f "$WORK")

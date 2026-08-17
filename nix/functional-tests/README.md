@@ -64,14 +64,28 @@ builder. Use `nixft.sh` there, and give it the same commands:
 
 ```sh
 ./pynixd/nix/functional-tests/nixft.sh pynixd --suite ca
-./pynixd/nix/functional-tests/nixft.sh --work '$HOME/nixft-full' all
+./pynixd/nix/functional-tests/nixft.sh --work /scratch/nixft-full all
 ```
+
+**Keep the work directory outside `$HOME`.** One run of `all --suite ca` under
+each of two paths, same checkout and same suite:
+
+| work directory      | regressions | fails in the control as well |
+| ------------------- | ----------- | ---------------------------- |
+| `$HOME/nixft-ca`    | 2           | 8                            |
+| `/scratch/nixft-ca` | 4           | 1                            |
+
+Seven tests that a plain `nix-daemon` passes fail under `$HOME`. The mechanism
+is not known. The consequence is: the control run is the measuring instrument
+of this suite, and a broken control hides a regression rather than reports
+one. Two of the four real regressions read as "fails in both" in that run.
 
 **The builder is disposable, and the script takes that as the rule.** It shuts
 down after 60 seconds with no open connection, and the next boot makes its
 disk again from nothing. No directory of it survives that, `$HOME` included:
 `$HOME` and `/scratch` are two paths on one ext4 image that the host
-truncates on every cold boot.
+truncates on every cold boot. So the choice of name above buys no durability,
+and the table is its whole reason.
 
 Two rules follow, and the script is both of them:
 

@@ -29,9 +29,10 @@
 #
 # Options:
 #   --work DIR    the work directory in the builder. Default: the builder
-#                 chooses `$HOME/nixft`, which is short. No directory of the
-#                 builder outlives a restart of it, so the name buys nothing
-#                 else.
+#                 chooses `/scratch/nixft`. Keep it outside `$HOME`: seven
+#                 tests that a plain `nix-daemon` passes fail under `$HOME`,
+#                 which breaks the control run. `nixft-remote.sh` holds the
+#                 measurement.
 #   --tries N     attempts before giving up. Default 3.
 #   --repo DIR    the checkout to test. Default: the one that holds this file.
 set -euo pipefail
