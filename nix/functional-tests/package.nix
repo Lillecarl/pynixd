@@ -38,6 +38,7 @@
   ninja,
   jq,
   git,
+  bash,
   busybox,
   coreutils,
   findutils,
@@ -72,6 +73,20 @@ writeShellApplication {
   # search, and meson then names the wrong directory. Nix's own
   # `tests/functional/meson.build` wants busybox for the sandbox tests, so it
   # cannot be dropped.
+  #
+  # **`bash` is here because a build of a test must find a shell in the
+  # store.** `tests/functional/meson.build:17` runs `find_program('bash')` and
+  # writes the answer into `config.nix` as `shell`, which every `mkDerivation`
+  # of the suite uses as its builder. With no bash in `runtimeInputs` the
+  # first one on PATH was `/run/current-system/sw/bin/bash` of the builder
+  # machine, and a build that runs with `sandbox = true` and `sandbox-paths =
+  # /nix/store` cannot see that path. Each such build then died with
+  # "executing '/run/current-system/sw/bin/bash': No such file or directory".
+  #
+  # `cancelled-builds` of `main:build` is the fixture that measured it. `slow`
+  # must sleep 10 s so that `fast-fail` can fail while it runs; with no shell
+  # it died at once, and the test asked which of two instant failures landed
+  # first.
   runtimeInputs = [
     coreutils
     findutils
@@ -85,6 +100,7 @@ writeShellApplication {
     jq
     git
     python3
+    bash
     busybox
   ];
 
