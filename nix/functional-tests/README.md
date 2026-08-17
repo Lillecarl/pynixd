@@ -162,17 +162,24 @@ with the relocated store layout that the suite itself sets.
 | run     | OK  | FAIL | SKIP |
 | ------- | --- | ---- | ---- |
 | control | 149 | 22   | 36   |
-| pynixd  | 118 | 54   | 35   |
+| pynixd  | 120 | 54   | 33   |
 
-**31 regressions**: a test that the control passes and pynixd fails. 10 in the
-`ca` suite, 2 in `flakes`, 2 in `dyn-drv`, and 17 in `main`.
+**29 regressions**: a test that the control passes and pynixd fails. 7 in the
+`ca` suite, 2 in `flakes`, 2 in `dyn-drv`, and 18 in `main`.
 
 Removing the layout patch of #176 moved `nix-channel` from FAIL to OK in the
 control run, so that patch was breaking a test of Nix on its own.
 `nested-sandboxing` still fails, and its cause is not the layout.
 
-The count was 40 before issues #178, #179, #180, #182 and #183. Each one is
-below.
+The count was 40 before issues #178, #179, #180, #182, #183, #184 and #185.
+Each one is below.
+
+Three tests moved from SKIP to FAIL, and `compare` puts them under "other
+changes" rather than under the regressions. `local-overlay-store:delete-duplicate`
+and `local-overlay-store:stale-file-handle` are the two new ones: the managed
+daemon of pynixd does not start in the store shape of that suite, and the
+script then fails where the control run skips it. The third,
+`main:multiple-outputs-substitute-failure`, is older.
 
 ### The 22 control failures
 
@@ -254,6 +261,34 @@ floating content-addressed output therefore went unresolved, so the builder
 read a `DownstreamPlaceholder` as a path and the input was not in `inputSrcs`.
 
 The two together took the `ca` regressions from 14 to 10.
+
+Issue #184 is the third defect. pynixd sends a resolved derivation, and it
+sent the path of the original derivation with it. `DerivationBuildingGoal` of
+the daemon prefers the derivation on the disk whenever that path is valid, at
+`derivation-building-goal.cc:1239`, so the daemon read the original derivation
+and answered under the id of that one. pynixd writes the resolved derivation
+to the store now, as `derivation-resolution-goal.cc` of Nix does, and names
+that path in the request. `Store.add_text_to_store` and
+`Connection.call_with_payload` are the two parts that this needed.
+
+Issue #185 is the fourth. A floating content-addressed output takes its path
+from the build, so the derivation names no path for that output, and pynixd
+built the derivation again. `DerivationGoal::checkPathValidity` at
+`derivation-goal.cc:405` reads the store instead: `sha256:<hash>!<name>` maps
+to a path, and a valid path there ends the goal with no build.
+`EnsureDerivedPathGoal` asks that question first now. `ca:build` needs it,
+because `testGC` builds with `-j0` after a garbage collection, so a second
+build is not allowed.
+
+| `ca` suite    | OK  | FAIL | SKIP |
+| ------------- | --- | ---- | ---- |
+| before #184   | 5   | 16   | 3    |
+| with #184     | 7   | 14   | 3    |
+| with #185     | 11  | 9    | 4    |
+
+`ca:build` passes. So do `build-with-garbage-path`,
+`duplicate-realisation-in-closure`, `nix-copy`, `nix-shell`, `selfref-gc` and
+`why-depends`.
 
 ## The store of each test
 
