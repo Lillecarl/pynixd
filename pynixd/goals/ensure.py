@@ -216,7 +216,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             substituted = await self._say_what_it_produced(substituted, parsed, selected_outputs)
             return substituted.with_dynamic_outputs(self.derived_path.base_store_path())
 
-        build_drv_path = await self._path_of_what_it_builds(basic, drv_path) if _should_resolve(parsed) else drv_path
+        build_drv_path = await self._path_of_what_it_builds(basic, drv_path) if parsed.should_resolve else drv_path
         request = BuildDerivationRequest(
             drv_path=build_drv_path,
             derivation=basic,
@@ -256,6 +256,8 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         """
         paths_of_drv = parsed.output_paths()
         if not wanted or any(str(paths_of_drv.get(name, "")) for name in wanted):
+            return None
+        if parsed.is_impure:
             return None
         built = await realisations_of(parsed, wanted, self.engine.ctx.local_store)
         if built is None:
@@ -323,7 +325,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
                 original=wanted,
             )
 
-        if _needs_realisations(parsed):
+        if parsed.needs_realisations:
             await self._register_realisations(answer.values())
         if changed:
             result.result = result.result.model_copy(update={"built_outputs": answer})
@@ -553,7 +555,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         if not built:
             return result
 
-        if _needs_realisations(parsed):
+        if parsed.needs_realisations:
             await self._register_realisations(built.values())
 
         answer = result.copy()
@@ -591,66 +593,6 @@ def _child_map_to_derived_paths(drv_path: StorePath, node: ChildMapNode) -> list
 
     walk(node, ())
     return results
-
-
-def _needs_realisations(parsed: Derivation) -> bool:
-    """True when the derivation names the path of no output, so a realisation says it.
-
-    Nix registers a realisation for every output of every derivation while
-    `ca-derivations` is on, at `derivation-builder.cc:1994` and again at
-    `derivation-goal.cc:236`. It asks the setting, and pynixd cannot: a daemon
-    with the feature off answers "experimental Nix feature 'ca-derivations' is
-    disabled" to `RegisterDrvOutput`, and pynixd then discards a good
-    connection as dirty.
-
-    So this asks the derivation instead. An output with no path is the one
-    case that needs the feature, and no such derivation exists while the
-    feature is off. A floating content-addressed output names no path, and a
-    deferred output names none either. An input-addressed output and a
-    fixed-output one both name theirs.
-
-    **The question is about the original derivation, and not the resolved
-    one.** pynixd fills in a deferred output before it sends the derivation,
-    so the resolved one names every path and answers no. The client holds the
-    original, and `queryPartialDerivationOutputMap` at `store-api.cc:406`
-    reads a realisation for each output that the original leaves open.
-    `ca:build` builds `dependentNonCA`, which is that derivation.
-    """
-    return any(not output.path for output in parsed.outputs)
-
-
-def _should_resolve(parsed: Derivation) -> bool:
-    """True when Nix writes a resolved derivation for this one, and builds that.
-
-    `Derivation::shouldResolve` at `derivations.cc:1129`. A derivation with no
-    input derivation has nothing to resolve. After that the type of the
-    derivation decides: an input-addressed one resolves only when its output
-    is deferred, a content-addressed one always resolves, and an impure one
-    always resolves. An input that is the output of a dynamic derivation also
-    makes it resolve.
-
-    **An input-addressed output belongs to the hash of the derivation that
-    names it.** The resolved derivation is a different derivation, so the
-    right path for that output is a different path, and the daemon says so at
-    `derivations.cc:1324`: "derivation has incorrect output ..., should be
-    ...". pynixd stored the resolved form of every derivation that had an
-    input, and the daemon refused each input-addressed one. `main:gc` of the
-    functional suite is where that showed: the refused connection went out of
-    the pool as dirty, and the temporary root that it held stayed in the file.
-
-    pynixd still resolves every derivation for the wire, because
-    `BuildDerivation` carries a `BasicDerivation` and that model holds no
-    input derivation. This decides one thing only: whether the request names
-    the path of the resolved derivation or the path of the original one.
-    """
-    if not parsed.input_drvs and not parsed.dynamic_input_drvs:
-        return False
-    if parsed.dynamic_input_drvs:
-        return True
-    # An output with no path is deferred, floating or impure. An output with a
-    # hash digest is fixed content-addressed, and its path comes from that
-    # digest rather than from the hash of the derivation.
-    return any(not output.path or output.hash_value for output in parsed.outputs)
 
 
 def _realisation_output_name(key: str, realisation) -> str:

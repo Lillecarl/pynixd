@@ -99,7 +99,7 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
             plan.will_build.add(SerdeStorePath(path=str(drv_path)))
             return
 
-        output_paths = _selected_output_paths(derived_path, parsed)
+        output_paths = parsed.selected_output_paths(derived_path.output_names)
         if not output_paths:
             plan.will_build.add(SerdeStorePath(path=str(drv_path)))
             return
@@ -132,9 +132,12 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
         already built, and the client then took a different code path from the
         one it takes with `nix-daemon`. Issue #175.
 
-        Answers `None` when a wanted output has no realisation. That is the
+        Answers `None` when a wanted output has no realisation, and also for
+        an impure derivation, which Nix never treats as built. That is the
         `knownOutputPaths = false` of Nix, and the derivation must be built.
         """
+        if parsed.is_impure:
+            return None
         found = await realisations_of(parsed, wanted, self.engine.ctx.local_store)
         if found is None:
             return None
@@ -159,16 +162,3 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
         if scheduler is None:
             return SubstitutionAvailability.unavailable()
         return await scheduler.substitution_queue.can_substitute(path)
-
-
-def _selected_output_paths(derived_path: DerivedPath, parsed: Derivation) -> dict[str, StorePath]:
-    """The path of each output the client asked for, by name.
-
-    A content-addressed output has no path here, and the name is what asks the
-    store for its realisation.
-    """
-    output_paths = parsed.output_paths()
-    requested_outputs = derived_path.output_names
-    if requested_outputs == {"*"}:
-        return dict(output_paths)
-    return {name: path for name, path in output_paths.items() if name in requested_outputs}

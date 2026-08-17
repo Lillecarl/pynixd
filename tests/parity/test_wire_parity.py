@@ -47,6 +47,13 @@ store and back. It found the fourth defect: `BuildMode.CHECK` and
 `nix build --rebuild`, `--repair`, `nix-store --realise --check`,
 `--repair-path` and `--verify --repair` all failed through pynixd.
 
+**`impure`** builds one impure derivation three times. It found the fifth and
+the sixth: pynixd read the realisation of the last build and answered with it,
+where Nix builds an impure derivation every time; and
+`hash_derivation_modulo` read the word `impure` in the digest of the output as
+a content hash, so it called the derivation fixed-output and gave every
+realisation an id that no Nix agrees with.
+
 Issue #175.
 """
 
@@ -138,6 +145,28 @@ derivation {
 """
 CA_FLAGS = ["--extra-experimental-features", "ca-derivations"]
 
+IMPURE_FLAGS = ["--extra-experimental-features", "impure-derivations ca-derivations", "--impure"]
+
+
+def impure_expr(counter: Path) -> str:
+    """A derivation that Nix must build every time, with a counter to prove it.
+
+    `__impure` makes it impure, so the output path comes from what the build
+    wrote and every build writes something else.
+    """
+    return f"""
+derivation {{
+  name = "impure";
+  system = builtins.currentSystem;
+  builder = "/bin/sh";
+  args = [ "-c" "read n < {counter} || n=0; echo $((n + 1)) > {counter}; echo $n > $out" ];
+  __impure = true;
+  outputHashMode = "recursive";
+  outputHashAlgo = "sha256";
+}}
+"""
+
+
 # An output that names another store path, so the closure has an edge in it
 # and `--references`, `--referrers` and `--requisites` all have an answer.
 REFERRER = """
@@ -190,7 +219,10 @@ def _backend(role: str, work: Path, root: Path) -> tuple[list[str], dict[str, st
         NIX_LOG_DIR=str(root / "var/log/nix"),
         # The builder is `/bin/sh`, which the sandbox does not carry, and this
         # test runs as a user with no build users group.
-        NIX_CONFIG="sandbox = false\nbuild-users-group =\n",
+        NIX_CONFIG=(
+            "sandbox = false\nbuild-users-group =\n"
+            "experimental-features = nix-command flakes ca-derivations impure-derivations\n"
+        ),
     )
     if role == "control":
         return [str(NIX), "daemon"], env
@@ -305,6 +337,30 @@ async def _modes(run: Runner, root: Path, work: Path) -> None:
         await run(words)
 
 
+async def _impure(run: Runner, root: Path, work: Path) -> None:
+    """An impure derivation builds every time, and the counter proves it.
+
+    `impure-derivations.sh:36` of the functional suite is this test. The
+    builder reads a counter from a file and writes the next number, so a
+    second build that gives the first output is a defect. pynixd gave it: it
+    read the realisation of the last build and answered with that.
+
+    **This workload runs no garbage collection.** A build of an impure
+    derivation leaves a scratch directory in the store beside the output that
+    it registers, and the name of that directory holds a random part. The
+    store held six `-impure` directories after three builds, and the database
+    held three of them. A collection reports the other three as garbage, so
+    the two recordings name six random directories and never agree.
+    """
+    # The counter goes under the store root, which is one path for both runs
+    # and which the test wipes between them. A path under the work directory
+    # would differ between the two runs, and the two derivations with it.
+    del work
+    counter = root / "counter"
+    for _ in range(3):
+        await run([str(NIX), "build", "--no-link", "--json", *IMPURE_FLAGS, "--expr", impure_expr(counter)])
+
+
 async def _record(role: str, root: Path, workload: Workload) -> Path:
     """Run the workload once, and answer the directory of the recording."""
     work = BASE / role
@@ -360,7 +416,11 @@ async def clean_base() -> AsyncIterator[None]:
     shutil.rmtree(BASE, ignore_errors=True)
 
 
-@pytest.mark.parametrize("workload", [_builds, _queries, _modes], ids=["builds", "queries", "modes"])
+@pytest.mark.parametrize(
+    "workload",
+    [_builds, _queries, _modes, _impure],
+    ids=["builds", "queries", "modes", "impure"],
+)
 @pytest.mark.usefixtures("clean_base")
 async def test_the_two_daemons_answer_the_same_bytes(workload: Workload) -> None:
     """Each connection of the pynixd run agrees with the control run.
