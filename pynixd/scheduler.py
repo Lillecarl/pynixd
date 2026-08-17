@@ -237,9 +237,9 @@ class Scheduler:
             self._update_store_metrics()
             return
 
-        schedulable, override_in_flight = self._filter_schedulable(pending)
+        schedulable, override_in_flight, running_builds = self._filter_schedulable(pending)
 
-        waiting_slot = await self._assign_to_stores(schedulable, override_in_flight)
+        waiting_slot = await self._assign_to_stores(schedulable, override_in_flight, running_builds)
 
         self._update_store_metrics()
 
@@ -256,12 +256,22 @@ class Scheduler:
     def _filter_schedulable(
         self,
         pending: list[QueuedBuild],
-    ) -> tuple[list[QueuedBuild], dict[StoreId, int]]:
+    ) -> tuple[list[QueuedBuild], dict[StoreId, int], dict[StoreId, int]]:
         """Triage pending builds into schedulable.
 
-        Returns (schedulable, override_in_flight).
+        Returns (schedulable, override_in_flight, running_builds).
         override_in_flight accounts for builds assigned this cycle but not yet
         reflected in ``store.in_flight``.
+
+        **`running_builds` counts builds, and `override_in_flight` counts
+        connections.** `DaemonStore.in_flight` at `store/daemon.py:221` answers
+        `pool.active_connections`, so a single `QueryPathInfo` raises it. The
+        ranker wants that number, because a busy store is a poor place to send
+        more work. `max-jobs` wants the other one, and the two are not
+        interchangeable: `_local_slot_is_full` read `override_in_flight` first,
+        so one active connection filled the single slot of `-j1` and every
+        build waited for a completion that no build was running to give.
+        Issue #196.
         """
         schedulable: list[QueuedBuild] = []
 
@@ -286,12 +296,13 @@ class Scheduler:
             # discovered and pulled during execution.
             schedulable.append(build)
 
-        return schedulable, override_in_flight
+        return schedulable, override_in_flight, assigned_count
 
     async def _assign_to_stores(
         self,
         schedulable: list[QueuedBuild],
         override_in_flight: dict[StoreId, int],
+        running_builds: dict[StoreId, int],
     ) -> list[QueuedBuild]:
         """Assign schedulable builds to backends.
 
@@ -335,7 +346,7 @@ class Scheduler:
                 rs = next(iter(ranked)) if ranked else RankedStore(local_store.store_id, 0.0, local_store)
                 if rs.store_id == local_store.store_id and self._local_slot_is_full(
                     build,
-                    override_in_flight,
+                    running_builds,
                     assigned_this_pass,
                 ):
                     waiting_slot.append(build)
@@ -348,6 +359,10 @@ class Scheduler:
                 )
                 metrics.QUEUE_SIZE.labels(status="pending").dec()
                 metrics.QUEUE_SIZE.labels(status="building").inc()
+                # Named here, and not in `execute_build` alone. The count of
+                # running builds reads this field, and a task that has not
+                # started yet would otherwise carry no store and go uncounted.
+                build.assigned_store_id = rs.store_id
                 build.build_task = asyncio.create_task(
                     self.execute_build(build, rs.store),
                 )
@@ -369,7 +384,7 @@ class Scheduler:
     def _local_slot_is_full(
         self,
         build: QueuedBuild,
-        override_in_flight: Mapping[StoreId, int],
+        running_builds: Mapping[StoreId, int],
         assigned_this_pass: Mapping[StoreId, int],
     ) -> bool:
         """Answer whether `max-jobs` of the client leaves no local slot.
@@ -392,13 +407,21 @@ class Scheduler:
         whole fan-out: a root goal realises the input derivations of its
         derivation at the same time, and each one is a separate build. Three
         builds ran together under `-j1` for that reason. Issue #196.
+
+        **`running_builds` counts builds, and not connections.**
+        `DaemonStore.in_flight` answers `pool.active_connections`, which one
+        `QueryPathInfo` raises. This method read that number first, so a
+        single query filled the one slot of `-j1`, every build waited, and no
+        build was running to end and trigger the next pass. The `ca` suite
+        went from about a minute to more than ten. `_filter_schedulable`
+        answers the build count beside it.
         """
         options = build.options
         if options is None:
             return False
         slots = max(1, int(options.max_build_jobs))
         local_id = self.local_store.store_id
-        running = override_in_flight.get(local_id, 0) + assigned_this_pass.get(local_id, 0)
+        running = running_builds.get(local_id, 0) + assigned_this_pass.get(local_id, 0)
         if running < slots:
             return False
         log.debug(
