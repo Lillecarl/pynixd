@@ -140,12 +140,11 @@ class DerivedPath:
     def output_names(self) -> set[str]:
         """Output names referenced by this path.
 
-        For opaque non-``.drv`` paths returns an empty set.
-        For opaque ``.drv`` paths returns ``{"*"}`` (all outputs).
+        An opaque path names no output, and a `.drv` name changes nothing.
         For built paths delegates to the ``OutputsSpec``.
         """
         if self._outputs is None:
-            return {"*"} if self._drv_path.is_derivation() else set()
+            return set()
         if isinstance(self._outputs, OutputsAll):
             return {"*"}
         return set(self._outputs.names)
@@ -276,10 +275,18 @@ def _parse_components(
     """
     n = s.rfind(sep)
     if n == -1:
-        sp = StorePath(s)
-        if sp.is_derivation():
-            return (sp, (), OutputsAll())
-        return (sp, (), None)
+        # **A string with no separator is opaque, and a `.drv` name changes
+        # nothing.** `DerivedPath::parseWith` at `derived-path.cc:150` answers
+        # `DerivedPath::Opaque` for one, in both formats. The rule that reads a
+        # bare `.drv` as "every output of it" belongs to the command line of
+        # Nix, and to `StorePathWithOutputs::toDerivedPath`, which the wire
+        # stopped using at protocol 1.30.
+        #
+        # This read a bare `.drv` as `OutputsAll`, so
+        # `builtins.unsafeDiscardOutputDependency drvPath` built the
+        # derivation. `nix-daemon` makes the path valid and answers the path
+        # itself, and `build.sh:91` reads that answer.
+        return (StorePath(s), (), None)
 
     outputs = _parse_outputs_spec(s[n + 1 :])
     remaining = s[:n]

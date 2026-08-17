@@ -56,18 +56,29 @@ class TestDerivedPathOpaque:
         assert not isinstance(dp, StorePath)
         assert not isinstance(dp, str)
 
-    def test_bare_drv_normalized_to_built_all(self):
+    def test_a_bare_drv_is_opaque(self):
+        """A `.drv` name gives no outputs, and `DerivedPath::parseWith` says so.
+
+        The rule that reads a bare `.drv` as "every output of it" belongs to
+        the command line of Nix, and to `StorePathWithOutputs::toDerivedPath`,
+        which the wire stopped using at protocol 1.30. Both parsers of
+        `derived-path.cc:150` answer `Opaque` for a string with no separator.
+
+        This class answered `Built(All)`, so `nix build` of
+        `builtins.unsafeDiscardOutputDependency drvPath` built the derivation.
+        `nix-daemon` makes the path valid, and answers the path itself.
+        `build.sh:91` of the functional suite reads that answer.
+        """
         dp = DerivedPath("/nix/store/abc.drv")
-        assert dp.is_opaque is False
-        assert isinstance(dp.outputs, OutputsAll)
-        assert dp.output_names == {"*"}
+        assert dp.is_opaque is True
+        assert dp.outputs is None
+        assert dp.output_names == set()
         assert dp.drv_path == "/nix/store/abc.drv"
 
-    def test_opaque_drv_has_star_outputs(self):
-        """An opaque .drv path gets output_names = {'*'} (convenience)."""
+    def test_a_bare_drv_is_opaque_in_the_legacy_parser_too(self):
         dp = parse_derived_path_legacy("/nix/store/abc.drv")
-        assert dp.is_opaque is False
-        assert dp.output_names == {"*"}
+        assert dp.is_opaque is True
+        assert dp.output_names == set()
 
 
 class TestDerivedPathBuilt:
@@ -160,10 +171,10 @@ class TestParseDerivedPath:
         assert dp.is_opaque is True
         assert dp.drv_path == "/nix/store/abc-foo"
 
-    def test_bare_drv_normalized_to_built_all(self):
+    def test_a_bare_drv_is_opaque(self):
         dp = parse_derived_path("/nix/store/abc.drv")
-        assert dp.is_opaque is False
-        assert isinstance(dp.outputs, OutputsAll)
+        assert dp.is_opaque is True
+        assert dp.outputs is None
 
     def test_built_with_output(self):
         dp = parse_derived_path("/nix/store/abc.drv^out")
@@ -193,8 +204,8 @@ class TestParseDerivedPathLegacy:
 
     def test_legacy_bare_drv(self):
         dp = parse_derived_path_legacy("/nix/store/abc.drv")
-        assert dp.is_opaque is False
-        assert isinstance(dp.outputs, OutputsAll)
+        assert dp.is_opaque is True
+        assert dp.outputs is None
 
 
 class TestHelperAccessors:
@@ -212,7 +223,7 @@ class TestHelperAccessors:
 
     def test_output_names_drv(self):
         dp = DerivedPath("/nix/store/abc.drv")
-        assert dp.output_names == {"*"}
+        assert dp.output_names == set()
 
     def test_output_names_built_all(self):
         dp = DerivedPath("/nix/store/abc.drv!*")
@@ -252,7 +263,7 @@ class TestDerivedPathStrSubclass:
         dp = DerivedPath("/nix/store/abc.drv")
         assert dp.derived is dp
         assert dp.drv_path == "/nix/store/abc.drv"
-        assert dp.output_names == {"*"}
+        assert dp.output_names == set()
 
     def test_is_nested(self):
         dp = DerivedPath("/nix/store/a.drv!out!lib")

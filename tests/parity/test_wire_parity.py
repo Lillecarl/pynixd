@@ -145,6 +145,10 @@ derivation {
 """
 CA_FLAGS = ["--extra-experimental-features", "ca-derivations"]
 
+# The store path of a derivation, with no output dependency on it. The client
+# asks for that one path, and `nix-daemon` makes it valid and answers it.
+OPAQUE_DRV = f"builtins.unsafeDiscardOutputDependency ({MULTI}).drvPath"
+
 IMPURE_FLAGS = ["--extra-experimental-features", "impure-derivations ca-derivations", "--impure"]
 
 
@@ -259,6 +263,12 @@ async def _builds(run: Runner, root: Path, work: Path) -> None:
         ["path-info", "--json", "--impure", "--expr", DERIVATION],
         ["store", "gc"],
         ["build", "--impure", "--no-link", "--json", "--expr", MULTI],
+        # The path of the derivation, and not an output of it.
+        # `builtins.unsafeDiscardOutputDependency` drops the output dependency
+        # of the string, so the client asks for one opaque store path that
+        # happens to end in `.drv`. `build.sh:91` of the functional suite is
+        # this command, and it reads the path back out of the JSON.
+        ["build", "--impure", "--no-link", "--json", "--expr", OPAQUE_DRV],
         ["build", "--impure", "--no-link", "--json", "--expr", FAILS],
         ["build", "--impure", "--no-link", "--json", "--expr", CONTENT_ADDRESSED, *CA_FLAGS],
         ["build", "--impure", "--no-link", "--json", "--expr", CONTENT_ADDRESSED, *CA_FLAGS],

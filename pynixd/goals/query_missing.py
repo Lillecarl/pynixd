@@ -79,7 +79,11 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
     async def _classify_wire_path(self, wire_path: str, plan: QueryMissingPlan) -> None:
         derived_path = DerivedPath(wire_path)
         base_path = derived_path.base_store_path()
-        if base_path.is_derivation():
+        # **The question is the shape of the derived path, and not the name of
+        # the store path.** `Store::queryMissing` at `misc.cc:102` reads the
+        # two cases of `DerivedPath` apart, and the opaque case asks about the
+        # path alone. A `.drv` name in an opaque path means nothing there.
+        if not derived_path.is_opaque:
             await self._classify_derivation(derived_path, plan)
             return
 
