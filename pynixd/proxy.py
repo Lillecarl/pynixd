@@ -56,7 +56,7 @@ from .store import DaemonStore as DaemonStore
 log = structlog.get_logger(__name__)
 
 
-def _error_text(ex: Exception) -> str:
+def _error_text(ex: BaseException) -> str:
     """The text that `STDERR_ERROR` carries for *ex*.
 
     **A client prints this text after the word "error:", so it must read as
@@ -69,7 +69,16 @@ def _error_text(ex: Exception) -> str:
     `DaemonProtocolError` carries the message of a daemon behind pynixd. Both
     are the whole text. Any other exception is a fault of pynixd, and the name
     of the class is the part that says so.
+
+    **A task group carries the failure of its task, and the group itself says
+    nothing.** Every handler that fans out uses `anyio.create_task_group`, and
+    a task that raises leaves an `ExceptionGroup`. The client then read
+    `error: ExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)`
+    and never learned the reason. `ca:signatures` reads the reason, which is
+    "cannot add path '...' because it lacks a signature by a trusted key".
     """
+    if isinstance(ex, BaseExceptionGroup):
+        return "\n".join(_error_text(inner) for inner in ex.exceptions)
     if isinstance(ex, PynixdError | DaemonProtocolError):
         return str(ex)
     return f"{type(ex).__name__}: {ex}"

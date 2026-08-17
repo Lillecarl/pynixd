@@ -38,3 +38,22 @@ def test_the_message_of_a_daemon_passes_through() -> None:
     """pynixd is a proxy, so the text of the daemon behind it is the text."""
     message = "Cannot delete path '/nix/store/aaa-x' since it is still alive."
     assert _error_text(DaemonProtocolError(message)) == message
+
+
+def test_a_task_group_gives_the_reason_of_its_task() -> None:
+    """`ca:signatures` reads the reason, and the group itself says nothing."""
+    reason = "cannot add path '/nix/store/aaa-x' because it lacks a signature by a trusted key"
+    group = ExceptionGroup("unhandled errors in a TaskGroup", [DaemonProtocolError(reason)])
+    assert _error_text(group) == reason
+
+
+def test_a_task_group_of_two_gives_both_reasons() -> None:
+    group = ExceptionGroup("unhandled errors in a TaskGroup", [BackendError("first"), BackendError("second")])
+    assert _error_text(group) == "first\nsecond"
+
+
+def test_a_nested_task_group_gives_the_reason_as_well() -> None:
+    """A handler that fans out inside a fan-out leaves one group inside another."""
+    inner = ExceptionGroup("unhandled errors in a TaskGroup", [BackendError("the reason")])
+    outer = ExceptionGroup("unhandled errors in a TaskGroup", [inner])
+    assert _error_text(outer) == "the reason"
