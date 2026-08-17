@@ -81,9 +81,9 @@ def _serde_path(path: str) -> Any:
 
 
 def _request(paths: set[str]) -> BuildPathsWithResultsRequest:
-    derived_paths: set[Any] = {_serde_path(path) for path in paths}
+    derived_paths: list[Any] = [_serde_path(path) for path in sorted(paths)]
     return BuildPathsWithResultsRequest(
-        derived_paths=cast("set[SerdeDerivedPath]", derived_paths),
+        derived_paths=cast("list[SerdeDerivedPath]", derived_paths),
         build_mode=BuildMode.NORMAL,
     )
 
@@ -140,7 +140,7 @@ async def test_build_paths_reports_failure_when_any_root_fails() -> None:
     for goal in engine.goals.values():
         goal.engine = cast("GoalEngine", engine)
 
-    derived_paths: set[Any] = {_serde_path(success_path), _serde_path(failure_path)}
+    derived_paths: list[Any] = [_serde_path(success_path), _serde_path(failure_path)]
 
     # **An error, and not a value.** `daemon.cc:558` of Nix writes a constant
     # `1` after `buildPaths`, and `buildPaths` throws when a build fails. A
@@ -150,7 +150,7 @@ async def test_build_paths_reports_failure_when_any_root_fails() -> None:
         await GoalEngine.build_paths(
             cast("GoalEngine", engine),
             BuildPathsRequest(
-                derived_paths=cast("set[SerdeDerivedPath]", derived_paths),
+                derived_paths=cast("list[SerdeDerivedPath]", derived_paths),
                 build_mode=BuildMode.NORMAL,
             ),
         )
@@ -164,11 +164,11 @@ async def test_build_paths_answers_one_when_every_root_succeeds() -> None:
     for goal in engine.goals.values():
         goal.engine = cast("GoalEngine", engine)
 
-    derived_paths: set[Any] = {_serde_path(success_path)}
+    derived_paths: list[Any] = [_serde_path(success_path)]
     response = await GoalEngine.build_paths(
         cast("GoalEngine", engine),
         BuildPathsRequest(
-            derived_paths=cast("set[SerdeDerivedPath]", derived_paths),
+            derived_paths=cast("list[SerdeDerivedPath]", derived_paths),
             build_mode=BuildMode.NORMAL,
         ),
     )
@@ -212,3 +212,57 @@ async def test_build_paths_with_results_runs_root_goals_in_parallel() -> None:
         ).result()
 
     assert {str(item.path) for item in response.results} == {first_path, second_path}
+
+
+@pytest.mark.anyio
+async def test_the_answers_come_back_in_the_order_of_the_request() -> None:
+    """The client reads the answers by position, so the order is the contract.
+
+    `DerivedPaths` of Nix is a vector, and `Store::buildPathsWithResults`
+    answers one result for each request in that order. pynixd held the request
+    in a set and then sorted it, so the answer followed the hash part of each
+    store path. `build.sh:8` of the functional suite passed or failed by luck
+    of that hash. Issue #180.
+    """
+    # `z...` sorts after `a...`, and the request asks for it first.
+    later = "/nix/store/zz111111111111111111111111111111-later.drv!out"
+    earlier = "/nix/store/aa222222222222222222222222222222-earlier.drv!out"
+    engine = FakeEngine(
+        {
+            later: FakeEnsureGoal(cast("GoalEngine", None), goal_success()),
+            earlier: FakeEnsureGoal(cast("GoalEngine", None), goal_success()),
+        }
+    )
+    for goal in engine.goals.values():
+        goal.engine = cast("GoalEngine", engine)
+
+    derived_paths: list[Any] = [_serde_path(later), _serde_path(earlier)]
+    response = await BuildPathsWithResultsGoal(
+        cast("GoalEngine", engine),
+        BuildPathsWithResultsRequest(
+            derived_paths=cast("list[SerdeDerivedPath]", derived_paths),
+            build_mode=BuildMode.NORMAL,
+        ),
+    ).result()
+
+    assert [str(item.path) for item in response.results] == [later, earlier]
+
+
+@pytest.mark.anyio
+async def test_a_repeated_path_gets_one_answer_for_each_request() -> None:
+    """A set dropped the second one, and Nix answers both."""
+    path = "/nix/store/11111111111111111111111111111111-twice.drv!out"
+    engine = FakeEngine({path: FakeEnsureGoal(cast("GoalEngine", None), goal_success())})
+    for goal in engine.goals.values():
+        goal.engine = cast("GoalEngine", engine)
+
+    derived_paths: list[Any] = [_serde_path(path), _serde_path(path)]
+    response = await BuildPathsWithResultsGoal(
+        cast("GoalEngine", engine),
+        BuildPathsWithResultsRequest(
+            derived_paths=cast("list[SerdeDerivedPath]", derived_paths),
+            build_mode=BuildMode.NORMAL,
+        ),
+    ).result()
+
+    assert [str(item.path) for item in response.results] == [path, path]

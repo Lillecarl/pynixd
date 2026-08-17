@@ -41,7 +41,11 @@ class BuildPathsWithResultsGoal(ExecutionGoal[BuildPathsWithResultsResponse]):
     async def _run(self) -> BuildPathsWithResultsResponse:
         """Fan out to one EnsureDerivedPathGoal per derived path and collect results."""
         substituter_ids = self.engine.substituter_ids()
-        for serde_path in sorted(self.request.derived_paths, key=str):
+        # **In the order the client asked, and not sorted.** `nix build --json`
+        # reads the answers by position, and `build.sh:8` of the functional
+        # suite states which entry is which derivation. `Store::buildPaths` of
+        # Nix keeps the order of the request. Issue #180.
+        for serde_path in self.request.derived_paths:
             path = DerivedPath(str(serde_path))
             goal = await self.engine.get_ensure_derived_path_goal(path, self.request.build_mode, substituter_ids)
             await goal.subscribe(self.client)

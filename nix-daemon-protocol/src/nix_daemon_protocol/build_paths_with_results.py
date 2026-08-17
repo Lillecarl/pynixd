@@ -20,12 +20,13 @@ class BuildPathsWithResultsResponse(WireResponse):
 class BuildPathsWithResultsRequest(WireRequest):
     """BuildPathsWithResults request — same wire format as BuildPaths.
 
-    Wire fields: set[DerivedPath] then build_mode uint64.
+    Wire fields: list[DerivedPath] then build_mode uint64. `BuildPathsRequest`
+    gives the reason the order matters.
     """
 
     op: ClassVar[int] = 46
     min_protocol: ClassVar[int] = proto(1, 34)
     forward: ClassVar[bool] = False
     response_type = BuildPathsWithResultsResponse
-    derived_paths: set[DerivedPath] = WireField(default_factory=set)
+    derived_paths: list[DerivedPath] = WireField(default_factory=list)
     build_mode: int
