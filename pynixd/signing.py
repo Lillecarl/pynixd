@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING
 import nacl.signing
 from environs import env
 
+from .utils import nix32_encode
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -92,6 +94,36 @@ class SecretKey:
         return f"{self.name}:{b64encode(self.public_key_bytes).decode()}"
 
 
+def nar_hash_for_a_fingerprint(nar_hash: object) -> str:
+    """The NAR hash as a fingerprint of Nix writes it.
+
+    `ValidPathInfo::fingerprint` at `path-info.cc:48` writes
+    `narHash.to_string(HashFormat::Nix32, true)`: the name of the algorithm, a
+    colon, and the digest in the base-32 alphabet of Nix.
+
+    **The wire carries base 16 and no name**, at `worker-protocol.cc:356`, so
+    the value that reaches pynixd is in the other form and this converts it. A
+    fingerprint over the base-16 digest is a different string, so a verifier
+    of Nix reads the signature as false.
+
+    A value that is already in the base-32 form passes through, and so does an
+    empty one: a path with no NAR hash has no fingerprint to sign, and the
+    caller decides what to do about that.
+    """
+    text = str(nar_hash)
+    if not text:
+        return ""
+    algorithm, separator, digest = text.partition(":")
+    if not separator:
+        algorithm, digest = "sha256", text
+    try:
+        raw = bytes.fromhex(digest)
+    except ValueError:
+        # Not base 16, so it is the base-32 form already.
+        return f"{algorithm}:{digest}"
+    return f"{algorithm}:{nix32_encode(raw)}"
+
+
 def fingerprint(
     store_path: object,
     nar_hash: NARHash,
@@ -101,14 +133,12 @@ def fingerprint(
     """Build the Nix fingerprint string that gets signed.
 
     Format: ``1;<store-path>;sha256:<nix32-hash>;<nar-size>;<comma-separated-refs>``
-    """
-    refs = ",".join(sorted(str(r) for r in references))  # type: ignore[attr-defined]
-    """Build the Nix fingerprint string that gets signed.
 
-    Format: ``1;<store-path>;sha256:<nix32-hash>;<nar-size>;<comma-separated-refs>``
+    `ValidPathInfo::fingerprint` at `path-info.cc:48` of Nix. The references
+    are the store paths, sorted, and separated by a comma.
     """
     refs = ",".join(sorted(str(r) for r in references))  # type: ignore[attr-defined]
-    return f"1;{store_path};{nar_hash};{nar_size};{refs}"
+    return f"1;{store_path};{nar_hash_for_a_fingerprint(nar_hash)};{nar_size};{refs}"
 
 
 def sign_path_info(
@@ -126,7 +156,7 @@ def sign_path_info(
     """
     fp = fingerprint(
         info.path,
-        f"sha256:{info.info.nar_hash}",
+        info.info.nar_hash,
         info.info.nar_size,
         info.info.references,
     )

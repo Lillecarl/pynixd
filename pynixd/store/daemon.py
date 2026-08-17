@@ -887,9 +887,15 @@ class DaemonStore(Store):
 
         info = request.info
         refs = {str(r) for r in info.info.references}
+        # `fingerprint` renders the NAR hash the way `path-info.cc:48` of Nix
+        # does, so this passes the value of the wire and converts nothing.
+        # This call used to pass it with no name of an algorithm and
+        # `sign_path_info` used to put `sha256:` in front of the base-16
+        # digest, so one path signed two ways gave two signatures and a
+        # verifier of Nix read both as false.
         fp = fingerprint(
             store_path=str(info.path),
-            nar_hash=str(info.info.nar_hash),
+            nar_hash=info.info.nar_hash,
             nar_size=info.info.nar_size,
             references=refs,
         )

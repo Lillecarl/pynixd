@@ -93,11 +93,53 @@ class TestSecretKeySign:
         nacl.bindings.crypto_sign_open(signed_msg, pub)
 
 
+# One NAR hash in the two forms. `nix-daemon` sends the first, and
+# `ValidPathInfo::fingerprint` at `path-info.cc:48` of Nix writes the second.
+# Nix itself made the pair:
+#   nix hash convert --hash-algo sha256 --to nix32 c6f868...e105
+_DIGEST_16 = "c6f868b00a75e555f44b2554f3fb57c69836460fc0f02e515455723b1f46e105"
+_DIGEST_32 = "01g18qgknwjmai8jxw601x33d666azxz6m159gs5brbm1aq6iy66"
+
+
 class TestFingerprint:
-    def test_basic_fingerprint(self):
+    """The string that a signature covers, and the form of the NAR hash in it.
+
+    No `covers` marker. That marker means "this test subsumes the feature", and
+    `tests/_conftest/subsumption.py` then skips every later test of the same
+    feature. These state one rule each, and each one must run.
+
+    **A fingerprint carries the base-32 digest, and the wire carries base 16.**
+    `path-info.cc:48` writes `narHash.to_string(HashFormat::Nix32, true)`, and
+    `worker-protocol.cc:356` writes `Base16` with no name of an algorithm. So
+    the value that reaches pynixd has to be converted, and pynixd converted
+    nothing: it signed a fingerprint over the base-16 digest, which no
+    verifier of Nix accepts.
+
+    The two callers also disagreed with each other. `sign_path_info` put
+    `sha256:` in front of the base-16 digest, and `SignPathInfo` of
+    `DaemonStore` passed the digest with no name at all, so one path signed
+    two ways gave two signatures and neither one was right.
+    """
+
+    def test_the_fingerprint_carries_the_base_32_digest(self):
         path = StorePath("/nix/store/abc123-foo")
-        fp = fingerprint(path, "sha256:xyz", 42, set())
-        assert fp == "1;/nix/store/abc123-foo;sha256:xyz;42;"
+
+        fp = fingerprint(path, f"sha256:{_DIGEST_16}", 42, set())
+
+        assert fp == f"1;/nix/store/abc123-foo;sha256:{_DIGEST_32};42;"
+
+    def test_a_digest_with_no_name_of_an_algorithm_gets_one(self):
+        """`nix-daemon` sends the digest alone, and that is what pynixd holds."""
+        path = StorePath("/nix/store/abc123-foo")
+
+        assert fingerprint(path, _DIGEST_16, 42, set()) == fingerprint(path, f"sha256:{_DIGEST_16}", 42, set())
+
+    def test_a_digest_that_is_base_32_already_passes_through(self):
+        path = StorePath("/nix/store/abc123-foo")
+
+        fp = fingerprint(path, f"sha256:{_DIGEST_32}", 42, set())
+
+        assert fp == f"1;/nix/store/abc123-foo;sha256:{_DIGEST_32};42;"
 
     def test_with_references_sorted(self):
         path = StorePath("/nix/store/abc123-foo")
@@ -105,8 +147,10 @@ class TestFingerprint:
             StorePath("/nix/store/zzz-bar"),
             StorePath("/nix/store/aaa-baz"),
         }
-        fp = fingerprint(path, "sha256:xyz", 42, refs)
-        assert fp == "1;/nix/store/abc123-foo;sha256:xyz;42;/nix/store/aaa-baz,/nix/store/zzz-bar"
+
+        fp = fingerprint(path, f"sha256:{_DIGEST_16}", 42, refs)
+
+        assert fp == (f"1;/nix/store/abc123-foo;sha256:{_DIGEST_32};42;/nix/store/aaa-baz,/nix/store/zzz-bar")
 
     def test_empty_hash(self):
         path = StorePath("/nix/store/abc123-foo")
@@ -115,7 +159,7 @@ class TestFingerprint:
 
     def test_large_nar_size(self):
         path = StorePath("/nix/store/abc123-foo")
-        fp = fingerprint(path, "sha256:xyz", 999999999999, set())
+        fp = fingerprint(path, f"sha256:{_DIGEST_16}", 999999999999, set())
         assert "999999999999" in fp
 
 
@@ -129,7 +173,7 @@ class TestSignPathInfo:
             path=path,
             info=UnkeyedValidPathInfo(
                 deriver=None,
-                nar_hash=NARHash(hash="xyz"),
+                nar_hash=NARHash(hash=_DIGEST_16),
                 references=references,
                 registration_time=Time(ts=0),
                 nar_size=42,
@@ -142,7 +186,7 @@ class TestSignPathInfo:
         sig = sign_path_info(key, info)
         assert sig.startswith("test:")
 
-        fp = fingerprint(info.path, "sha256:xyz", info.info.nar_size, info.info.references)
+        fp = fingerprint(info.path, info.info.nar_hash, info.info.nar_size, info.info.references)
         sig_bytes = sig.split(":", 1)[1]
         signed_msg = base64.b64decode(sig_bytes) + fp.encode("utf-8")
         nacl.bindings.crypto_sign_open(signed_msg, key.public_key_bytes)
