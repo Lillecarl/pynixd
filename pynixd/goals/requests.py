@@ -155,4 +155,18 @@ class BuildPathsWithResultsGoal(ExecutionGoal[BuildPathsWithResultsResponse]):
         # of pynixd has no other place to run one. One slot at a time is the
         # nearest answer, and it is the answer that `nix-daemon` gives when the
         # machines file is empty as well: it raises rather than run nothing.
+        #
+        # **That answer is wrong, and `ca:issue-13247` measures the cost.**
+        # A client passes `--max-jobs 0` to say "substitute this, do not build
+        # it". pynixd builds instead, and a build makes **every** output of the
+        # derivation, so `use-a-more-outputs^first` brought `second` as well
+        # and the test failed on a path it had asked pynixd not to produce.
+        #
+        # Answering 0 with a refusal is not the correction on its own. The
+        # road that `max-jobs 0` leaves open is the substituter, and a
+        # content-addressed output has no such road through pynixd yet: it has
+        # no store path until a realisation names one, and `EnsurePath`
+        # upstream takes a path. A refusal alone turns the wrong path into
+        # "unable to start any build". The two belong in one change, and #198
+        # holds it, with #187 and #195.
         return max(1, int(options.max_build_jobs))
