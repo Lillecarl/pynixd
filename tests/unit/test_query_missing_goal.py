@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
 import anyio
 import pytest
 
-from pynixd.drv_parser import Derivation, DrvOutput
+from pynixd.drv_parser import ChildMapNode, Derivation, DrvOutput
 from pynixd.goals.engine import GoalEngine
 from pynixd.goals.query_missing import QueryMissingPlanGoal
 from pynixd.serde import (
@@ -468,3 +468,37 @@ async def test_query_missing_reads_a_shared_input_once() -> None:
 
     assert {str(path) for path in response.will_build} == {left, right, shared}
     assert reads.count(shared) == 1
+
+
+@pytest.mark.anyio
+async def test_a_dynamic_input_gets_a_warning_and_no_bucket() -> None:
+    """`doPath` at `misc.cc:196` warns for one and puts it nowhere.
+
+    `mustBuildDrv` enqueues each input of a derivation that must be built, and
+    `enqueueDerivedPaths` walks the tree of a dynamic one. Each level that
+    names an output becomes a derived path whose derivation path is itself a
+    derived path, and `doPath` refuses that shape.
+    """
+    top = "/nix/store/11111111111111111111111111111111-top.drv"
+    producer = "/nix/store/22222222222222222222222222222222-producer.drv.drv"
+    parsed = Derivation(
+        outputs=[DrvOutput(output_name="out", path="", hash_algo="", hash_value="")],
+        dynamic_input_drvs={producer: ChildMapNode(children={"out": ChildMapNode(outputs=["out"])})},  # pyright: ignore[reportArgumentType] -- a plain str
+    )
+    store = FakeLocalStore(valid_paths=set(), derivations={top: parsed})
+    ctx = cast(
+        "PynixdContext",
+        SimpleNamespace(
+            local_store=store,
+            scheduler=SimpleNamespace(substitution_queue=FakeSubstitutionQueue({})),
+        ),
+    )
+    request = QueryMissingRequest(derived_paths=_derived_path_set(f"{top}!out"))
+
+    response = await QueryMissingPlanGoal(GoalEngine(ctx), request).result()
+
+    assert {str(path) for path in response.will_build} == {top}
+    assert not response.unknown
+    assert [message.text for message in response.logs.messages] == [
+        f"warning: Ignoring dynamic derivation {producer}^out while querying missing paths; not yet implemented\n",
+    ]

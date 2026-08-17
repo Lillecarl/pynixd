@@ -9,7 +9,13 @@ import anyio
 import structlog
 
 from ..derived_path import DerivedPath
-from ..serde import IsValidPathRequest, QueryMissingRequest, QueryMissingResponse, StorePath as SerdeStorePath
+from ..serde import (
+    IsValidPathRequest,
+    LogNext,
+    QueryMissingRequest,
+    QueryMissingResponse,
+    StorePath as SerdeStorePath,
+)
 from ..store_path import StorePath
 from ..substitution_queue import SubstitutionAvailability
 from .goal import ExecutionGoal
@@ -18,7 +24,7 @@ from .realisations import realisations_of
 if TYPE_CHECKING:
     from anyio.abc import TaskGroup
 
-    from ..drv_parser import Derivation
+    from ..drv_parser import ChildMapNode, Derivation
     from .engine import GoalEngine
 
 log = structlog.get_logger(__name__)
@@ -54,6 +60,7 @@ class _Walk:
     plan: QueryMissingPlan
     task_group: TaskGroup
     seen: set[str] = field(default_factory=set)
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -90,13 +97,16 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
             will_substitute=len(plan.will_substitute),
             unknown=len(plan.unknown),
         )
-        return QueryMissingResponse(
+        response = QueryMissingResponse(
             will_build=plan.will_build,
             will_substitute=plan.will_substitute,
             unknown=plan.unknown,
             download_size=plan.download_size,
             nar_size=plan.nar_size,
         )
+        for text in walk.warnings:
+            response.logs.add(LogNext(text=f"warning: {text}\n"))
+        return response
 
     def _enqueue(self, walk: _Walk, wire_path: str) -> None:
         """Classify one derived path, unless the walk did that already.
@@ -137,9 +147,11 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
         named `impure.drv` and `impure-on-impure.drv`, and pynixd named the
         second one only.
 
-        A dynamic input takes no part. `doPath` at `misc.cc:198` warns
-        "Ignoring dynamic derivation %s while querying missing paths" and
-        returns, so the answer of Nix holds nothing for one either.
+        A dynamic input takes part as well. `enqueueDerivedPaths` at
+        `misc.cc:130` walks the tree of one and enqueues a derived path for
+        each level that names an output. `doPath` then warns for each of those
+        and puts it in no bucket, so the answer holds nothing for one. The
+        warning is the part that a reader sees, and pynixd wrote none.
         """
         walk.plan.will_build.add(SerdeStorePath(path=str(drv_path)))
         if parsed is None:
@@ -148,11 +160,37 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
             if not output_names:
                 continue
             self._enqueue(walk, f"{input_drv_path}!{','.join(sorted(output_names))}")
+        for input_drv_path, node in parsed.dynamic_input_drvs.items():
+            self._enqueue_child_map(walk, str(input_drv_path), node)
+
+    def _enqueue_child_map(self, walk: _Walk, prefix: str, node: ChildMapNode) -> None:
+        """Enqueue one derived path for each level of a dynamic input.
+
+        `enqueueDerivedPaths` at `misc.cc:130` takes the direct outputs of the
+        level first, and then goes one level deeper for each child. The prefix
+        grows by one output name at each step, which is
+        `SingleDerivedPath::Built` of Nix.
+
+        The separator is `!`, which is the one that `DerivedPath.__str__` and
+        the rest of this walk use. Nix prints `^` and reads both.
+        """
+        if node.outputs:
+            self._enqueue(walk, f"{prefix}!{','.join(sorted(node.outputs))}")
+        for output_name, child in node.children.items():
+            self._enqueue_child_map(walk, f"{prefix}!{output_name}", child)
 
     async def _classify_derivation(self, derived_path: DerivedPath, walk: _Walk) -> None:
         drv_path = derived_path.base_store_path()
         if derived_path.is_nested:
-            self._must_build(drv_path, None, walk)
+            # **A dynamic derived path goes in no bucket, and it gets a
+            # warning.** `doPath` at `misc.cc:196` reads the derivation path of
+            # the request, finds a `Built` and not an `Opaque`, and returns.
+            # The subject of the warning is that inner path, which is this one
+            # with the last output name removed.
+            walk.warnings.append(
+                f"Ignoring dynamic derivation {derived_path.outer.to_string()} "
+                "while querying missing paths; not yet implemented",
+            )
             return
 
         parsed = await self.engine.ctx.local_store.read_derivation(str(drv_path))
