@@ -133,17 +133,17 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         Issue #188 holds the measurement, and `main:build-remote` reads both
         blocks.
 
-        **Nix takes this decision from the shape of the goal graph, and the
-        shape is the wrong question.** `waiters` answers "does another goal
-        wait for me", and the reporting really asks "did the client learn
-        this already". The two answers differ for a derivation that the client
-        names *and* another derivation depends on: `waiters` is not empty, so
-        `amDone` writes the block, and the caller of `buildPaths` then throws
-        the same failure and the client writes it again. Nix cannot separate
-        the two questions, because one goal graph carries both the dependency
-        edges and the request. Python can, and pynixd does not yet, because
-        the wire parity run compares the bytes of the two daemons. Correct it
-        here when parity stops being the measure.
+        NIX-DEFECT (#191): Nix takes this decision from the shape of the goal
+        graph, and the shape is the wrong question. `waiters` at `goal.cc:214`
+        answers "does another goal wait for me", and the reporting really asks
+        "did the client learn this already". The two answers differ for a
+        derivation that the client names *and* another derivation depends on:
+        `waiters` is not empty, so `amDone` writes the block, and the caller
+        of `buildPaths` then throws the same failure and the client writes it
+        again. Nix cannot separate the two questions, because one goal graph
+        carries both the dependency edges and the request. pynixd can carry
+        the two apart, and it does not, because the wire parity run compares
+        the bytes of the two daemons.
         """
         if not self._wanted_by_a_goal or result_succeeded(result.result):
             return result
@@ -429,6 +429,15 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         goal can no longer read the original one. A build goal is also shared
         between the clients that ask for it, and each one holds its own
         original derivation.
+
+        NIX-DEFECT (#191): the client of Nix answers a missing realisation
+        with `abort`. `nix-build.cc:730` asserts the output path, and
+        `built-path.cc:122` asserts it again, so a store that registered the
+        realisation under another id stops the program with SIGABRT and no
+        message. A missing realisation is a state that a store can reach, and
+        a client that reads a store over a socket cannot trust the store to
+        agree with it. pynixd cannot correct the client, so it must never
+        leave that state, and this method is the whole reason.
         """
         built = result.result.built_outputs
         if not built:

@@ -187,6 +187,14 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
             # the request, finds a `Built` and not an `Opaque`, and returns.
             # The subject of the warning is that inner path, which is this one
             # with the last output name removed.
+            #
+            # NIX-DEFECT (#191): Nix walks the whole request twice, so the
+            # client reads this warning twice. `nix-build` calls
+            # `queryMissing` to print the build plan, and `Worker::run` at
+            # `worker.cc:340` calls it again inside the daemon. The second
+            # walk answers the same question about the same paths, and the
+            # daemon holds no result of the first one. pynixd walks once, so
+            # it writes one warning, and issue #189 holds that difference.
             walk.warnings.append(
                 f"Ignoring dynamic derivation {derived_path.outer.to_string()} "
                 "while querying missing paths; not yet implemented",

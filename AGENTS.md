@@ -79,6 +79,35 @@ Builds are the only "complex" operations in `pynixd`. They are handled via a glo
 - Each build executes in a spawned task, surviving client disconnects.
 - Outputs are automatically pulled into the `LocalStore` upon successful completion.
 
+## 5b. Where Nix Is Wrong: the `NIX-DEFECT` marker
+
+pynixd matches the bytes of `nix-daemon` on the wire, so it copies decisions
+of Nix that are wrong. Nix is not perfect. C++ limits what its authors can do
+easily, and Python does not carry the same limits.
+
+**Mark each such place.** A comment that reads as if Nix is the specification
+hides the difference between "pynixd does this because it is right" and
+"pynixd does this because the parity run compares the bytes". It also gives a
+later reader no place to start a correction.
+
+Write the tag exactly as `NIX-DEFECT (#191):`, and give four parts:
+
+1. the mechanism in Nix, with the file and the line, in back quotes;
+2. what the mechanism gets wrong;
+3. what pynixd could do instead;
+4. why pynixd still copies it, or how pynixd already deviates.
+
+Issue #191 tracks the list. `tests/meta/test_nix_defect_markers.py` finds
+every marker and checks the two parts that a machine can read: the tag names
+the tracking issue, and the paragraph names a file of Nix.
+
+**Do not add a "Nix-correct mode" and a "correct-result mode".** A mode splits
+every behaviour in two, and the parity run can prove only one of them. The
+divergence surface is the wire, and not the goal system: pynixd already
+schedules, caches and dedupes differently, because none of that reaches the
+client. A flag earns its place when one entry of the list has a measured cost,
+and the flag is then scoped to that entry.
+
 ## 6. Execution Sanity & Recovery
 - **Halt on Ambiguity**: If a tool output indicates potential corruption (e.g., duplicate declarations in a `replace` output, unexpected truncations), or if you lose track of the file state relative to the VCS, **STOP immediately**. Do not attempt blind recovery (like `write_file` with partial content).
 - **Verify Before Rewrite**: Before using `write_file` to "fix" a large file, you MUST have read the *entire* file in the current turn to ensure no data loss.
