@@ -194,6 +194,24 @@ let
 in step "chain-top" middle
 """
 
+# The same chain, with a failure at the bottom. The client must learn which
+# derivation failed, and not only that one dependency did.
+FAILING_CHAIN = """
+let
+  bottom = derivation {
+    name = "chain-bad-bottom";
+    system = builtins.currentSystem;
+    builder = "/bin/sh";
+    args = [ "-c" "exit 3" ];
+  };
+in derivation {
+  name = "chain-bad-top";
+  system = builtins.currentSystem;
+  builder = "/bin/sh";
+  args = [ "-c" "read n < ${bottom}; echo $n > $out" ];
+}
+"""
+
 
 # An output that names another store path, so the closure has an edge in it
 # and `--references`, `--referrers` and `--requisites` all have an answer.
@@ -373,6 +391,21 @@ async def _modes(run: Runner, root: Path, work: Path) -> None:
         await run(words)
 
 
+async def _failure(run: Runner, root: Path, work: Path) -> None:
+    """An input fails, and the client must learn which one.
+
+    `nix-daemon` writes `error: Cannot build '<input>.drv'. Reason: builder
+    failed with exit code 3.` for the input, and it writes nothing for the
+    derivation that the client asked for, because the client holds that
+    failure in the `BuildResult` and prints it itself.
+
+    pynixd writes both, and it writes each one as `pynixd: ` note lines.
+    Issue #188.
+    """
+    del root, work
+    await run([str(NIX), "build", "--impure", "--no-link", "--json", "--expr", FAILING_CHAIN])
+
+
 async def _substitute(run: Runner, root: Path, work: Path) -> None:
     """Copy a build to a binary cache, delete it, and get it back.
 
@@ -489,8 +522,12 @@ async def clean_base() -> AsyncIterator[None]:
         # answers `willSubstitute`, and it then builds. `strict`, so the
         # marker goes away with the correction and does not hide it.
         pytest.param(_substitute, marks=pytest.mark.xfail(strict=True, reason="issue #187")),
+        # **Issue #188.** pynixd writes a build failure as `pynixd: ` note
+        # lines, and `nix-daemon` writes one error message. The text agrees
+        # and the frame does not.
+        pytest.param(_failure, marks=pytest.mark.xfail(strict=True, reason="issue #188")),
     ],
-    ids=["builds", "queries", "modes", "impure", "substitute"],
+    ids=["builds", "queries", "modes", "impure", "substitute", "failure"],
 )
 @pytest.mark.usefixtures("clean_base")
 async def test_the_two_daemons_answer_the_same_bytes(workload: Workload) -> None:

@@ -480,6 +480,19 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
 
         if not child_goals:
             return []
+
+        # **The client watches the build of each input as well.** Nix sends
+        # `building '<input>.drv'...` and, when the input fails, `Cannot build
+        # '<input>.drv'. Reason: builder failed with exit code N.` A client of
+        # pynixd saw neither: it read "1 dependency failed" for the derivation
+        # it asked for, and nothing at all about the dependency that failed.
+        # `_ensure_nested` already does this for the next level of a dynamic
+        # derivation.
+        async with self._lock:
+            subscribers = list(self._subscribers)
+        for goal in child_goals:
+            await goal.subscribe_many(subscribers)
+
         return await self.run_child(DependencyGroupGoal(self.engine, child_goals))
 
     async def _input_outputs_requiring_goals(
