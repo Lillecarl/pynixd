@@ -679,7 +679,24 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         return await self.engine.get_ensure_derived_path_goal(dp, self.build_mode, self.substituter_ids)
 
     async def _try_substitute_known_outputs(self, output_paths: Mapping[str, StorePath | None]) -> GoalResult | None:
-        selected = {name: path for name, path in output_paths.items() if path is not None}
+        """Substitute each output whose path the derivation already names.
+
+        **A content-addressed output has no path here, and the empty path is
+        not a store path.** `output_paths` of `drv_parser.py` answers
+        `StorePath("")` for such an output, because the name is what asks the
+        store for a realisation. This method takes a path to the wire, so it
+        must drop that entry.
+
+        An empty path reached `EnsurePath` upstream before this filter, and
+        the daemon then closed the connection with no error word:
+        `daemon.cc:701` parses the store path **before**
+        `logger->startWork()`, so `canSendStderr` is still false when
+        `parseStorePath` throws, and `daemon.cc:1213` rethrows for that
+        reason. The client of pynixd read the end of the file and reported
+        `IncompleteReadError`. `ca:build-cache` and `ca:issue-13247` both
+        failed that way. Issue #195.
+        """
+        selected = {name: path for name, path in output_paths.items() if path is not None and path.base()}
         if not selected:
             return None
 
