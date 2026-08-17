@@ -30,6 +30,7 @@ STANDARD_OPERATIONS: Final[tuple[StandardOperation, ...]] = (
     StandardOperation(14, "FindRoots"),
     StandardOperation(19, "SetOptions"),
     StandardOperation(20, "CollectGarbage"),
+    StandardOperation(21, "QuerySubstitutablePathInfo"),
     StandardOperation(23, "QueryAllValidPaths"),
     StandardOperation(26, "QueryPathInfo"),
     StandardOperation(29, "QueryPathFromHashPart"),

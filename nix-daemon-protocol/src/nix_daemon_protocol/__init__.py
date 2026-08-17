@@ -111,6 +111,15 @@ from .query_realisation import QueryRealisationRequest as QueryRealisationReques
 from .query_realisation import QueryRealisationResponse as QueryRealisationResponse
 from .query_referrers import QueryReferrersRequest as QueryReferrersRequest
 from .query_referrers import QueryReferrersResponse as QueryReferrersResponse
+from .query_substitutable_path_info import (
+    QuerySubstitutablePathInfoRequest as QuerySubstitutablePathInfoRequest,
+)
+from .query_substitutable_path_info import (
+    QuerySubstitutablePathInfoResponse as QuerySubstitutablePathInfoResponse,
+)
+from .query_substitutable_path_info import (
+    UnkeyedSubstitutablePathInfo as UnkeyedSubstitutablePathInfo,
+)
 from .query_substitutable_path_infos import (
     QuerySubstitutablePathInfosRequest as QuerySubstitutablePathInfosRequest,
 )

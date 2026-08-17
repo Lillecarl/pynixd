@@ -252,7 +252,19 @@ class DaemonProxy:
     # ── Op loop ──────────────────────────────────────────────────────
 
     async def op_loop(self) -> None:
-        """Read ops, dispatch, write responses."""
+        """Read ops, dispatch, write responses.
+
+        **An operation that no registry knows ends the connection.** Nothing
+        read the arguments of that operation, so the next `read_uint64` would
+        read the first argument as the next operation number. Every operation
+        after it is then nonsense, and the client learns nothing about it.
+
+        `performOp` of Nix throws `invalid operation` at `daemon.cc:1107`,
+        before `logger->startWork()`. `canSendStderr` is therefore false, so
+        `errorAllowed` at `daemon.cc:1218` is false and the handler re-throws.
+        The outer catch at `daemon.cc:1232` writes the error, flushes and
+        returns, which closes the connection. Issue #193.
+        """
         while True:
             try:
                 op_num = await self.r.read_uint64()
@@ -264,7 +276,7 @@ class DaemonProxy:
             if req_cls is None and handler_cls is None:
                 log.warning("unknown_op", op_num=op_num)
                 await self.send_error(f"Unsupported operation: {op_num}")
-                continue
+                break
 
             op_name = req_cls.name if req_cls else handler_cls.__name__ if handler_cls else f"op_{op_num}"
 

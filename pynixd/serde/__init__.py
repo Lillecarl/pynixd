@@ -54,6 +54,7 @@ _CORE_MODULES = (
     "query_path_info",
     "query_realisation",
     "query_referrers",
+    "query_substitutable_path_info",
     "query_substitutable_path_infos",
     "query_substitutable_paths",
     "query_valid_derivers",
