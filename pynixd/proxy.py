@@ -36,6 +36,7 @@ from .serde.context import ReadContext, RequestContext as RequestContext, WriteC
 from .serde.ids import StoreId
 from .serde.protocol import OptTrusted, Verbosity
 from .serde.wire_ops import WIRE_REGISTRY, WireResponse
+from .temp_roots import TempRoots, state_dir
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -80,6 +81,7 @@ class DaemonProxy:
         self.username: str = username
         self.schedule_mode: ScheduleMode = schedule_mode
         self._op_timing: dict[int, tuple[int, float]] = {}
+        self._temp_roots: TempRoots | None = None
 
     @property
     def local_store(self) -> LocalStore:
@@ -136,6 +138,8 @@ class DaemonProxy:
         except Exception:
             log.exception("session_error")
         finally:
+            if self._temp_roots is not None:
+                await self._temp_roots.close()
             if self._op_timing:
                 total_time = sum(t for _, t in self._op_timing.values())
                 total_ops = sum(n for n, _ in self._op_timing.values())
@@ -360,6 +364,21 @@ class DaemonProxy:
         log.warning("unhandled_op", op_num=op_num)
         await self.send_error(f"Unhandled operation: {op_num}")
         return None
+
+    # ── Temporary roots ──────────────────────────────────────────────
+
+    async def add_temp_root(self, path: str) -> None:
+        """Hold `path` against the collector until this client goes away.
+
+        pynixd writes the root itself, in the `temproots` directory of the
+        store. It used to forward the operation to the upstream daemon, and
+        the root then belonged to a pooled connection rather than to the
+        client that asked for it. Issue #174, and `temp_roots.py` for how the
+        file works.
+        """
+        if self._temp_roots is None:
+            self._temp_roots = TempRoots(state_dir(getattr(self.local_store, "store_path", None)))
+        await self._temp_roots.add(path)
 
     # ── Helpers ───────────────────────────────────────────────────────
 
