@@ -2,7 +2,8 @@
 # Run the Nix functional tests in the Linux builder, from the darwin host.
 #
 #   ./nixft.sh pynixd --suite ca
-#   ./nixft.sh --work "\$HOME/nixft-ca" all
+#   ./nixft.sh --work /scratch/nixft-ca all --suite ca
+#   ./nixft.sh --log-level DEBUG pynixd build
 #
 # **The builder is disposable, and a run must not care.** It shuts down after
 # 60 seconds with no open connection, and the next boot makes its disk again
@@ -35,6 +36,10 @@
 #                 measurement.
 #   --tries N     attempts before giving up. Default 3.
 #   --repo DIR    the checkout to test. Default: the one that holds this file.
+#   --log-level L the log level of pynixd, for example `DEBUG`. Default
+#                 `WARNING`, which is what the daemon uses. Several answers
+#                 about the scheduler are `log.debug` lines, so a question
+#                 about which road a build took needs `DEBUG`.
 set -euo pipefail
 
 # `-` and not a path with `$HOME` in it. The home directory of the builder is
@@ -42,6 +47,7 @@ set -euo pipefail
 # builder as the six characters of its own name.
 WORK=-
 TRIES=3
+LOG_LEVEL=-
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 
 while (( $# > 0 )); do
@@ -49,6 +55,7 @@ while (( $# > 0 )); do
         --work) WORK=$2; shift 2 ;;
         --tries) TRIES=$2; shift 2 ;;
         --repo) REPO=$2; shift 2 ;;
+        --log-level) LOG_LEVEL=$2; shift 2 ;;
         --) shift; break ;;
         *) break ;;
     esac
@@ -101,7 +108,7 @@ for (( attempt = 1; attempt <= TRIES; attempt++ )); do
     say "attempt $attempt of $TRIES: $*"
     # `|| true`, because the exit code of the transport says only whether the
     # command reached the end. The sentinel below is the answer.
-    vzrun bash "$remote" "$src" "$WORK" "$git_cache" "$fetch_cache" "$@" \
+    vzrun bash "$remote" "$src" "$WORK" "$git_cache" "$fetch_cache" "$LOG_LEVEL" "$@" \
         2>&1 | tee "$log" || true
 
     sentinel=$(grep -E '^NIXFT-DONE [0-9]+$' "$log" | tail -1 || true)

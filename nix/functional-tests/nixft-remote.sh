@@ -16,6 +16,7 @@
 #   WORK         the work directory of the suite, or `-` for the default
 #   GIT_CACHE    a store path that holds `tarball-cache-v2`, or `-`
 #   FETCH_CACHE  a store path that holds `fetcher-cache-v4.sqlite`, or `-`
+#   LOG_LEVEL    the log level of pynixd, or `-` for the default
 #   ...          the arguments of the runner, for example `pynixd --suite ca`
 #
 # The last line it writes is `NIXFT-DONE <code>`. The host reads that line to
@@ -27,7 +28,17 @@ SRC=$1
 WORK=$2
 GIT_CACHE=$3
 FETCH_CACHE=$4
-shift 4
+LOG_LEVEL=$5
+shift 5
+
+# **`WARNING` is the default, and a debug run is how a goal question gets an
+# answer.** `build_waits_for_a_local_slot` and `build_assigned_to_store` are
+# both `log.debug`, so a run at the default level says nothing about which
+# road the scheduler took. The log of each test carries the output of pynixd,
+# so the level reaches the recorded log and not only the terminal.
+if [[ "$LOG_LEVEL" != "-" ]]; then
+    export PYNIXD_LOG_LEVEL=$LOG_LEVEL
+fi
 
 say() {
     echo "nixft-remote: $*" >&2
@@ -58,10 +69,28 @@ say() {
 #
 # Seven tests that a plain `nix-daemon` passes fail when the work directory
 # sits under `$HOME`: `build`, `build-cache`, `nix-copy`, `nix-shell`, `repl`,
-# `selfref-gc` and `signatures`. The mechanism is not known. What is known is
-# that the control run is the measuring instrument of this suite, and a
-# broken control hides a regression rather than reports one: two of the four
-# real regressions read as "fails in both" in that run.
+# `selfref-gc` and `signatures`. Each one builds something.
+#
+# **A build user cannot reach `$HOME`.** The two directories of the builder
+# carry these modes:
+#
+#     drwx------ builder builder  /nix/.rw-store/home
+#     drwxrwxrwt root    root     /nix/.rw-store/scratch
+#
+# A sandboxed build runs as `nixbld1`, which is `uid=30001 gid=30000(nixbld)`.
+# That user is not `builder`, it is not in the group of `builder`, and mode
+# 700 gives "other" no execute bit, so it cannot traverse into `$HOME` at all.
+# `/scratch` is 1777, which every user may traverse.
+#
+# The permissions and the identity above are measured. The step from them to
+# these seven failures is an inference, and a strong one: each failing test
+# builds, each passing one does not, and a sandbox that cannot enter its own
+# directory fails without a message that names the reason.
+#
+# The consequence is what makes the default worth stating. The control run is
+# the measuring instrument of this suite, and a broken control hides a
+# regression rather than reports one: two of the four real regressions read as
+# "fails in both" in that run.
 #
 # **No directory of the builder survives a restart of it, `$HOME` included.**
 # `$HOME` and `/scratch` are two paths on one ext4 image, and `runVm` of the

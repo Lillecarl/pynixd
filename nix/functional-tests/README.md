@@ -75,10 +75,26 @@ each of two paths, same checkout and same suite:
 | `$HOME/nixft-ca`    | 2           | 8                            |
 | `/scratch/nixft-ca` | 4           | 1                            |
 
-Seven tests that a plain `nix-daemon` passes fail under `$HOME`. The mechanism
-is not known. The consequence is: the control run is the measuring instrument
-of this suite, and a broken control hides a regression rather than reports
-one. Two of the four real regressions read as "fails in both" in that run.
+Seven tests that a plain `nix-daemon` passes fail under `$HOME`: `build`,
+`build-cache`, `nix-copy`, `nix-shell`, `repl`, `selfref-gc` and `signatures`.
+Each one builds something.
+
+**A build user cannot reach `$HOME`.** The two directories carry these modes:
+
+```
+drwx------ builder builder  /nix/.rw-store/home
+drwxrwxrwt root    root     /nix/.rw-store/scratch
+```
+
+A sandboxed build runs as `nixbld1`, which is `uid=30001 gid=30000(nixbld)`.
+That user is not `builder`, it is not in the group of `builder`, and mode 700
+gives "other" no execute bit, so it cannot traverse into `$HOME`. `/scratch`
+is 1777, which every user may traverse.
+
+The consequence is the reason this table is here at all: the control run is
+the measuring instrument of this suite, and a broken control hides a
+regression rather than reports one. Two of the four real regressions read as
+"fails in both" in that run.
 
 **The builder is disposable, and the script takes that as the rule.** It shuts
 down after 60 seconds with no open connection, and the next boot makes its
