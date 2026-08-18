@@ -145,6 +145,26 @@ async def build_tape(
     return tape.save(path)
 
 
+async def build_ops(path: Path, operations: list[tuple[object, bytes]]) -> Path:
+    """A recording of a chosen sequence of operations, after a valid handshake.
+
+    `build_tape` writes the same two operations every time, which is what most
+    of these tests want. The alignment needs two recordings whose operations
+    differ in number and in order.
+    """
+    tape = Tape()
+    client_one, client_two = handshake_client({"nix-command"})
+    server_one, server_two = handshake_server({"nix-command"}, "2.34.8", 1)
+    tape.add(Direction.CLIENT, client_one)
+    tape.add(Direction.SERVER, server_one)
+    tape.add(Direction.CLIENT, client_two)
+    tape.add(Direction.SERVER, server_two)
+    for request, payload in operations:
+        tape.add(Direction.CLIENT, await encode_request(request))
+        tape.add(Direction.SERVER, response(payload))
+    return tape.save(path)
+
+
 @pytest.mark.anyio
 async def test_the_handshake_decodes(workdir):
     session = await decode(await build_tape(workdir / "a.wire"))
@@ -306,7 +326,81 @@ async def test_a_client_that_stopped_early_is_a_difference(workdir):
 
     differences = compare(control, candidate)
     assert len(differences) == 1
-    assert "2 operations to the daemon and 1 to pynixd" in differences[0].where
+    assert differences[0].where == "operation 1: the client sent these to the daemon alone"
+    assert differences[0].control == "['IsValidPath']"
+
+
+@pytest.mark.anyio
+async def test_an_operation_that_one_side_skipped_does_not_shift_the_rest(workdir):
+    """The comparison put the operations together by index, and one shifted all.
+
+    An operation that one side alone sends is one difference. Every operation
+    after it stays comparable, and the operations that agree report nothing.
+
+    Issue #203 holds the divergence that found this. pynixd leaves one
+    derivation out of `willBuild`, so its client sends no `QueryPathInfo` for
+    that derivation, and every later `QueryPathInfo` of the connection then
+    reported four fields that differ, because the two sides were reading two
+    paths. The count moved with the store directory as well, which decides the
+    order of a `StorePath` set and so decides where the shift starts. Issue
+    #202.
+    """
+    control = await decode(
+        await build_ops(
+            workdir / "a.wire",
+            [
+                (IsValidPathRequest(path=PATH_A), valid(True)),
+                (QueryPathInfoRequest(path=PATH_B), b""),
+                (IsValidPathRequest(path=PATH_B), valid(True)),
+            ],
+        )
+    )
+    candidate = await decode(
+        await build_ops(
+            workdir / "b.wire",
+            [
+                (IsValidPathRequest(path=PATH_A), valid(True)),
+                (IsValidPathRequest(path=PATH_B), valid(True)),
+            ],
+        )
+    )
+
+    differences = compare(control, candidate)
+
+    assert len(differences) == 1
+    assert differences[0].where == "operation 1: the client sent these to the daemon alone"
+    assert differences[0].control == "['QueryPathInfo']"
+
+
+@pytest.mark.anyio
+async def test_a_run_that_one_side_alone_sent_is_one_difference(workdir):
+    """A client that stops early leaves a tail, and a line for each says one thing many times."""
+    control = await decode(
+        await build_ops(
+            workdir / "a.wire",
+            [
+                (IsValidPathRequest(path=PATH_A), valid(True)),
+                (QueryPathInfoRequest(path=PATH_B), b""),
+                (QueryPathInfoRequest(path=PATH_A), b""),
+                (IsValidPathRequest(path=PATH_B), valid(True)),
+            ],
+        )
+    )
+    candidate = await decode(
+        await build_ops(
+            workdir / "b.wire",
+            [
+                (IsValidPathRequest(path=PATH_A), valid(True)),
+                (IsValidPathRequest(path=PATH_B), valid(True)),
+            ],
+        )
+    )
+
+    differences = compare(control, candidate)
+
+    assert len(differences) == 1
+    assert differences[0].where == "operations 1 to 2: the client sent these to the daemon alone"
+    assert differences[0].control == "['QueryPathInfo', 'QueryPathInfo']"
 
 
 @pytest.mark.anyio

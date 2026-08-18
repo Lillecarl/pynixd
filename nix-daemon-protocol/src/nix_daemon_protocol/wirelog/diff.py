@@ -27,9 +27,12 @@ Issue #175.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from .decode import Handshake, Operation, Session
 
 
@@ -266,6 +269,60 @@ def _compare_operation(control: Operation, candidate: Operation) -> list[Differe
     return found
 
 
+def _alignment_key(operation: Operation) -> tuple[int, bytes]:
+    """What makes two operations the same operation, for the alignment.
+
+    The client writes the request, so the operation number and the request
+    bytes are what the client decided. The answer is what the comparison then
+    reads, so it takes no part in the alignment.
+    """
+    return (operation.op, operation.request_body)
+
+
+def _pairs(control: list[Operation], candidate: list[Operation]) -> Iterator[tuple[Operation | None, Operation | None]]:
+    """Each pair to compare, and each operation that one side alone sent.
+
+    **A comparison by index reads one divergence as many.** One operation more
+    on either side puts every operation after it against the wrong
+    counterpart. Issue #203 holds a divergence that pynixd keeps, and the
+    client of pynixd then sends no `QueryPathInfo` for one derivation. Every
+    later `QueryPathInfo` of that connection then differed in four fields,
+    because the two sides were reading two paths. The number also moved with
+    the store directory, which decides the order of a `StorePath` set and so
+    decides where the shift starts.
+
+    `SequenceMatcher` puts the two lists together again. A block that both
+    sides sent pairs one for one. A block that they do not share pairs what is
+    there, position by position, and leaves the rest to one side: two requests
+    that differ are one difference, and an operation that only one side sent
+    is another.
+    """
+    blocks = SequenceMatcher(
+        a=[_alignment_key(operation) for operation in control],
+        b=[_alignment_key(operation) for operation in candidate],
+        autojunk=False,
+    ).get_opcodes()
+
+    for _tag, first_start, first_end, second_start, second_end in blocks:
+        shared = min(first_end - first_start, second_end - second_start)
+        for offset in range(shared):
+            yield control[first_start + offset], candidate[second_start + offset]
+        for offset in range(shared, first_end - first_start):
+            yield control[first_start + offset], None
+        for offset in range(shared, second_end - second_start):
+            yield None, candidate[second_start + offset]
+
+
+def _one_sided(run: list[tuple[Operation, str]]) -> Difference:
+    """One difference for a run of operations that one side alone sent."""
+    role = run[0][1]
+    names = [operation.name for operation, _ in run]
+    first = run[0][0].index
+    where = f"operation {first}" if len(run) == 1 else f"operations {first} to {run[-1][0].index}"
+    sent, silent = (repr(names), "[]") if role == "daemon" else ("[]", repr(names))
+    return Difference(f"{where}: the client sent these to the {role} alone", sent, silent)
+
+
 def compare(control: Session, candidate: Session) -> list[Difference]:
     """Every difference between two recordings of one workload."""
     found: list[Difference] = []
@@ -276,23 +333,25 @@ def compare(control: Session, candidate: Session) -> list[Difference]:
 
     found.extend(_compare_handshake(control.handshake, candidate.handshake))
 
-    shared = min(len(control.operations), len(candidate.operations))
-    for index in range(shared):
-        found.extend(_compare_operation(control.operations[index], candidate.operations[index]))
-
-    if len(control.operations) != len(candidate.operations):
-        # The client stopped early against one of the two, which is what a
-        # difference in an answer looks like from the outside.
-        extra_control = [op.name for op in control.operations[shared:]]
-        extra_candidate = [op.name for op in candidate.operations[shared:]]
-        found.append(
-            Difference(
-                f"the client sent {len(control.operations)} operations to the daemon "
-                f"and {len(candidate.operations)} to pynixd",
-                repr(extra_control),
-                repr(extra_candidate),
-            )
-        )
+    # A run of operations that one side alone sent is one difference, and not
+    # one for each. A client that stops early leaves a long tail, and a line
+    # for each of those says the same thing many times.
+    run: list[tuple[Operation, str]] = []
+    for one, two in _pairs(control.operations, candidate.operations):
+        alone = (one, "daemon") if two is None else (two, "pynixd") if one is None else None
+        if alone is not None:
+            if run and run[0][1] != alone[1]:
+                found.append(_one_sided(run))
+                run = []
+            run.append(alone)
+            continue
+        if run:
+            found.append(_one_sided(run))
+            run = []
+        if one is not None and two is not None:
+            found.extend(_compare_operation(one, two))
+    if run:
+        found.append(_one_sided(run))
 
     return found
 
