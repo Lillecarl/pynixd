@@ -54,6 +54,23 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
                 return
         await self._subscribe_active(build_id, client)
 
+    async def unsubscribe(self, client: ClientConn | None) -> None:
+        """Stop sending the log of this build to *client*.
+
+        The build runs on for every other client that asked for it. This says
+        one client stopped listening, and nothing more. Issue #196.
+        """
+        if client is None:
+            return
+        async with self._lock:
+            build_id = self._build_id
+            while client in self._subscribers:
+                self._subscribers.remove(client)
+            while client in self._active_subscribers:
+                self._active_subscribers.remove(client)
+        if build_id is not None:
+            await self.engine.unsubscribe_build(build_id, client)
+
     async def _subscribe_active(self, build_id: BuildId, client: ClientConn) -> None:
         if not await self.engine.subscribe_build(build_id, client):
             return

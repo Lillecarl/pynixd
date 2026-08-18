@@ -118,6 +118,28 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
                 return
         await build_goal.subscribe(client)
 
+    async def unsubscribe(self, client: ClientConn | None) -> None:
+        """Stop sending anything of this goal to *client*.
+
+        **A goal that the request left behind must go quiet, and it must keep
+        running.** `_the_result_unless_it_stops` in `goals/requests.py` stops
+        waiting for a goal when the first failure ends the request, and the
+        goal keeps building because a build of pynixd serves every client that
+        asked for it. Without this the build of that goal still writes its log
+        to a client that has had its answer, and `build.sh:167` counts the
+        `error:` lines. Issue #196.
+        """
+        if client is None:
+            return
+        async with self._lock:
+            while client in self._watchers:
+                self._watchers.remove(client)
+            while client in self._subscribers:
+                self._subscribers.remove(client)
+            build_goal = self._build_goal
+        if build_goal is not None:
+            await build_goal.unsubscribe(client)
+
     async def _run(self) -> GoalResult:
         result = await self._produce()
         return await self._tell_the_client_it_failed(result)

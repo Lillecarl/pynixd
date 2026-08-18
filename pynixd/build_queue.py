@@ -331,6 +331,13 @@ async def _send_and_record_failed(
         failed.append(failed_client)
 
 
+def _the_order_nix_takes(build: QueuedBuild) -> tuple[str, str, int]:
+    """The sort key of `get_pending`: the name of the derivation, then the path."""
+    path = str(build.request.drv_path)
+    name = path.rpartition("/")[2].partition("-")[2]
+    return (name, path, int(build.build_id))
+
+
 class BuildQueue:
     """Global queue for build operations with deduplication."""
 
@@ -485,11 +492,27 @@ class BuildQueue:
             return removed
 
     async def get_pending(self) -> list[QueuedBuild]:
-        """Get all non-done builds sorted by ID."""
+        """Every build that is not done, in the order Nix would take them.
+
+        **Nix takes a derivation by its name, and not by the order it
+        arrived.** `Worker::awake` is a `std::set` over `CompareGoalPtrs`,
+        which reads `Goal::key()`, and `DerivationBuildingGoal::key()` at
+        `derivation-building-goal.cc:54` builds `"dd$" + name + "$" + path`.
+        `goal.hh:604` states the rule: `aardvark` runs before `baboon`.
+
+        `build_id` is a counter, so sorting by it gave the order the requests
+        arrived. That decides which build runs first whenever `max-jobs` makes
+        the slots scarce, and the answer of a request then depends on the
+        order a client happened to ask. `_goal_order` in `goals/requests.py`
+        takes the same decision one level up. Issue #196.
+
+        The id stays as the last part of the key, so two derivations of one
+        name keep a stable order.
+        """
         async with self.lock:
             return sorted(
                 [b for b in self._queue if not b.is_done],
-                key=lambda b: b.build_id,
+                key=_the_order_nix_takes,
             )
 
     async def complete(

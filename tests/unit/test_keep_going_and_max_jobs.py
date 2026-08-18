@@ -53,20 +53,32 @@ def _options(*, max_build_jobs: int, keep_going: bool) -> SetOptionsRequest:
 
 
 class FakeEnsureGoal:
-    """A goal that records that it ran, and answers success or failure."""
+    """A goal that records that it ran, and answers success or failure.
 
-    def __init__(self, name: str, *, succeeds: bool, started: list[str]) -> None:
+    *blocks* makes it never finish, which is the goal that a build slot has
+    not reached yet. The request must leave such a goal behind rather than
+    wait for it, so `answered` says which goals the client really hears about.
+    """
+
+    def __init__(self, name: str, *, succeeds: bool, started: list[str], blocks: bool = False) -> None:
         self.name = name
         self.derived_path = DerivedPath(name)
         self.succeeds = succeeds
         self.started = started
+        self.blocks = blocks
+        self.unsubscribed: list[Any] = []
 
     async def subscribe(self, client: Any) -> None:
         del client
 
+    async def unsubscribe(self, client: Any) -> None:
+        self.unsubscribed.append(client)
+
     async def result(self) -> GoalResult:
         self.started.append(self.name)
-        # One checkpoint, so a task that holds the only slot really holds it.
+        if self.blocks:
+            await anyio.sleep_forever()
+        # One checkpoint, so the order of the starts is the order of the answers.
         await anyio.sleep(0)
         return goal_success() if self.succeeds else goal_failure(f"{self.name} failed")
 
@@ -118,11 +130,16 @@ async def _run(
     has_a_backend: bool = False,
     has_a_substituter: bool = False,
     paths: list[str] | None = None,
+    blocking: set[str] | None = None,
 ) -> tuple[list[str], list[str]]:
     """Run the four paths, and answer which goals ran and which got an answer."""
     paths = _PATHS if paths is None else paths
+    blocking = blocking or set()
     started: list[str] = []
-    goals = {path: FakeEnsureGoal(path, succeeds=path not in failing, started=started) for path in paths}
+    goals = {
+        path: FakeEnsureGoal(path, succeeds=path not in failing, started=started, blocks=path in blocking)
+        for path in paths
+    }
     engine = FakeEngine(goals, has_a_backend=has_a_backend, has_a_substituter=has_a_substituter)
     request = BuildPathsWithResultsRequest(
         derived_paths=[SerdeDerivedPath(value=path) for path in paths],
@@ -154,7 +171,12 @@ async def test_one_slot_runs_one_goal_at_a_time() -> None:
 
 @pytest.mark.anyio
 async def test_the_first_failure_stops_the_request() -> None:
-    """x1 fails, so x2, x3 and x4 never run and report nothing."""
+    """x1 fails, so x2, x3 and x4 never run and report nothing.
+
+    `_build_slots` limits the goals here, and Nix limits the builds. The
+    docstring of that method holds the difference and what closing it costs:
+    starting every goal fixes `build.sh:247` and hangs `build.sh:269`.
+    """
     started, answered = await _run(
         failing={_PATHS[0]},
         options=_options(max_build_jobs=1, keep_going=False),
@@ -248,10 +270,14 @@ async def test_the_goals_run_in_the_order_of_the_derivation_name() -> None:
         failing={paths[-1]},
         options=_options(max_build_jobs=1, keep_going=False),
         paths=paths,
+        blocking=set(paths[:-1]),
     )
 
-    # x1 is last in the request and first by name, and it is the one that fails.
-    assert started == [paths[-1]]
+    # x1 is last in the request and first by name, and it is the one that
+    # fails. Every goal starts, and the **first** one to start is the one the
+    # name order picks. The answer holds it alone, because the other three
+    # had not finished when its failure ended the request.
+    assert started[0] == paths[-1]
     assert answered == [paths[-1]]
 
 

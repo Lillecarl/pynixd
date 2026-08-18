@@ -185,6 +185,13 @@ class BuildPathsWithResultsGoal(ExecutionGoal[BuildPathsWithResultsResponse]):
                 result = await _the_result_unless_it_stops(goals[index], stop)
                 if result is None:
                     log.debug("root_goal_abandoned", index=index, derived_path=str(goals[index].derived_path))
+                    # **A goal the request left behind must go quiet.** It
+                    # keeps building, because a build of pynixd serves every
+                    # client that asked for it, and this client has had its
+                    # answer. Without the unsubscribe its log still reaches
+                    # that client, and `build.sh:167` counts the `error:`
+                    # lines of the whole run. Issue #196.
+                    await goals[index].unsubscribe(self.client)
                     return
                 results[index] = result
                 if not keep_going and not result_succeeded(result.result):
@@ -235,35 +242,31 @@ class BuildPathsWithResultsGoal(ExecutionGoal[BuildPathsWithResultsResponse]):
         )
 
     def _build_slots(self) -> int:
-        """How many goals of this request may run at one time.
+        """How many root goals of this request run at one time.
 
         `max-jobs` of Nix limits the builds that the machine runs itself.
         `Worker::waitForBuildSlot` at `worker.cc:261` counts
-        `getNrLocalBuilds()` against `settings.maxBuildJobs`, and
-        `derivation-building-goal.cc:1182` asks the build hook to take the
-        derivation when no local slot is free. A remote build therefore costs
-        no slot, and `-j1` against a daemon that has builders still runs many
-        builds at once.
-
-        pynixd sends a build to a backend when it has one, so the limit reaches
-        this loop only when the local store is the one place a build can run. A
-        client that asks for `-j1` against a pynixd with builders keeps the
-        fan-out, which is the same answer that `nix-daemon` gives with
-        `builders`.
+        `getNrLocalBuilds()` against `settings.maxBuildJobs`, and a remote
+        build costs no slot.
 
         **A substituter is not a builder.** `no_schedule` marks a store that
-        the scheduler never sends a build to, and `substituter_ids` reads the
-        same property. This counted every store that is not the local one, so
-        one `http-cache.nixos.org` in the configuration lifted the limit for
-        every request. Almost every configuration holds a binary cache, so
-        `max-jobs` reached this loop in almost none of them.
+        the scheduler never sends a build to. This counted every store that
+        is not the local one, so one `http-cache.nixos.org` lifted the limit
+        for every request. Issues #190 and #196.
 
-        `main:build` of the functional suite measured it. It builds four
-        fixed-output derivations that all give the wrong hash, with `-j1`, and
-        it asserts one `error:` line. The four root goals all ran, all four
-        failed, and the client wrote nine lines: `slots=4, goals=4,
-        max_build_jobs=1, stores=["http-cache.nixos.org", "local"]`.
-        Issues #190 and #196.
+        **This limits goals, and Nix limits builds. That difference is the
+        last regression of #196, and closing it needs more than this line.**
+        `main:build` reads it at `build.sh:247`: with `-j2` pynixd takes the
+        first two goals by name, which are `depends-on-fail` and
+        `depends-on-slow`, so `fast-fail` is never a root of its own and the
+        answer names the wrong one.
+
+        Starting every goal here does fix that assertion, and it hangs the
+        `nix build` half of the same fixture at `build.sh:269` -- measured, a
+        300 s timeout. A hang is worse than a wrong answer, so the change is
+        not here. The build queue hands builds out in derivation-name order
+        now, which is one of the two pieces that a correction needs; the
+        other is dropping a queued build that no goal wants.
         """
         stores = self.engine.ctx.stores
         builders = [
@@ -274,22 +277,4 @@ class BuildPathsWithResultsGoal(ExecutionGoal[BuildPathsWithResultsResponse]):
         options = self.client.options if self.client is not None else None
         if options is None:
             return len(self._root_goals) or 1
-        # `max-jobs = 0` of Nix means "run no build here", and the goal system
-        # of pynixd has no other place to run one. One slot at a time is the
-        # nearest answer, and it is the answer that `nix-daemon` gives when the
-        # machines file is empty as well: it raises rather than run nothing.
-        #
-        # **That answer is wrong, and `ca:issue-13247` measures the cost.**
-        # A client passes `--max-jobs 0` to say "substitute this, do not build
-        # it". pynixd builds instead, and a build makes **every** output of the
-        # derivation, so `use-a-more-outputs^first` brought `second` as well
-        # and the test failed on a path it had asked pynixd not to produce.
-        #
-        # Answering 0 with a refusal is not the correction on its own. The
-        # road that `max-jobs 0` leaves open is the substituter, and a
-        # content-addressed output has no such road through pynixd yet: it has
-        # no store path until a realisation names one, and `EnsurePath`
-        # upstream takes a path. A refusal alone turns the wrong path into
-        # "unable to start any build". The two belong in one change, and #198
-        # holds it, with #187 and #195.
         return max(1, int(options.max_build_jobs))
