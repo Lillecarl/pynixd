@@ -194,6 +194,12 @@ async def test_max_jobs_does_not_hold_a_root_goal() -> None:
     which reads `max_build_jobs` of the same client, so a second count here
     would hold each goal behind the one before it.
 
+    **This test stands for `build.sh:247` and `build.sh:269`.** A request
+    answers when its goals answer, so a goal that waited for a build slot held
+    every goal behind it. `build.sh:247` read the derivation that the answer
+    named, and `build.sh:269` waited for a fifo that nothing opens and reached
+    the 300 s cap of the test.
+
     The four names sort the same way as the four store paths here, so this
     reads the fan-out alone.
     `test_the_goals_run_in_the_order_of_the_derivation_name` reads the order.
