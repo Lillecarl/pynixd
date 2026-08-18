@@ -57,6 +57,40 @@ The daemon colours the word itself, and it does not ask whether the client
 wants colour. The wire parity run reads these bytes from `nix-daemon`.
 """
 
+_ANSI_NORMAL = "\x1b[0m"
+_ANSI_RED = "\x1b[31;1m"
+_ANSI_MAGENTA = "\x1b[35;1m"
+"""The three colours that a failure message of Nix carries.
+
+`ansicolor.hh` of Nix defines each one. A message of a goal carries the
+colour in the text, so the bytes reach the client and `_ERROR_PREFIX`
+above is not the only coloured part.
+"""
+
+
+def _magenta(text: str) -> str:
+    """Give *text* the colour that `Magenta` of Nix gives a store path."""
+    return _ANSI_MAGENTA + text + _ANSI_NORMAL
+
+
+def _show_known_outputs(parsed: Derivation) -> str:
+    """The "Output paths:" section that `showKnownOutputs` of Nix writes.
+
+    `showKnownOutputs` at `derivation-building-goal.cc:53` collects the path
+    of each output that has one, into a `StorePathSet`. An output of a
+    floating content-addressed derivation has no path yet, and the set
+    leaves it out. The set is empty for such a derivation alone, and then
+    the section is empty as well.
+
+    The set orders each path by its base name, and every output of one
+    derivation is in one store directory, so the order of the whole path is
+    the same order.
+    """
+    paths = sorted({str(path) for path in parsed.output_paths().values() if str(path)})
+    if not paths:
+        return ""
+    return "\nOutput paths:" + "".join(f"\n  {_magenta(path)}" for path in paths)
+
 
 def _as_an_error(message: str) -> str:
     """Give *message* the shape that `showErrorInfo` of Nix gives it.
@@ -349,7 +383,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             return refusal
 
         child_results = await self._realise_input_derivations(parsed)
-        failed_inputs = await self._refuse_a_failed_input(child_results, drv_path)
+        failed_inputs = await self._refuse_a_failed_input(child_results, drv_path, parsed)
         if failed_inputs is not None:
             return failed_inputs
 
@@ -942,6 +976,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         self,
         child_results: list[GoalResult],
         drv_path: SerdeStorePath,
+        parsed: Derivation,
     ) -> GoalResult | None:
         """Answer a failure when an input derivation did not build.
 
@@ -998,8 +1033,14 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             keep_going=keep_going,
         )
         dependency = "dependency" if count == 1 else "dependencies"
+        # `inputsRealised` at `derivation-building-goal.cc:111` writes this
+        # message. It colours the path and the reason, and it adds the
+        # section of `showKnownOutputs` after them. The line feed carries no
+        # indent: `_as_an_error` adds the seven spaces when it writes the log
+        # line, and the text of the answer keeps none.
         refusal = goal_failure(
-            f"Cannot build '{drv_path}'.\n       Reason: {count} {dependency} failed.",
+            f"Cannot build '{_magenta(str(drv_path))}'.\n"
+            f"Reason: {_ANSI_RED}{count} {dependency} failed{_ANSI_NORMAL}." + _show_known_outputs(parsed),
             BuildResultStatus.DEPENDENCY_FAILED,
         )
         # The first failed input is the one that `amDone` counts, so its name
