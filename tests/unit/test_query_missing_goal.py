@@ -348,6 +348,55 @@ async def test_a_realisation_that_names_a_deleted_path_gets_built() -> None:
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("wanted", ["not-an-output", ""])
+async def test_a_request_that_names_no_output_plans_nothing(wanted: str) -> None:
+    """**This test stands for `build.sh:98` and `build.sh:102`.**
+
+    Both lines assert that `nix build` fails: one sends
+    `multiple-outputs-a.drv^not-an-output`, and the other sends `^` with an
+    empty output list. The build fails either way, so the suite passed while
+    the plan was wrong, and `streams build` is what found it.
+
+    `Store::queryMissing` reads `bfd.outputs` only to decide whether an output
+    path is invalid, at `misc.cc:222`. A name that the derivation does not
+    carry matches nothing, so `invalid` stays empty and the walk returns at
+    `misc.cc:225` with an empty answer.
+
+    pynixd read the empty selection as "no output path is known" and answered
+    `willBuild`. The client then asked for the path of that derivation and
+    tried to build it, so it sent four operations where it sends three to
+    `nix-daemon`. Issue #203.
+    """
+    drv_path = "/nix/store/11111111111111111111111111111111-multiple-outputs-a.drv"
+    first = "/nix/store/22222222222222222222222222222222-a-first"
+    second = "/nix/store/33333333333333333333333333333333-a-second"
+    store = FakeLocalStore(
+        valid_paths={first, second},
+        derivations={
+            drv_path: Derivation(
+                outputs=[
+                    DrvOutput(output_name="first", path=first, hash_algo="", hash_value=""),
+                    DrvOutput(output_name="second", path=second, hash_algo="", hash_value=""),
+                ]
+            )
+        },
+    )
+    substitution_queue = FakeSubstitutionQueue({})
+    ctx = cast(
+        "PynixdContext",
+        SimpleNamespace(local_store=store, scheduler=SimpleNamespace(substitution_queue=substitution_queue)),
+    )
+    request = QueryMissingRequest(derived_paths=_derived_path_set(f"{drv_path}!{wanted}"))
+
+    response = await QueryMissingPlanGoal(GoalEngine(ctx), request).result()
+
+    assert not response.will_build
+    assert not response.will_substitute
+    assert not response.unknown
+    assert not substitution_queue.queries
+
+
+@pytest.mark.anyio
 async def test_a_sibling_output_with_no_realisation_does_not_force_a_build() -> None:
     """pynixd reads the wanted outputs, and Nix reads every output.
 

@@ -248,7 +248,24 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
         # holds the measurement, and issue #203 holds the difference.
         output_paths = parsed.selected_output_paths(derived_path.output_names)
         if not output_paths:
-            self._must_build(drv_path, parsed, walk)
+            # **A request that names no output of this derivation plans
+            # nothing.** `Store::queryMissing` reads `bfd.outputs` only to
+            # decide whether an output path is invalid, at `misc.cc:222`. A
+            # name that the derivation does not carry matches nothing there,
+            # so `invalid` stays empty and the walk returns at `misc.cc:225`
+            # with no derivation to build. `build.sh:98` sends
+            # `multiple-outputs-a.drv!not-an-output`, and `build.sh:102` sends
+            # an empty output list. Each one must fail the build, and neither
+            # one is a derivation that a plan can name.
+            #
+            # pynixd answered `willBuild` here. The client then asked for the
+            # path of that derivation and tried to build it, so it sent one
+            # operation more than it sends to `nix-daemon`. Issue #203.
+            log.debug(
+                "query_missing_no_wanted_output",
+                drv_path=str(drv_path),
+                wanted=sorted(derived_path.output_names),
+            )
             return
 
         unnamed = [name for name, path in output_paths.items() if not str(path)]
