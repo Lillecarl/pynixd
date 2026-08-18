@@ -193,6 +193,14 @@ class BuildPathsWithResultsGoal(ExecutionGoal[BuildPathsWithResultsResponse]):
                     # lines of the whole run. Issue #196.
                     await goals[index].unsubscribe(self.client)
                     return
+                if self._another_root_carries_this_failure(result, index, goals):
+                    log.debug(
+                        "root_goal_answered_by_another_root",
+                        index=index,
+                        derived_path=str(goals[index].derived_path),
+                        failing_derivation=str(result.failing_derivation),
+                    )
+                    continue
                 results[index] = result
                 if not keep_going and not result_succeeded(result.result):
                     stop.set()
@@ -211,6 +219,47 @@ class BuildPathsWithResultsGoal(ExecutionGoal[BuildPathsWithResultsResponse]):
                 tg.start_soon(take_the_next_goal)
 
         return results
+
+    @staticmethod
+    def _another_root_carries_this_failure(
+        result: GoalResult,
+        index: int,
+        goals: Sequence[EnsureDerivedPathGoal],
+    ) -> bool:
+        """Is this failure the failure of another root of the same request?
+
+        **A request answers for the build that failed, and not for what waited
+        for it.** `nix build fast-fail^out depends-on-fail^out` names both, and
+        the second one has the first as an input. Nix answers with the failure
+        of `fast-fail` alone. `Worker::removeGoal` at `worker.cc:173` clears
+        `topGoals` as soon as one top goal fails and `keep-going` is off, so
+        the goal of `depends-on-fail` never reaches `amDone`, its `exitCode`
+        stays `ecBusy`, and `entry-points.cc:93` skips it.
+
+        pynixd answered for both, and `build.sh:279` reads the difference: the
+        client wrote one `error:` block more than the control run, because the
+        answer held a `DEPENDENCY_FAILED` result that Nix does not send.
+
+        pynixd cannot read `topGoals` for this, because it runs its root goals
+        together and each one answers on its own. `failing_derivation` is the
+        equivalent question, and it is a better one: it names the build that
+        really failed, so a chain of any depth points at the same derivation.
+        A root that names another root of this request learned nothing that
+        the other root does not already say.
+
+        The flake-check half of the same test needs no rule, and shows why the
+        name is what decides. It asks for `^*` and not `^out`, so the root and
+        the input are two goal objects for one derivation, and the failure of
+        each one names itself. Issue #196.
+        """
+        failing = result.failing_derivation
+        if failing is None or result_succeeded(result.result):
+            return False
+        if failing == goals[index].derived_path.base_store_path():
+            return False
+        return any(
+            failing == goal.derived_path.base_store_path() for position, goal in enumerate(goals) if position != index
+        )
 
     @staticmethod
     def _goal_order(goals: Sequence[EnsureDerivedPathGoal]) -> list[int]:

@@ -60,13 +60,25 @@ class FakeEnsureGoal:
     wait for it, so `answered` says which goals the client really hears about.
     """
 
-    def __init__(self, name: str, *, succeeds: bool, started: list[str], blocks: bool = False) -> None:
+    def __init__(
+        self,
+        name: str,
+        *,
+        succeeds: bool,
+        started: list[str],
+        blocks: bool = False,
+        blamed: str | None = None,
+    ) -> None:
         self.name = name
         self.derived_path = DerivedPath(name)
         self.succeeds = succeeds
         self.started = started
         self.blocks = blocks
+        # The derived path whose own build failed, when that is another goal.
+        # `GoalResult.failing_derivation` carries it out of the real goal.
+        self.blamed = blamed
         self.unsubscribed: list[Any] = []
+
 
     async def subscribe(self, client: Any) -> None:
         del client
@@ -80,7 +92,14 @@ class FakeEnsureGoal:
             await anyio.sleep_forever()
         # One checkpoint, so the order of the starts is the order of the answers.
         await anyio.sleep(0)
-        return goal_success() if self.succeeds else goal_failure(f"{self.name} failed")
+        if self.succeeds:
+            return goal_success()
+        result = goal_failure(f"{self.name} failed")
+        blamed = self.blamed if self.blamed is not None else self.name
+        result.failing_derivation = DerivedPath(blamed).base_store_path()
+        return result
+
+
 
 
 def _store(*, no_schedule: bool) -> SimpleNamespace:
@@ -131,15 +150,24 @@ async def _run(
     has_a_substituter: bool = False,
     paths: list[str] | None = None,
     blocking: set[str] | None = None,
+    blamed: dict[str, str] | None = None,
 ) -> tuple[list[str], list[str]]:
     """Run the four paths, and answer which goals ran and which got an answer."""
     paths = _PATHS if paths is None else paths
     blocking = blocking or set()
+    blamed = blamed or {}
     started: list[str] = []
     goals = {
-        path: FakeEnsureGoal(path, succeeds=path not in failing, started=started, blocks=path in blocking)
+        path: FakeEnsureGoal(
+            path,
+            succeeds=path not in failing,
+            started=started,
+            blocks=path in blocking,
+            blamed=blamed.get(path),
+        )
         for path in paths
     }
+
     engine = FakeEngine(goals, has_a_backend=has_a_backend, has_a_substituter=has_a_substituter)
     request = BuildPathsWithResultsRequest(
         derived_paths=[SerdeDerivedPath(value=path) for path in paths],
@@ -297,4 +325,53 @@ async def test_the_answer_keeps_the_order_of_the_request() -> None:
     )
 
     assert started == list(reversed(paths))
+    assert answered == paths
+
+
+@pytest.mark.anyio
+async def test_a_root_that_waited_for_a_failed_root_reports_nothing() -> None:
+    """The request answers for the build that failed, and not for its waiter.
+
+    `nix build fast-fail^out depends-on-fail^out` names two derivations, and
+    the second has the first as an input. Nix answers with the failure of the
+    first alone: `Worker::removeGoal` at `worker.cc:173` clears `topGoals`, so
+    the goal of the waiter never reaches `amDone` and `entry-points.cc:93`
+    skips it.
+
+    pynixd runs its root goals together, so both answer. `failing_derivation`
+    names the build that really failed, and a root that names another root of
+    the same request adds nothing. `build.sh:279` reads the difference: the
+    client wrote one `error:` block more than the control run.
+    """
+    paths = _PATHS[:2]
+    started, answered = await _run(
+        failing=set(paths),
+        options=_options(max_build_jobs=1, keep_going=True),
+        paths=paths,
+        # x2 failed because x1 failed.
+        blamed={paths[1]: paths[0]},
+    )
+
+    assert started == paths
+    assert answered == [paths[0]]
+
+
+@pytest.mark.anyio
+async def test_a_root_that_waited_for_a_derivation_outside_the_request_reports() -> None:
+    """A failed input that the client did not name is nothing the client heard.
+
+    Nix reports such a goal, because it does reach `amDone`: the request holds
+    one top goal, and it is the waiter. So the name decides, and not the kind
+    of the failure.
+    """
+    paths = _PATHS[:2]
+    outside = "/nix/store/99999999999999999999999999999999-x9.drv!out"
+    started, answered = await _run(
+        failing={paths[1]},
+        options=_options(max_build_jobs=1, keep_going=True),
+        paths=paths,
+        blamed={paths[1]: outside},
+    )
+
+    assert started == paths
     assert answered == paths

@@ -159,8 +159,29 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             await build_goal.unsubscribe(client)
 
     async def _run(self) -> GoalResult:
-        result = await self._produce()
+        result = self._name_what_really_failed(await self._produce())
         return await self._tell_the_client_it_failed(result)
+
+    def _name_what_really_failed(self, result: GoalResult) -> GoalResult:
+        """Record the derivation whose own build started this failure.
+
+        A goal that failed because an input failed carries the name that the
+        input gave, so the whole chain points at the one build that really
+        failed. A goal that failed for itself is that build, so it names
+        itself.
+
+        `BuildPathsWithResultsGoal` reads the name. Nix answers for a top goal
+        that reached `amDone` alone, and a goal that waits for a failed input
+        does not reach it when the request stops: `Worker::removeGoal` at
+        `worker.cc:173` clears `topGoals`, and `entry-points.cc:93` skips
+        every goal that is still `ecBusy`. The name is how pynixd tells the
+        two apart. Issue #196.
+        """
+        if result_succeeded(result.result) or result.failing_derivation is not None:
+            return result
+        named = result.copy()
+        named.failing_derivation = self.derived_path.base_store_path()
+        return named
 
     async def _produce(self) -> GoalResult:
         if self.derived_path.is_opaque:
@@ -263,10 +284,12 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             # as an error message. `dyn-drv:failing-outer` reads the sentence,
             # and pynixd gave it an internal note with a `!` in the path.
             if not result_succeeded(outer_result.result):
-                return goal_failure(
+                refusal = goal_failure(
                     f"failed to obtain derivation of '{self.derived_path.outer.to_string()}'",
                     BuildResultStatus.DEPENDENCY_FAILED,
                 )
+                refusal.failing_derivation = outer_result.failing_derivation
+                return refusal
             return goal_failure(
                 f"pynixd: nested derived path did not produce {chain_output}: {self.derived_path}",
                 BuildResultStatus.UNKNOWN,
@@ -975,10 +998,14 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             keep_going=keep_going,
         )
         dependency = "dependency" if count == 1 else "dependencies"
-        return goal_failure(
+        refusal = goal_failure(
             f"Cannot build '{drv_path}'.\n       Reason: {count} {dependency} failed.",
             BuildResultStatus.DEPENDENCY_FAILED,
         )
+        # The first failed input is the one that `amDone` counts, so its name
+        # is the name of this failure as well.
+        refusal.failing_derivation = failed[0].failing_derivation
+        return refusal
 
     async def _realise_input_derivations(self, parsed) -> list[GoalResult]:
         child_goals: list[EnsureDerivedPathGoal] = []

@@ -22,6 +22,13 @@ class GoalResult:
     resolved_outputs: dict[str, StorePath] = field(default_factory=dict)
     produced_paths: set[StorePath] = field(default_factory=set)
     dynamic_paths: DynamicPathMap = field(default_factory=dict)
+    #: The derivation whose own build failed and started this failure. A goal
+    #: that failed for itself names itself here. A goal that failed because an
+    #: input failed names that input, or whatever the input named, so the whole
+    #: chain points at the one build that really failed. `None` on a success.
+    #: `BuildPathsWithResultsGoal` reads it to decide which root of a request
+    #: carries the answer. Issue #196.
+    failing_derivation: StorePath | None = None
 
     def copy(self) -> GoalResult:
         """Return a shallow copy of this GoalResult with independent collections."""
@@ -30,6 +37,7 @@ class GoalResult:
             resolved_outputs=dict(self.resolved_outputs),
             produced_paths=set(self.produced_paths),
             dynamic_paths=dict(self.dynamic_paths),
+            failing_derivation=self.failing_derivation,
         )
 
     def with_dynamic_outputs(self, drv_path: StorePath) -> GoalResult:
