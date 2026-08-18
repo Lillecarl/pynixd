@@ -329,20 +329,22 @@ with the relocated store layout that the suite itself sets.
 
 | run     | OK  | FAIL | SKIP |
 | ------- | --- | ---- | ---- |
-| control | 151 | 20   | 36   |
-| pynixd  | 148 | 24   | 35   |
+| control | 159 | 12   | 36   |
+| pynixd  | 158 | 13   | 36   |
 
-**3 regressions**: a test that the control passes and pynixd fails.
+**1 regression**: a test that the control passes and pynixd fails.
 
-| test                 | why                                             |
-| -------------------- | ----------------------------------------------- |
-| `ca:new-build-cmd`   | #196, and it fails at the same `build.sh:167`    |
-| `main:build`         | #196, at `build.sh:167`                          |
-| `main:store-info`    | permanent, and the next section gives the reason |
+| test              | why                                              |
+| ----------------- | ------------------------------------------------ |
+| `main:store-info` | permanent, and the next section gives the reason |
 
-So two issues hold every regression, one of the two is on purpose, and the
-two that are not are **one assertion**. `new-build-cmd.sh` sources `build.sh`,
-so both arrive at the same line.
+**The other two regressions are gone, and issue #207 took them.**
+`ca:new-build-cmd` and `main:build` were **one assertion**, at
+`build.sh:167`: `new-build-cmd.sh` sources `build.sh`, so both arrived at the
+same line. The root goals of one request now enqueue their builds in the
+order of `Goal::key()`, which is the order that `Worker::run` steps them, so
+`-j1` over the four failing derivations of `fod-failing.nix` names x1 the way
+Nix does. `dispatch_order.py` holds the reason and the measurement.
 
 `main:multiple-outputs-substitute-failure` moved SKIP to FAIL. Issue #199
 holds it: the managed upstream daemon did not start, which is a fault of the
@@ -352,16 +354,18 @@ harness rather than of the subject of the test.
 go between runs, and all three are the #174 family. Read a single failure of
 one of them as a report of that issue, and not as a new one.
 
-**20 tests fail in both arms.** Those are a defect of Nix or of this harness,
+**12 tests fail in both arms.** Those are a defect of Nix or of this harness,
 and not of pynixd. `main:build-remote-*` is eight of them, because the suite
 has no second machine to build on here.
 
-**The control moved from 149 to 151, and the shell is the reason.** The
-`bash` that `runtimeInputs` now names put a shell in the store, so
-`chroot-store` and `nested-sandboxing` build inside their sandbox and pass in
-both arms. The section below on the harness gives the mechanism. A control
-that fails hides a regression, so read these two numbers as one measurement
-that got better and not as a change of subject.
+**The control moved from 151 to 159, and pynixd is not the reason.** The
+control arm runs a plain `nix daemon` and it reaches no part of pynixd, so
+read this as a measurement of a different machine on a different day. It is
+`main:db-migration`, `main:fetchurl`, `main:json` and `main:tarball` that
+still fail in both arms, beside the eight `main:build-remote-*` tests. The
+count of tests that fail in both arms went from 20 to 12, and this run did not
+record which eight moved. A control that fails hides a regression, so read a
+control that improves as one that stops hiding.
 
 ### The `ca` suite alone
 
@@ -370,10 +374,13 @@ is the shorter loop, and the numbers are for `--suite ca`.
 
 | run     | OK  | FAIL | SKIP |
 | ------- | --- | ---- | ---- |
-| control | 19  | 1    | 4    |
-| pynixd  | 18  | 2    | 4    |
+| control | 20  | 0    | 4    |
+| pynixd  | 20  | 0    | 4    |
 
-`ca:recursive` fails in both, so the one regression left is `new-build-cmd`.
+**The `ca` suite has no regression left, and no failure in either arm.**
+`new-build-cmd` passed when issue #207 gave the root goals the order of Nix,
+and `ca:recursive` passes in both arms now. It failed in both before, so
+pynixd did not take it.
 
 ### The same suite against Nix 2.35: 17 regressions
 
