@@ -265,6 +265,13 @@ def _content_addressed(output_name: str = "out") -> Derivation:
     return Derivation(outputs=[DrvOutput(output_name=output_name, path="", hash_algo="", hash_value="")])
 
 
+def _content_addressed_outputs(*output_names: str) -> Derivation:
+    """A content-addressed derivation that has more than one output."""
+    return Derivation(
+        outputs=[DrvOutput(output_name=name, path="", hash_algo="", hash_value="") for name in output_names]
+    )
+
+
 @pytest.mark.anyio
 async def test_a_realised_content_addressed_output_is_in_no_bucket() -> None:
     """`nix-daemon` answers an empty `willBuild` for a derivation it built.
@@ -338,6 +345,55 @@ async def test_a_realisation_that_names_a_deleted_path_gets_built() -> None:
 
     assert {str(path) for path in response.will_build} == {drv_path}
     assert substitution_queue.queries == [out_path]
+
+
+@pytest.mark.anyio
+async def test_a_sibling_output_with_no_realisation_does_not_force_a_build() -> None:
+    """pynixd reads the wanted outputs, and Nix reads every output.
+
+    **This test stands for a difference of the wire, and not for a line of the
+    suite.** `ca:build` passes on both sides. `streams build` records the
+    difference: `QueryMissing` of `nix-daemon` names `rootCA.drv` in
+    `will_build` seven times, and pynixd names it in none of them. Issue #203.
+
+    `rootCA` of `ca/content-addressed.nix` has the outputs `out`, `dev` and
+    `foo`, and `dev` and `foo` are symbolic links to `$out`. A client that
+    builds `rootCA^out` realises `out` alone, because `DerivationGoal` of Nix
+    holds one `wantedOutput` and maps that one output back to the original
+    derivation, at `derivation-goal.cc:228-236`.
+
+    `queryMissing` of Nix then decides `knownOutputPaths` from every output,
+    at `misc.cc:217-225`, so an unrealised `dev` makes it announce a build of
+    a derivation whose `out` is already there. Measured against 2.34.8 with no
+    daemon: `nix build rootCA^out --dry-run` names the derivation, and it
+    names nothing after `rootCA^*` registers `dev` and `foo`.
+    `Lillecarl/nix#312` reports that, and `NIX-DEVIATION` does not apply
+    because Nix is wrong here.
+
+    pynixd reads the wanted outputs through `selected_output_paths`, so it
+    asks for the realisation of `out` alone and puts the derivation in no
+    bucket. `docs/notes/querymissing.md` holds the measurement.
+    """
+    drv_path = "/nix/store/11111111111111111111111111111111-rootCA.drv"
+    out_path = "/nix/store/22222222222222222222222222222222-rootCA"
+    store = FakeLocalStore(
+        valid_paths={out_path},
+        derivations={drv_path: _content_addressed_outputs("out", "dev", "foo")},
+        realisations={"out": out_path},
+    )
+    ctx = cast(
+        "PynixdContext",
+        SimpleNamespace(local_store=store, scheduler=SimpleNamespace(substitution_queue=FakeSubstitutionQueue({}))),
+    )
+    request = QueryMissingRequest(derived_paths=_derived_path_set(f"{drv_path}!out"))
+
+    response = await QueryMissingPlanGoal(GoalEngine(ctx), request).result()
+
+    assert not response.will_build
+    assert not response.will_substitute
+    assert not response.unknown
+    # The whole difference is here: `dev` and `foo` are never asked about.
+    assert [query.rpartition("!")[2] for query in store.realisation_queries] == ["out"]
 
 
 @pytest.mark.anyio
