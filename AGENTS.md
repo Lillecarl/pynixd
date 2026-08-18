@@ -140,6 +140,38 @@ and the flag is then scoped to that entry.
 - Construct commands as plain lists so the exact invocation is visible at a glance.
 - Use `pytest.fixture(autouse=True)` for per-test cleanup (store directories, etc.).
 
+### Mirror each divergence from the functional suite
+
+The Nix functional suite finds each place where pynixd does not match Nix.
+That suite is slow, it needs a Linux builder, and it runs against a matrix of
+Nix versions. It does not run on each change.
+
+**A correction is not complete until a pytest of this repository asserts the
+same thing.** The pytest is what stops the divergence from coming back with no
+signal.
+
+Name the assertion that the test stands for. Give the file and the line of the
+functional suite, in the docstring of the test. A reader then finds the
+upstream assertion, and also the reason that the test exists.
+
+Copy the shape of these tests:
+
+| Test | Assertion of the suite |
+| --- | --- |
+| `tests/unit/test_build_log_replay.py` | `build.sh:167` |
+| `tests/unit/test_derived_path.py` | `build.sh:91` |
+| `tests/unit/test_build_paths_goals.py` | `build.sh:8` |
+| `tests/unit/test_keep_going_and_max_jobs.py` | `build.sh:247`, `build.sh:269` |
+| `tests/parity/test_wire_parity.py` | `build.sh:91` |
+
+The functional suite proves the bytes of a run. A test of this kind proves the
+decision that makes those bytes, and it runs in one second.
+
+**A divergence that pynixd keeps needs the `NIX-DEFECT` marker as well.**
+Section 5b gives the shape. The pytest says what pynixd does; the marker says
+where Nix is wrong, and it is the register of the places to deviate from Nix
+later.
+
 ### Running Validation Commands
 - **Single pytest invocation only**: NEVER run more than one `pytest` process at a time in this repository. Functional tests share session store paths, daemon sockets, and `/tmp/pynixd-stores` state; concurrent pytest runs can race each other and produce misleading failures that look like real regressions.
 - **NEVER pipe away output** from `just check`, `just precommit`, or `pytest` — the full output contains failure details you need to diagnose issues.
