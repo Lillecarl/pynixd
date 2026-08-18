@@ -135,3 +135,73 @@ Client calls `RemoteStore::queryMissing` (`src/libstore/remote-store.cc:751-772`
 | **No caching across invocations** | Every `nix build` call re-walks the entire graph from scratch. The result is thrown away after use |
 | **No substituter-level batching** | `queryPathInfo` is called one path at a time per substituter. Many substituters (like cache.nixos.org) support narinfo batch lookups, but `queryMissing` doesn't use them here |
 | **ThreadPool parallelism is limited** | The thread pool only parallelizes checking multiple invalid outputs of the *same* derivation against substituters (`misc.cc:274-275`). Different derivations are processed sequentially by the `doPath` queue |
+
+## A realised output, and a sibling that is not
+
+**`queryMissing` reads every output of a derivation to decide
+`knownOutputPaths`, and it ignores the outputs that the caller wants.** The
+loop is at `misc.cc:217-225`:
+
+```cpp
+for (auto & [outputName, pathOpt] : queryPartialDerivationOutputMap(drvPath)) {
+    if (!pathOpt) {
+        knownOutputPaths = false;
+        break;
+    }
+    if (bfd.outputs.contains(outputName) && !isValidPath(*pathOpt))
+        invalid.insert(*pathOpt);
+}
+```
+
+The `break` runs for an output that the caller did not ask for. The next line
+reads `bfd.outputs`, and the substituter loop at `misc.cc:250` reads
+`bfd.outputs` as well. So two of the three tests honour the wanted outputs and
+the first one does not. The comment above the loop states the intent that the
+code misses: "CA derivations for which we have a trust mapping for all wanted
+outputs".
+
+**A content-addressed derivation reaches this state after one ordinary
+build.** `DerivationGoal` holds one `wantedOutput`, and it registers a
+realisation for that output alone, at `derivation-goal.cc:228-236`. The build
+of the resolved derivation makes every output, and Nix maps one of them back
+to the original derivation.
+
+### The measurement
+
+`ca/content-addressed.nix` gives `rootCA` the outputs `out`, `dev` and `foo`.
+This runs against Nix 2.34.8, with no daemon and no pynixd:
+
+```console
+$ nix build -f content-addressed.nix rootCA^out
+$ sqlite3 db.sqlite 'select drvPath, outputName from Realisations'
+sha256:e76acd40...|out            # the original rootCA.drv, one output
+sha256:39850e18...|dev
+sha256:39850e18...|foo            # the resolved derivation, all three
+sha256:39850e18...|out
+
+$ nix build -f content-addressed.nix rootCA^out --dry-run
+this derivation will be built:
+  .../gfzi77x6b81brl6b3lmpgmi2vrn6wp1f-rootCA.drv
+```
+
+The output `out` is realised, and its path is valid. Nix still names the
+derivation. After `nix build -f content-addressed.nix 'rootCA^*'` registers
+`dev` and `foo` as well, the same `--dry-run` command names nothing. So the
+siblings are the cause.
+
+### What pynixd does
+
+`QueryMissingPlanGoal._classify_derivation` reads the wanted outputs alone,
+through `selected_output_paths`. pynixd also registers a realisation for every
+output that the build made, in `_register_realisations`, and not for the
+wanted one alone. Each half makes the answer of pynixd complete where the
+answer of Nix is not, so pynixd leaves `rootCA.drv` out of `willBuild` and
+`nix-daemon` puts it in.
+
+**pynixd keeps its answer.** Issue #203 holds the difference, and issue #191
+holds the convention for a defect of Nix that pynixd copies. This is not one
+of those: pynixd does not copy this defect.
+
+`Lillecarl/nix#312` reports the defect, and it gives the correction: read
+`bfd.outputs` in the first test as well, which makes the three tests of the
+function agree.
