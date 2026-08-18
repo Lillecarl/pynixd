@@ -230,6 +230,22 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
             self._must_build(drv_path, parsed, walk)
             return
 
+        # **NIX-DEFECT (#191): `queryMissing` decides `knownOutputPaths` from
+        # every output of the derivation, and it ignores the outputs that the
+        # caller wants.** The loop at `misc.cc:217-225` breaks on the first
+        # output with no path. The line under that break reads `bfd.outputs`,
+        # and the substituter loop at `misc.cc:250` reads it as well, so two
+        # of the three tests honour the wanted outputs and the first one does
+        # not. A content-addressed derivation reaches that state after one
+        # ordinary build, because `DerivationGoal` holds one `wantedOutput`
+        # and registers a realisation for that output alone, at
+        # `derivation-goal.cc:228-236`. `nix build rootCA^out --dry-run` then
+        # announces a build of a derivation whose `out` is already realised.
+        # pynixd could copy that and read every output here. It does not:
+        # `selected_output_paths` reads the wanted outputs, so pynixd leaves
+        # the derivation out of `willBuild` and `nix-daemon` puts it in.
+        # `Lillecarl/nix#312` reports the defect, `docs/notes/querymissing.md`
+        # holds the measurement, and issue #203 holds the difference.
         output_paths = parsed.selected_output_paths(derived_path.output_names)
         if not output_paths:
             self._must_build(drv_path, parsed, walk)

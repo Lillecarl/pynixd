@@ -309,20 +309,21 @@ class BuildPathsWithResultsGoal(ExecutionGoal[BuildPathsWithResultsResponse]):
         the whole 300 s cap at `build.sh:269`, and a root that only waited for
         a failed root got an answer at `build.sh:279`. All three are gone.
 
-        **One deviation is left, and it is an order and not a result.**
-        `build.sh:167` builds four fixed-output derivations that all give the
-        wrong hash, with `-j1`, and it asserts that the one failure names x1.
-        Nix names x1 because it makes the four goals together and then takes
-        them in the order of `Worker::awake`, which `_goal_order` states.
-        pynixd makes its goals as coroutines that prepare at their own speed,
-        so the derivation that reaches the queue first takes the one slot, and
-        that is x2 or x3 as often as x1.
-
-        **The correction for it would be a barrier, so pynixd does not take
-        it.** Every root goal would have to reach "ready to build" before any
-        build starts. That delays the first build of every request by the
-        preparation of the slowest goal of it, to decide which of several
-        equally doomed builds reports first. The result of the request is the
+        **NIX-DEVIATION (#206): which of several equally doomed builds
+        reports first.** `Worker::waitForBuildSlot` at `worker.cc:261` makes
+        every goal of a request first and then holds the builders, and
+        `Worker::awake` takes them in the order of `Goal::key()`, so `-j1`
+        over the four failing fixed-output derivations of `build.sh:167`
+        always names x1. pynixd makes its goals as coroutines that prepare at
+        their own speed, so the goal that reaches the queue first takes the
+        one slot, and that is x2 or x3 as often as x1. The difference is worth
+        its cost, because the correction is a barrier: every root goal would
+        reach "ready to build" before any build starts, which delays the first
+        build of every request by the preparation of its slowest goal, and it
+        buys only the name in a message about builds that all fail. To reverse
+        this decision, measure what that barrier costs a request whose goals
+        prepare at different speeds. Nix is not wrong here: its order is an
+        effect of how it makes goals, and the result of the request is the
         same either way. Issue #196.
         """
         return len(self._root_goals) or 1
