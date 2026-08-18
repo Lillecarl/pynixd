@@ -98,6 +98,11 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
             from_goal_path=True,
             options=options,
         )
+        # `from_goal_path` made the queue take a reference for this request,
+        # under its own lock. This records which one to give back when the
+        # request answers, and it takes no await, so nothing lands between the
+        # two calls and loses the record. Issue #196.
+        self.engine.note_a_held_build(build_id)
         async with self._lock:
             self._build_id = build_id
             subscribers = list(self._subscribers)

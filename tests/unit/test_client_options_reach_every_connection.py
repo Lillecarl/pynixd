@@ -220,6 +220,10 @@ class FakeCtx:
 class FakeEngine:
     def __init__(self, scheduler: FakeScheduler) -> None:
         self.ctx = FakeCtx(scheduler)
+        self.held_builds: list[BuildId] = []
+
+    def note_a_held_build(self, build_id: BuildId) -> None:
+        self.held_builds.append(build_id)
 
     async def subscribe_build(self, build_id: BuildId, client: ClientConn) -> bool:
         del build_id, client

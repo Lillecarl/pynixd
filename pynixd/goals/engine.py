@@ -65,6 +65,46 @@ class GoalEngine:
         self._lock = anyio.Lock()
         self._goals: dict[Any, Goal[Any]] = {}
         self.substitution_import_limiter = anyio.Semaphore(4)
+        # Every build that a goal of this engine waits for. `proxy.py` makes
+        # one engine for one request, so this list is the reference that the
+        # request holds on the build queue. `let_go_of_every_build` gives it
+        # back. Issue #196.
+        self._held_builds: list[BuildId] = []
+
+    def note_a_held_build(self, build_id: BuildId) -> None:
+        """Record that a goal of this request waits for *build_id*.
+
+        `BuildQueue.enqueue` already took the reference, under its own lock,
+        for every call that `from_goal_path` marks. This only remembers which
+        reference to give back. It takes no await, so a cancellation cannot
+        land between the two and lose the record.
+        """
+        self._held_builds.append(build_id)
+
+    async def let_go_of_every_build(self) -> None:
+        """Give back every build reference that this request took.
+
+        **The request is the unit that wants a build, and not the goal.** A
+        request stops at its first failure with `keep-going` off, and the
+        goals it leaves behind keep running: `_the_result_unless_it_stops` in
+        `goals/requests.py` states why, and a build of pynixd serves every
+        client that asked for the same derivation. So the moment the request
+        answers is the moment this request wants nothing more, whatever state
+        its goals are in.
+
+        `BuildQueue.let_go` ends a build that no other request holds.
+
+        This runs once. A second call finds the list empty, so the entry point
+        of `build_paths`, which calls `build_paths_with_results` on the same
+        engine, gives no reference back twice.
+        """
+        held = self._held_builds
+        self._held_builds = []
+        scheduler = self.ctx.scheduler
+        if scheduler is None:
+            return
+        for build_id in held:
+            await scheduler.queue.let_go(build_id)
 
     async def subscribe_build(self, build_id: BuildId, client: ClientConn) -> bool:
         """Subscribe *client* to real-time log output for the given *build_id*."""
@@ -110,7 +150,12 @@ class GoalEngine:
         """Execute a BuildPathsWithResults request, returning per-path results."""
         if request.build_mode != BuildMode.NORMAL:
             return await self._straight_to_the_store(request, client)
-        return await BuildPathsWithResultsGoal(self, request, client).result()
+        try:
+            return await BuildPathsWithResultsGoal(self, request, client).result()
+        finally:
+            # The answer of this request is the moment it wants nothing more.
+            # `let_go_of_every_build` says what the build queue does with that.
+            await self.let_go_of_every_build()
 
     async def _straight_to_the_store(self, request: Any, client: ClientConn | None) -> Any:
         """A check or a repair goes to the local store, and the goal system stands aside.

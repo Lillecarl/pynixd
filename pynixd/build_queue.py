@@ -140,6 +140,13 @@ class QueuedBuild:
         self._subscriber_refs: dict[ClientConn, int] = {}
         self.cancel_when_unsubscribed = False
 
+        # The number of goal systems that wait for this build. One request
+        # holds one reference, whatever number of its goals want the same
+        # derivation, because `GoalEngine` lives for one request and lets go
+        # of every build it holds when that request answers. `BuildQueue.let_go`
+        # states what the count decides. Issue #196.
+        self.goal_holders = 0
+
         # Guards add_subscriber replay vs post_log_bytes fanout so that a
         # joining client never misses bytes that arrive during catch-up.
         self._sub_lock = anyio.Lock()
@@ -422,6 +429,12 @@ class BuildQueue:
             if existing is not None and not existing.is_done:
                 log.debug("build_deduped", id=existing.build_id)
                 existing.from_goal_path = existing.from_goal_path or from_goal_path
+                # Under the same lock as the dedup. A goal system that took
+                # the reference after `enqueue` returned could find the build
+                # cancelled between the two calls, because another request
+                # that let go in that moment brought the count to zero.
+                if from_goal_path:
+                    existing.goal_holders += 1
                 if scheduler_request_id is not None:
                     existing.scheduler_request_ids.add(scheduler_request_id)
                     if derived_paths_for_request:
@@ -449,6 +462,8 @@ class BuildQueue:
                 options=options,
             )
             build.from_goal_path = from_goal_path
+            if from_goal_path:
+                build.goal_holders += 1
             self.next_id += 1
             self._queue.append(build)
             self._by_path[drv_path] = build
@@ -490,6 +505,43 @@ class BuildQueue:
             if removed and build.cancel_when_unsubscribed and not build.subscribers and not build.is_done:
                 self._cancel_locked(build, "pynixd: build cancelled because all clients disconnected")
             return removed
+
+    async def let_go(self, build_id: BuildId) -> None:
+        """One goal system stops waiting for this build.
+
+        **A build ends when no goal of any request waits for it.** Nix takes
+        the same decision one step earlier: `Worker::removeGoal` at
+        `worker.cc:173` clears `topGoals` when a top goal fails and
+        `keep-going` is off, `Worker::run` leaves its loop, and the goals that
+        are left are destroyed. A destroyed `DerivationBuildingGoal` kills its
+        builder.
+
+        pynixd cannot copy that step for step, because a build here serves
+        every client that asked for the same derivation, and one client that
+        gave up must not take the work of the others.
+        `_the_result_unless_it_stops` in `goals/requests.py` states that rule.
+        The count answers the question that the rule really asks: the build
+        ends when the **last** goal system lets go, and not when the first one
+        does.
+
+        `main:build` measures both halves. `build.sh:269` builds the
+        `cancelled-builds` fixture with `-j2`. Its `slow` derivation writes to
+        a fifo, which blocks until a reader opens the fifo, and the only
+        reader is `fast-fail`, which fails. The test then removes the
+        directory of the fifo, so no reader can ever appear. Nix answers in
+        about two seconds and kills that builder. pynixd left it running, a
+        second request deduplicated onto it, and the run reached the 300 s
+        timeout of the test. Issue #196.
+        """
+        async with self.lock:
+            build = self._by_id.get(build_id)
+            if build is None:
+                return
+            if build.goal_holders <= 0:
+                return
+            build.goal_holders -= 1
+            if build.goal_holders == 0 and not build.is_done:
+                self._cancel_locked(build, "pynixd: build cancelled because no goal waits for it")
 
     async def get_pending(self) -> list[QueuedBuild]:
         """Every build that is not done, in the order Nix would take them.
@@ -590,7 +642,9 @@ class BuildQueue:
         )
         if not build.future.done():
             build.future.set_result(response)
-        log.info("build_cancelled_no_subscribers", build_id=build.build_id)
+        # The reason belongs in the line, because two roads reach this
+        # method: a client that disconnected, and a goal system that let go.
+        log.info("build_cancelled", build_id=build.build_id, reason=error_msg)
 
         if build.is_building:
             metrics.QUEUE_SIZE.labels(status="building").dec()
