@@ -16,7 +16,6 @@ from ..serde import (
     DerivedPath as SerdeDerivedPath,
     KeyedBuildResult,
 )
-from ..serde.ids import LOCAL_STORE_ID
 from .goal import ExecutionGoal
 from .results import result_succeeded
 
@@ -291,39 +290,39 @@ class BuildPathsWithResultsGoal(ExecutionGoal[BuildPathsWithResultsResponse]):
         )
 
     def _build_slots(self) -> int:
-        """How many root goals of this request run at one time.
+        """How many root goals of this request run at one time. Every one.
 
-        `max-jobs` of Nix limits the builds that the machine runs itself.
+        **`max-jobs` limits the builds of the machine, and not the goals.**
         `Worker::waitForBuildSlot` at `worker.cc:261` counts
         `getNrLocalBuilds()` against `settings.maxBuildJobs`, and a remote
-        build costs no slot.
+        build costs no slot. Nix makes every goal of the request first and
+        then holds the builders, so `-j1` runs one builder and not one goal.
 
-        **A substituter is not a builder.** `no_schedule` marks a store that
-        the scheduler never sends a build to. This counted every store that
-        is not the local one, so one `http-cache.nixos.org` lifted the limit
-        for every request. Issues #190 and #196.
+        pynixd holds the builders in `Scheduler._local_slot_is_full`, which
+        reads the same option of the same client. So this layer needs no
+        limit, and the limit it had was a second one on the wrong thing.
 
-        **This limits goals, and Nix limits builds. That difference is the
-        last regression of #196, and closing it needs more than this line.**
-        `main:build` reads it at `build.sh:247`: with `-j2` pynixd takes the
-        first two goals by name, which are `depends-on-fail` and
-        `depends-on-slow`, so `fast-fail` is never a root of its own and the
-        answer names the wrong one.
+        **What the limit here cost.** A request answers when its goals answer,
+        so a goal that waits for a build slot held every goal behind it.
+        `main:build` measured three failures of that shape: the answer named
+        the wrong derivation at `build.sh:247`, the `nix build` half hung for
+        the whole 300 s cap at `build.sh:269`, and a root that only waited for
+        a failed root got an answer at `build.sh:279`. All three are gone.
 
-        Starting every goal here does fix that assertion, and it hangs the
-        `nix build` half of the same fixture at `build.sh:269` -- measured, a
-        300 s timeout. A hang is worse than a wrong answer, so the change is
-        not here. The build queue hands builds out in derivation-name order
-        now, which is one of the two pieces that a correction needs; the
-        other is dropping a queued build that no goal wants.
+        **One deviation is left, and it is an order and not a result.**
+        `build.sh:167` builds four fixed-output derivations that all give the
+        wrong hash, with `-j1`, and it asserts that the one failure names x1.
+        Nix names x1 because it makes the four goals together and then takes
+        them in the order of `Worker::awake`, which `_goal_order` states.
+        pynixd makes its goals as coroutines that prepare at their own speed,
+        so the derivation that reaches the queue first takes the one slot, and
+        that is x2 or x3 as often as x1.
+
+        **The correction for it would be a barrier, so pynixd does not take
+        it.** Every root goal would have to reach "ready to build" before any
+        build starts. That delays the first build of every request by the
+        preparation of the slowest goal of it, to decide which of several
+        equally doomed builds reports first. The result of the request is the
+        same either way. Issue #196.
         """
-        stores = self.engine.ctx.stores
-        builders = [
-            store_id for store_id, store in stores.items() if store_id != LOCAL_STORE_ID and not store.no_schedule
-        ]
-        if builders:
-            return len(self._root_goals) or 1
-        options = self.client.options if self.client is not None else None
-        if options is None:
-            return len(self._root_goals) or 1
-        return max(1, int(options.max_build_jobs))
+        return len(self._root_goals) or 1

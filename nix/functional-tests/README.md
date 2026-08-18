@@ -488,26 +488,31 @@ issue #191 tracks the list of such markers.
 No script of the suite reads this line, so no test moves either way. Issue
 #189 holds the measurement.
 
-### The 20 control failures
+### The 12 control failures
 
 **A failure here is a failure of Nix or of this harness, and not of pynixd.**
 `compare` puts these under "FAILS IN BOTH" and keeps them out of the answer.
 Report a genuine defect of Nix to `github/lillecarl/nix`.
 
 - **8 `build-remote-*`** need a remote builder.
-- **4 recursive-nix** — `recursive`, `ca/recursive`,
-  `dyn-drv/recursive-mod-json` and `dyn-drv/dep-built-drv-2`. The `nix` inside
-  the build does not learn where the store is, and it answers
-  `path "..." is not in the Nix store`. Not yet understood.
 - **1 `db-migration`** — the script states its own condition: "This assumes
   that the `daemon` package is older than the `client` one". Both are 2.34.8
   here.
-- **7 others** — `structured-attrs` (it wants a flake registry), `shell`,
-  `formatter`, `nix-profile`, `json`, `tarball` and `fetchurl`.
+- **3 others** — `json`, `tarball` and `fetchurl`.
 
-`chroot-store` and `nested-sandboxing` were on that list and are not any
-more. Both build inside a sandbox, and both failed because the suite had no
-shell in the store to build with.
+The control arm reads `159 OK, 36 SKIP, 12 FAIL` of 207 tests against Nix
+2.34.8.
+
+**The list held 20 names before, and eight of them pass now.** The four
+recursive-nix tests are four of the eight: `main:recursive`, `ca:recursive`,
+`dyn-drv:recursive-mod-json` and `dyn-drv:dep-built-drv-2`. The other four are
+`structured-attrs`, `shell`, `formatter` and `nix-profile`. The shell that the
+suite now has in its store is what the last group needed, which is the defect
+that "A harness defect that hid a whole fixture" states below; `chroot-store`
+and `nested-sandboxing` left the list for that reason already.
+
+Measure this list again before you read a name in it. A name that leaves it
+quietly turns a real regression into an expected failure.
 
 ### A number that hid a defect
 
@@ -566,6 +571,80 @@ that Nix takes differently:
 4. **A goal that the request left behind was still awaited, and reported.**
    `Worker::run` leaves its loop when `topGoals` is empty, so that goal never
    reaches `amDone` and `entry-points.cc:93` skips it.
+
+### `main:build` passes, and one order is left
+
+`main:build` reaches the end now. Three more decisions of the root-goal loop
+made that happen, and all three came from one line: `_build_slots` of
+`goals/requests.py` limited the root goals by `max-jobs`.
+
+**`max-jobs` limits the builders of the machine, and not the goals.**
+`Worker::waitForBuildSlot` at `worker.cc:261` counts `getNrLocalBuilds()`
+against `settings.maxBuildJobs`. Nix makes every goal of the request first and
+holds the builders after that, so `-j1` runs one builder and not one goal.
+pynixd holds the builders in `Scheduler._local_slot_is_full`, which reads the
+same option of the same client, so the limit in the goal loop was a second one
+on the wrong thing.
+
+A request answers when its goals answer, so a goal that waited for a slot held
+every goal behind it. Three failures had that shape:
+
+1. **`build.sh:247` named the wrong derivation.** With `-j2` the loop took the
+   first two goals by name, which are `depends-on-fail` and `depends-on-slow`,
+   so `fast-fail` was never a root of its own.
+2. **`build.sh:269` hung for the whole 300 s cap.** `slow` blocks on a fifo
+   that nothing opens, and the loop waited for it before it started
+   `fast-fail`. Issue #196 holds the two pieces that this needed beside the
+   line: a goal that the request leaves behind goes quiet, and a build that no
+   goal waits for ends.
+3. **`build.sh:279` held an answer that Nix does not send.** `nix build
+   fast-fail^out depends-on-fail^out` names two derivations, and the second
+   has the first as an input. `Worker::removeGoal` at `worker.cc:173` clears
+   `topGoals` at the first failure, so the goal of the waiter never reaches
+   `amDone` and `entry-points.cc:93` skips it. pynixd answered for both.
+   `GoalResult.failing_derivation` names the build that really failed and
+   passes through each dependency failure, so a root that names another root
+   of the same request reports nothing.
+
+**One difference is left, and it is an order.** `build.sh:167` builds x1, x2,
+x3 and x4 of `fod-failing.nix` with `-j1`. All of x1, x2 and x3 give the wrong
+hash, and x4 has x2 and x3 as inputs. The test asserts one `error:` line, and
+that the line names x1.
+
+Nix names x1 because it makes the four goals together and then gives the one
+builder slot to the first of them in the order of `Worker::awake`, which
+`_goal_order` states. pynixd makes its goals as coroutines that prepare at
+their own speed, so the derivation that reaches the build queue first takes
+the slot, and that is x2 or x3 as often as x1. A `DEBUG` run measured the
+three `build_enqueued` lines at 12 ms from the first to the last, and
+`build_waits_for_a_local_slot` came 0.4 ms after the second one: the scheduler
+gives the slot away before the other candidates exist.
+
+The count of `error:` lines has the same cause. x1 has no goal that waits for
+it, so Nix writes one block. x2 and x3 each have x4, so
+`_tell_the_client_it_failed` writes the reason and the client writes it again,
+which is the defect that the `NIX-DEFECT (#191)` note in that method states.
+
+The whole suite reads `156 OK, 36 SKIP, 15 FAIL` against this pynixd, and
+`compare` names three regressions against the control: `main:build`,
+`main:store-info` and `ca:new-build-cmd`. Only the first one belongs to the
+root-goal loop. The other two fail with the pynixd of the commit before this
+work as well, measured with a shim that names that build, so neither one is a
+cost of it.
+
+`main:store-info` is the shorter of the two. `store-info.sh:69` reads the
+version of `nix store info` and compares it against `nix daemon --version`.
+The shim sends `--version` to the real Nix on purpose, because the suite asks
+that question for a number and pynixd answers the version of the protocol, so
+the two answers disagree by construction: `Version: 2.34.8` against
+`pynixd-0.1.0`.
+
+**The correction would be a barrier, so pynixd does not take it.** Every root
+goal would have to reach "ready to build" before any build starts. That delays
+the first build of every request by the preparation of the slowest goal of it,
+and it decides only which of several equally doomed builds reports first. The
+result of the request is the same either way, so this is a recorded deviation
+and not a defect to correct.
 
 ### A harness defect that hid a whole fixture
 

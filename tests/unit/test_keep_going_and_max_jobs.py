@@ -1,10 +1,15 @@
-"""The first failure stops the request, and `max-jobs` says how many run.
+"""The first failure stops the request, and every root goal runs.
 
 `Worker::removeGoal` at `worker.cc:173` clears `topGoals` when a top goal
 fails and `keepGoing` is off, and `Worker::run` then leaves its loop.
 `Worker::buildPathsWithResults` at `entry-points.cc:93` skips each goal whose
 `exitCode` is still `ecBusy`, so the answer holds fewer entries than the
 request. Issue #190.
+
+**`max-jobs` reaches no test here.** It limits the builders of the machine at
+`worker.cc:261`, and pynixd holds them in `Scheduler._local_slot_is_full`.
+The docstring of `_build_slots` states what a second limit on the goals cost.
+Issue #196.
 """
 
 from __future__ import annotations
@@ -79,7 +84,6 @@ class FakeEnsureGoal:
         self.blamed = blamed
         self.unsubscribed: list[Any] = []
 
-
     async def subscribe(self, client: Any) -> None:
         del client
 
@@ -98,8 +102,6 @@ class FakeEnsureGoal:
         blamed = self.blamed if self.blamed is not None else self.name
         result.failing_derivation = DerivedPath(blamed).base_store_path()
         return result
-
-
 
 
 def _store(*, no_schedule: bool) -> SimpleNamespace:
@@ -167,7 +169,6 @@ async def _run(
         )
         for path in paths
     }
-
     engine = FakeEngine(goals, has_a_backend=has_a_backend, has_a_substituter=has_a_substituter)
     request = BuildPathsWithResultsRequest(
         derived_paths=[SerdeDerivedPath(value=path) for path in paths],
@@ -184,11 +185,17 @@ async def _run(
 
 
 @pytest.mark.anyio
-async def test_one_slot_runs_one_goal_at_a_time() -> None:
-    """`-j1` against a pynixd with no backend runs one goal at a time.
+async def test_max_jobs_does_not_hold_a_root_goal() -> None:
+    """`-j1` starts every root goal, and holds the builders elsewhere.
+
+    Nix makes every goal of the request and then counts the builders that run,
+    at `worker.cc:261`. A goal that waits for a slot is a goal that has
+    started. pynixd counts the builders in `Scheduler._local_slot_is_full`,
+    which reads `max_build_jobs` of the same client, so a second count here
+    would hold each goal behind the one before it.
 
     The four names sort the same way as the four store paths here, so this
-    reads the slot count alone.
+    reads the fan-out alone.
     `test_the_goals_run_in_the_order_of_the_derivation_name` reads the order.
     """
     started, answered = await _run(failing=set(), options=_options(max_build_jobs=1, keep_going=False))
@@ -199,18 +206,21 @@ async def test_one_slot_runs_one_goal_at_a_time() -> None:
 
 @pytest.mark.anyio
 async def test_the_first_failure_stops_the_request() -> None:
-    """x1 fails, so x2, x3 and x4 never run and report nothing.
+    """x1 fails, so x2, x3 and x4 report nothing, although each one runs.
 
-    `_build_slots` limits the goals here, and Nix limits the builds. The
-    docstring of that method holds the difference and what closing it costs:
-    starting every goal fixes `build.sh:247` and hangs `build.sh:269`.
+    This is `Worker::removeGoal` at `worker.cc:173`: the request leaves its
+    loop, and a goal that has not reached `amDone` is skipped at
+    `entry-points.cc:93`. It is not a statement about how many goals run.
+    The three that report nothing block here, which is the goal that is still
+    building when the failure ends the request.
     """
     started, answered = await _run(
         failing={_PATHS[0]},
         options=_options(max_build_jobs=1, keep_going=False),
+        blocking=set(_PATHS[1:]),
     )
 
-    assert started == [_PATHS[0]]
+    assert started == _PATHS
     assert answered == [_PATHS[0]]
 
 
@@ -227,10 +237,12 @@ async def test_keep_going_runs_every_goal_after_a_failure() -> None:
 
 @pytest.mark.anyio
 async def test_a_backend_keeps_the_fan_out_that_the_client_asked_to_limit() -> None:
-    """`max-jobs` limits the local builds alone, as `worker.cc:261` does.
+    """A backend changes nothing here, because no limit reads the stores.
 
-    A remote build costs no slot in Nix, and pynixd sends a build to a backend
-    when it has one. So `-j1` must not serialise a pynixd with a backend.
+    `_build_slots` counted the stores of the context, so a pynixd with a
+    backend fanned out and a pynixd without one did not. `worker.cc:261`
+    counts the local builders, and `Scheduler._local_slot_is_full` is where
+    pynixd asks the same question. Issue #196.
     """
     started, answered = await _run(
         failing=set(),
@@ -243,8 +255,8 @@ async def test_a_backend_keeps_the_fan_out_that_the_client_asked_to_limit() -> N
 
 
 @pytest.mark.anyio
-async def test_max_jobs_of_zero_still_runs_one_goal() -> None:
-    """`max-jobs = 0` means "no build here", and the goal system has nowhere else."""
+async def test_max_jobs_of_zero_still_runs_every_goal() -> None:
+    """`max-jobs = 0` means "no build here", and it holds no goal either."""
     started, _ = await _run(failing=set(), options=_options(max_build_jobs=0, keep_going=False))
 
     assert started == _PATHS
@@ -260,14 +272,14 @@ async def test_a_client_with_no_option_set_keeps_the_fan_out() -> None:
 
 
 @pytest.mark.anyio
-async def test_a_substituter_does_not_lift_the_limit() -> None:
-    """A store that the scheduler never builds on is not a builder.
+async def test_a_substituter_changes_no_fan_out() -> None:
+    """A binary cache in the configuration decides nothing here.
 
     `_build_slots` counted every store that is not the local one, so one
-    binary cache in the configuration made `-j1` mean nothing. Almost every
-    configuration holds one. `main:build` measured it with
-    `stores=["http-cache.nixos.org", "local"]` and `slots=4` for a request of
-    four goals at `max_build_jobs=1`. Issue #196.
+    `http-cache.nixos.org` lifted its limit for every request, and almost
+    every configuration holds one. No limit here reads a store now, so this
+    holds the answer steady against a configuration that once changed it.
+    Issue #196.
     """
     started, answered = await _run(
         failing=set(),
