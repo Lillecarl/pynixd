@@ -33,6 +33,7 @@ from pynixd.serde.ids import LOCAL_STORE_ID, StoreId
 
 if TYPE_CHECKING:
     from pynixd.connection import ClientConn
+    from pynixd.goals.dispatch_order import DispatchTurn
     from pynixd.goals.engine import GoalEngine
 
 _PATHS = [f"/nix/store/{str(index) * 32}-x{index}.drv!out" for index in (1, 2, 3, 4)]
@@ -83,6 +84,15 @@ class FakeEnsureGoal:
         # `GoalResult.failing_derivation` carries it out of the real goal.
         self.blamed = blamed
         self.unsubscribed: list[Any] = []
+
+    def take_a_turn(self, turn: DispatchTurn) -> None:
+        """Accept the place of this goal in the order, and hold nobody.
+
+        The real goal keeps the turn until its build reaches the queue. This
+        fake enqueues no build, so it marks the turn decided at once and the
+        goals after it start with no delay. Issue #207.
+        """
+        turn.decided()
 
     async def subscribe(self, client: Any) -> None:
         del client

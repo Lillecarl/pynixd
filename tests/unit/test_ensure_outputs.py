@@ -98,11 +98,20 @@ class FakeLocalStore:
 class FakeBuildGoal:
     """A build goal that records its request and answers for every output."""
 
+    may_reach_a_root_goal = False
+    """A build goal reaches no root goal, so a caller keeps its place. Issue #207."""
+
     def __init__(self, request: BuildDerivationRequest) -> None:
         self.request = request
 
     async def subscribe(self, client: Any) -> None:
         del client
+
+    async def start(self) -> None:
+        """`Goal.start` begins the build and does not wait. Issue #207."""
+
+    async def wait_until_it_reached_the_queue(self) -> None:
+        """This fake needs no queue, so the build is on it at once."""
 
     async def result(self) -> GoalResult:
         result = goal_success()
@@ -123,6 +132,9 @@ class FakeBuildGoal:
 
 class FakeSubstituteGoal:
     """A substituter that holds nothing."""
+
+    may_reach_a_root_goal = False
+    """A substitute goal reaches no root goal. Issue #207."""
 
     async def result(self) -> SubstituteAttempt:
         return SubstituteAttempt(found=False, result=goal_success())

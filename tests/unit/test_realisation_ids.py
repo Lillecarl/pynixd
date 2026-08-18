@@ -130,6 +130,9 @@ class FakeLocalStore:
 class FakeBuildGoal:
     """The build that the daemon made, and the path it left in the store."""
 
+    may_reach_a_root_goal = False
+    """A build goal reaches no root goal, so a caller keeps its place. Issue #207."""
+
     def __init__(self, store: FakeLocalStore, request: BuildDerivationRequest, response: BuildResult) -> None:
         self.store = store
         self.request = request
@@ -137,6 +140,12 @@ class FakeBuildGoal:
 
     async def subscribe(self, client: Any) -> None:
         del client
+
+    async def start(self) -> None:
+        """`Goal.start` begins the build and does not wait. Issue #207."""
+
+    async def wait_until_it_reached_the_queue(self) -> None:
+        """This fake needs no queue, so the build is on it at once."""
 
     async def result(self) -> GoalResult:
         for realisation in self.response.built_outputs.values():
@@ -146,6 +155,9 @@ class FakeBuildGoal:
 
 
 class FakeSubstituteGoal:
+    may_reach_a_root_goal = False
+    """A substitute goal reaches no root goal. Issue #207."""
+
     async def result(self) -> SubstituteAttempt:
         return SubstituteAttempt(found=False, result=goal_success())
 

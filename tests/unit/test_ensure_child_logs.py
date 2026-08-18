@@ -118,11 +118,20 @@ class FakeLocalStore:
 
 
 class FakeBuildGoal:
+    may_reach_a_root_goal = False
+    """A build goal reaches no root goal, so a caller keeps its place. Issue #207."""
+
     def __init__(self, request: BuildDerivationRequest) -> None:
         self.request = request
 
     async def subscribe(self, client: Any) -> None:
         del client
+
+    async def start(self) -> None:
+        """`Goal.start` begins the build and does not wait. Issue #207."""
+
+    async def wait_until_it_reached_the_queue(self) -> None:
+        """This fake needs no queue, so the build is on it at once."""
 
     async def result(self) -> GoalResult:
         return goal_success()
@@ -130,6 +139,9 @@ class FakeBuildGoal:
 
 class FakeChildGoal:
     """The goal of the input derivation, and who watches it."""
+
+    may_reach_a_root_goal = True
+    """The goal of an input can reach a root goal of the request. Issue #207."""
 
     def __init__(self) -> None:
         self.subscribers: list[Any] = []
@@ -148,6 +160,9 @@ class FakeChildGoal:
 
 
 class FakeSubstituteGoal:
+    may_reach_a_root_goal = False
+    """A substitute goal reaches no root goal. Issue #207."""
+
     async def result(self) -> SubstituteAttempt:
         return SubstituteAttempt(found=False, result=goal_success())
 

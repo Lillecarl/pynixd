@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 
     from pynixd.connection import ClientConn
     from pynixd.derived_path import DerivedPath
+    from pynixd.goals.dispatch_order import DispatchTurn
 
 
 class FakeEnsureGoal(Goal[GoalResult]):
@@ -48,6 +49,15 @@ class FakeEnsureGoal(Goal[GoalResult]):
         # of the derivation name. Issue #196.
         self.derived_path: DerivedPath | None = None
         self.subscribers: list[ClientConn] = []
+
+    def take_a_turn(self, turn: DispatchTurn) -> None:
+        """Accept the place of this goal in the order, and hold nobody.
+
+        The real goal keeps the turn until its build reaches the queue. This
+        fake enqueues no build, so it marks the turn decided at once and the
+        goals after it start with no delay. Issue #207.
+        """
+        turn.decided()
 
     async def subscribe(self, client: ClientConn | None) -> None:
         if client is not None:

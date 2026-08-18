@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 import structlog
 
@@ -31,7 +31,7 @@ from ..serde import (
 )
 from ..store_path import StorePath
 from .dependencies import DependencyGroupGoal
-from .goal import GoalHolder
+from .goal import Goal, GoalHolder
 from .query_missing import client_names_a_substituter
 from .realisations import realisations_of
 from .resolution import _nix_drv_name, resolve_derivation, resolve_dynamic_derivation, unparse_basic_derivation
@@ -44,10 +44,13 @@ if TYPE_CHECKING:
     from ..drv_parser import Derivation
     from ..serde import BasicDerivation
     from .build_derivation import BuildDerivationGoal
+    from .dispatch_order import DispatchTurn
     from .engine import GoalEngine
     from .results import DynamicPathMap
 
 log = structlog.get_logger(__name__)
+
+U = TypeVar("U")
 
 
 _ERROR_PREFIX = "\x1b[31;1merror:\x1b[0m "
@@ -122,6 +125,16 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
 
     _build_goal: BuildDerivationGoal | None = None
 
+    _turn: DispatchTurn | None = None
+    """The place of this goal in the order of its request, or None.
+
+    A root goal of a request holds a turn, and it may enqueue its build when
+    every goal before it decided. A goal below the root holds none, and it
+    enqueues as soon as it is ready: the order of Nix reaches the top goals
+    of a request, and an input build that waited for a root goal would wait
+    for a goal that waits for that input. Issue #207.
+    """
+
     _wanted_by_a_goal: bool = False
     """True when another goal waits for this one.
 
@@ -131,6 +144,56 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
     `STDERR_ERROR`. This flag is the `waiters` of Nix, reduced to the single
     question that the rule asks.
     """
+
+    def take_a_turn(self, turn: DispatchTurn) -> None:
+        """Give this goal its place in the order of one request.
+
+        **A goal takes a turn once, and only before it runs.** The engine
+        gives one goal to every request that names the same derived path, so
+        a request can meet a goal that already holds a turn, or that another
+        request already started. Neither goal can take the order of this
+        request: the first one keeps the order it has, and the second one is
+        past the gate and would hold this turn for ever. This marks such a
+        turn decided at once, so the goals behind it enqueue. Issue #207.
+        """
+        if self._turn is None and not self.has_started():
+            self._turn = turn
+            return
+        log.debug(
+            "dispatch_turn_not_taken",
+            derived_path=str(self.derived_path),
+            holds_a_turn=self._turn is not None,
+            started=self.has_started(),
+        )
+        turn.decided()
+
+    async def _wait_for_my_turn(self) -> None:
+        """Return when every root goal before this one decided."""
+        if self._turn is not None:
+            await self._turn.wait()
+
+    def _note_that_it_decided(self) -> None:
+        """Let the root goals after this one enqueue."""
+        if self._turn is not None:
+            self._turn.decided()
+
+    async def run_child(self, child: Goal[U]) -> U:
+        """Run one child, and give up the place in the order when it may cost one.
+
+        **A goal that waits for another root goal must not hold the line.**
+        A request names the derivations in the order of Nix, and a derivation
+        early in that order can depend on a derivation late in it. The early
+        goal waits for the late one to finish; the late one waits for the
+        early one to decide; and neither ever moves.
+
+        `Goal.may_reach_a_root_goal` answers whether the child can reach such
+        a goal. A build goal and a substitute goal cannot, so a wait for one
+        of those keeps the place, which is what makes the order of the
+        request visible to the scheduler at all. Issue #207.
+        """
+        if child.may_reach_a_root_goal:
+            self._note_that_it_decided()
+        return await super().run_child(child)
 
     def note_a_parent(self) -> None:
         """Record that another goal waits for this one."""
@@ -193,8 +256,15 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             await build_goal.unsubscribe(client)
 
     async def _run(self) -> GoalResult:
-        result = self._name_what_really_failed(await self._produce())
-        return await self._tell_the_client_it_failed(result)
+        # **A goal that ends without a build still decided.** It substituted,
+        # or the output was valid already, or it failed. Each road lets the
+        # root goals after it enqueue, so none of them waits for a turn that
+        # cannot come. Issue #207.
+        try:
+            result = self._name_what_really_failed(await self._produce())
+            return await self._tell_the_client_it_failed(result)
+        finally:
+            self._note_that_it_decided()
 
     def _name_what_really_failed(self, result: GoalResult) -> GoalResult:
         """Record the derivation whose own build started this failure.
@@ -448,6 +518,16 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             self._subscribers.clear()
         for client in subscribers:
             await build_goal.subscribe(client)
+        # **The order of the request reaches the queue here, and here alone.**
+        # Every root goal prepares beside its siblings, and this is the one
+        # moment that decides which build the queue holds first. The goal
+        # waits for the goals before it, starts the build, and waits for that
+        # build to reach the queue. It does not wait for the build to end, so
+        # the goal after it enqueues while this one builds. Issue #207.
+        await self._wait_for_my_turn()
+        await build_goal.start()
+        await build_goal.wait_until_it_reached_the_queue()
+        self._note_that_it_decided()
         result = await self.run_child(build_goal)
         result = await self._under_the_id_that_pynixd_uses(result, parsed)
         result = await self._name_the_resolved_derivation(result, drv_path, build_drv_path)

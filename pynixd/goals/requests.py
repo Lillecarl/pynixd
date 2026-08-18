@@ -16,8 +16,9 @@ from ..serde import (
     DerivedPath as SerdeDerivedPath,
     KeyedBuildResult,
 )
+from .dispatch_order import DispatchOrder
 from .goal import ExecutionGoal
-from .results import result_succeeded
+from .results import GoalResult, result_succeeded
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -25,7 +26,6 @@ if TYPE_CHECKING:
     from ..connection import ClientConn
     from .engine import GoalEngine
     from .ensure import EnsureDerivedPathGoal
-    from .results import GoalResult
 
 log = structlog.get_logger(__name__)
 
@@ -173,6 +173,14 @@ class BuildPathsWithResultsGoal(ExecutionGoal[BuildPathsWithResultsResponse]):
         order = self._goal_order(goals)
         next_position = 0
 
+        # **The order decides which build the queue holds first.** Every goal
+        # prepares beside its siblings, and each one may enqueue its build
+        # when the goals before it decided. `dispatch_order.py` gives the
+        # reason and the measurement. Issue #207.
+        dispatch = DispatchOrder(len(goals))
+        for goal, turn in zip(goals, dispatch.turns_in_the_order_of(order), strict=True):
+            goal.take_a_turn(turn)
+
         async def take_the_next_goal() -> None:
             nonlocal next_position
             while next_position < len(order) and not stop.is_set():
@@ -213,9 +221,17 @@ class BuildPathsWithResultsGoal(ExecutionGoal[BuildPathsWithResultsResponse]):
             max_build_jobs=None if options is None else int(options.max_build_jobs),
             stores=sorted(self.engine.ctx.stores),
         )
-        async with anyio.create_task_group() as tg:
-            for _ in range(min(slots, len(goals))):
-                tg.start_soon(take_the_next_goal)
+        try:
+            async with anyio.create_task_group() as tg:
+                for _ in range(min(slots, len(goals))):
+                    tg.start_soon(take_the_next_goal)
+        finally:
+            # **A goal that the request never took must not hold the goals
+            # after it.** `stop` ends the loop at the first failure, so a goal
+            # of a later place can stay untaken, and a goal that never ran
+            # never decides. This lets every turn go, so no goal of another
+            # request waits for one of this request. Issue #207.
+            dispatch.release_every_goal()
 
         return results
 
@@ -309,21 +325,13 @@ class BuildPathsWithResultsGoal(ExecutionGoal[BuildPathsWithResultsResponse]):
         the whole 300 s cap at `build.sh:269`, and a root that only waited for
         a failed root got an answer at `build.sh:279`. All three are gone.
 
-        **NIX-DEVIATION (#206): which of several equally doomed builds
-        reports first.** `Worker::waitForBuildSlot` at `worker.cc:261` makes
-        every goal of a request first and then holds the builders, and
-        `Worker::awake` takes them in the order of `Goal::key()`, so `-j1`
-        over the four failing fixed-output derivations of `build.sh:167`
-        always names x1. pynixd makes its goals as coroutines that prepare at
-        their own speed, so the goal that reaches the queue first takes the
-        one slot, and that is x2 or x3 as often as x1. The difference is worth
-        its cost, because the correction is a barrier: every root goal would
-        reach "ready to build" before any build starts, which delays the first
-        build of every request by the preparation of its slowest goal, and it
-        buys only the name in a message about builds that all fail. To reverse
-        this decision, measure what that barrier costs a request whose goals
-        prepare at different speeds. Nix is not wrong here: its order is an
-        effect of how it makes goals, and the result of the request is the
-        same either way. Issue #196.
+        **The order of the request survives this.** Every root goal runs at
+        once, and each one still enqueues its build in the order of
+        `Goal::key()`, because `dispatch_order.py` orders the moment of the
+        enqueue and not the preparation. This was `NIX-DEVIATION (#206)` until
+        then: the goal that reached the queue first took the one slot of `-j1`,
+        and that was x2 or x3 as often as x1. `build.sh:167` reads the name in
+        the message, so the deviation was a failure of the suite and not a
+        difference with no effect. Issue #207.
         """
         return len(self._root_goals) or 1

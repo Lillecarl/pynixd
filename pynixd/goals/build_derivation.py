@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 import anyio
 import structlog
@@ -30,16 +30,35 @@ log = structlog.get_logger(__name__)
 class BuildDerivationGoal(ExecutionGoal[GoalResult]):
     """Execute a single derivation build via the scheduler's build queue."""
 
+    may_reach_a_root_goal: ClassVar[bool] = False
+    """A build goal reaches no root goal, so a caller may wait and keep its place.
+
+    `_run_and_let_the_next_goal_enqueue` calls the scheduler and nothing else
+    before the build is on the queue. `Goal.may_reach_a_root_goal` gives the
+    rule. Issue #207.
+    """
+
     engine: GoalEngine
     request: BuildDerivationRequest
     _subscribers: list[ClientConn] = field(default_factory=list)
     _active_subscribers: list[ClientConn] = field(default_factory=list)
     _build_id: BuildId | None = None
     _finished: bool = False
+    _reached_the_queue: anyio.Event = field(default_factory=anyio.Event)
+    """Set when the build is on the queue, or when this goal ends without one.
+
+    A root goal of a request waits for this before it lets the next root goal
+    enqueue. The end of the build is far later, and the order needs the
+    earlier moment. Issue #207.
+    """
 
     def __post_init__(self) -> None:
         """Initialize the ExecutionGoal base with the shared engine."""
         ExecutionGoal.__init__(self, self.engine)
+
+    async def wait_until_it_reached_the_queue(self) -> None:
+        """Return when the build is on the queue, or when this goal ended."""
+        await self._reached_the_queue.wait()
 
     async def subscribe(self, client: ClientConn | None) -> None:
         """Register a client for real-time log forwarding during the build."""
@@ -86,6 +105,15 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
             await self.engine.unsubscribe_build(build_id, client)
 
     async def _run(self) -> GoalResult:
+        # **Every road out of this method must let the next goal enqueue.**
+        # A goal that fails before it reaches the queue would otherwise hold
+        # every root goal after it in the order. Issue #207.
+        try:
+            return await self._run_and_let_the_next_goal_enqueue()
+        finally:
+            self._reached_the_queue.set()
+
+    async def _run_and_let_the_next_goal_enqueue(self) -> GoalResult:
         if self.engine.ctx.scheduler is None:
             return goal_failure("pynixd: BuildDerivation requires a configured scheduler")
 
@@ -103,6 +131,9 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
         # request answers, and it takes no await, so nothing lands between the
         # two calls and loses the record. Issue #196.
         self.engine.note_a_held_build(build_id)
+        # The build is on the queue now, so the next root goal of the request
+        # may enqueue behind it and the order of the queue decides. Issue #207.
+        self._reached_the_queue.set()
         async with self._lock:
             self._build_id = build_id
             subscribers = list(self._subscribers)

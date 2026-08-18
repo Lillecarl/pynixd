@@ -32,6 +32,9 @@ PRODUCER = "/nix/store/00000000000000000000000000000001-failing-producer.drv"
 class FakeOuterGoal:
     """The goal that makes the derivation, and it fails."""
 
+    may_reach_a_root_goal = True
+    """An ensure goal can reach a root goal of the request. Issue #207."""
+
     def note_a_parent(self) -> None:
         """The goal of the nested path waits for this one."""
 
