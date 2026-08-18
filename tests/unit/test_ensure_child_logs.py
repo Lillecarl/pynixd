@@ -300,3 +300,35 @@ async def test_a_failed_top_goal_writes_no_reason() -> None:
 
     assert not result_succeeded(result.result)
     assert client.lines == []
+
+
+@pytest.mark.anyio
+async def test_a_client_that_watches_one_goal_twice_reads_each_line_once() -> None:
+    """One goal serves the request and an input of the same request.
+
+    `get_ensure_derived_path_goal` gives one goal for one derived path.
+    `BuildPathsWithResultsGoal._run` subscribes the client to it as a root of
+    the request, and `_realise_input_derivations` subscribes the same client
+    to the same goal as an input of another derivation. `_say` wrote one line
+    for each entry of `_watchers`, so the client read every line of that goal
+    twice.
+
+    `main:build` counts them. `nix build -f fod-failing.nix -j1 -L` names x1
+    to x4, and x4 depends on x2 and x3. `build.sh:167` asserts one `error:`
+    line, and pynixd wrote three for the one failure of x2. Issue #196.
+    """
+    goal = EnsureDerivedPathGoal(
+        engine=cast("GoalEngine", FakeEngine()),
+        derived_path=DerivedPath(GONE),
+        build_mode=BuildMode.NORMAL,
+        substituter_ids=(),
+    )
+    client = FakeClient()
+    await goal.subscribe(cast("Any", client))
+    await goal.subscribe(cast("Any", client))
+    goal.note_a_parent()
+
+    result = await goal.result()
+
+    assert not result_succeeded(result.result)
+    assert client.lines == [f"{_ERROR_PREFIX}{result.result.error_msg}"]

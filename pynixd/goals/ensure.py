@@ -107,10 +107,28 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         GoalHolder.__init__(self, self.engine)
 
     async def subscribe(self, client: ClientConn | None) -> None:
-        """Register a client for real-time log forwarding from the underlying build goal."""
+        """Register *client* for every line that this goal writes.
+
+        **One connection subscribes once, whatever number of goals ask for
+        it.** `get_ensure_derived_path_goal` gives one goal for one derived
+        path, so a derivation that the client names *and* another derivation
+        of the same request depends on is a single goal. `_run` of
+        `BuildPathsWithResultsGoal` subscribes it as a root, and
+        `_realise_input_derivations` subscribes it again as an input. `_say`
+        writes one line for each entry of `_watchers`, so the second entry
+        sent every line of that goal to the same connection twice.
+
+        `main:build` measured it. `nix build -f fod-failing.nix -j1 -L` names
+        x1 to x4, and x4 depends on x2 and x3. The hash mismatch of x2 reached
+        the client twice from here, and once more as the answer of the
+        request, so the client wrote three `error:` lines for one failure.
+        `build.sh:167` asserts one. Issue #196.
+        """
         if client is None:
             return
         async with self._lock:
+            if client in self._watchers:
+                return
             self._watchers.append(client)
             build_goal = self._build_goal
             if build_goal is None:
