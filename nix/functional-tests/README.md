@@ -336,8 +336,8 @@ with the relocated store layout that the suite itself sets.
 
 | test                 | why                                             |
 | -------------------- | ----------------------------------------------- |
-| `ca:new-build-cmd`   | #196, and it fails at the same `build.sh:247`    |
-| `main:build`         | #196, at `build.sh:247`                          |
+| `ca:new-build-cmd`   | #196, and it fails at the same `build.sh:167`    |
+| `main:build`         | #196, at `build.sh:167`                          |
 | `main:store-info`    | permanent, and the next section gives the reason |
 
 So two issues hold every regression, one of the two is on purpose, and the
@@ -626,18 +626,25 @@ it, so Nix writes one block. x2 and x3 each have x4, so
 which is the defect that the `NIX-DEFECT (#191)` note in that method states.
 
 The whole suite reads `156 OK, 36 SKIP, 15 FAIL` against this pynixd, and
-`compare` names three regressions against the control: `main:build`,
-`main:store-info` and `ca:new-build-cmd`. Only the first one belongs to the
-root-goal loop. The other two fail with the pynixd of the commit before this
-work as well, measured with a shim that names that build, so neither one is a
-cost of it.
+`compare` names the same three regressions as the table above: `main:build`,
+`ca:new-build-cmd` and `main:store-info`. **The first two are one assertion.**
+`ca/new-build-cmd.sh` is `source ./build.sh` with `NIX_TESTS_CA_BY_DEFAULT=1`,
+so both stop at `build.sh:167`, and the line they stop at moved from 247 to
+167 with this work.
 
-`main:store-info` is the shorter of the two. `store-info.sh:69` reads the
-version of `nix store info` and compares it against `nix daemon --version`.
-The shim sends `--version` to the real Nix on purpose, because the suite asks
-that question for a number and pynixd answers the version of the protocol, so
-the two answers disagree by construction: `Version: 2.34.8` against
-`pynixd-0.1.0`.
+`ca:new-build-cmd` stopped at `build.sh:167` before this work as well,
+measured with a shim that names the build of the commit before it. The limit
+that `_build_slots` held gave x1 the slot in the `main` suite and not in the
+`ca` suite, where pynixd resolves each derivation before it sends it. So the
+order was already the answer there, and this work makes the two suites agree
+rather than making one of them worse.
+
+`main:store-info` is the third, and it stands apart. `store-info.sh:69` reads
+the version of `nix store info` and compares it against `nix daemon
+--version`. The shim sends `--version` to the real Nix on purpose, because the
+suite asks that question for a number and pynixd answers the version of the
+protocol, so the two answers disagree by construction: `Version: 2.34.8`
+against `pynixd-0.1.0`. It fails with the earlier build too.
 
 **The correction would be a barrier, so pynixd does not take it.** Every root
 goal would have to reach "ready to build" before any build starts. That delays
