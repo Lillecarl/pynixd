@@ -64,7 +64,19 @@ def _find_reader(ann: type, version: int = 0, features: frozenset[str] = frozens
     if origin is types.UnionType:
         non_none = tuple(a for a in args if a is not type(None))
         if len(non_none) == 1:
-            return _find_reader(non_none[0], version, features)
+            inner = _find_reader(non_none[0], version, features)
+            if isinstance(non_none[0], type) and issubclass(non_none[0], WireScalar):
+                # Nix writes an absent scalar as the empty string, which
+                # `_write_value` below answers for `None`. Without this the
+                # value comes back as the empty scalar rather than as `None`,
+                # so a caller that tests `is None` never takes that branch.
+                # The bytes do not move; only the Python value does. Issue #194.
+                async def _read_optional_scalar(r: Any) -> Any:
+                    value = await inner(r)
+                    return None if value == "" else value
+
+                return _read_optional_scalar
+            return inner
 
     # -- list generics --
     if origin is list:
@@ -189,9 +201,12 @@ async def _write_value(val: Any, ann: type, ctx: WriteContext) -> None:
     if origin is types.UnionType:
         non_none = tuple(a for a in args if a is not type(None))
         if len(non_none) == 1:
-            if val is None and non_none[0].__name__ == "StorePath":
-                # Nix represents an absent deriver as an empty store-path
-                # string, not the Python value's textual representation.
+            if val is None and isinstance(non_none[0], type) and issubclass(non_none[0], WireScalar):
+                # Nix represents an absent scalar as the empty string, and not
+                # as the textual representation of the Python value. This is
+                # the write half of the rule that `_find_reader` reads back,
+                # and it holds for every scalar rather than for `StorePath`
+                # alone. Issue #194.
                 ctx.writer.write_string("")
                 return None
             return await _write_value(val, non_none[0], ctx)

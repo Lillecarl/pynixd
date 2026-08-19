@@ -203,13 +203,14 @@ async def test_operation_30_reads_back_two_entries_in_order() -> None:
 
     assert isinstance(response, QuerySubstitutablePathInfosResponse)
     assert [str(one.path) for one in response.infos] == [PATH, other]
-    # **An absent deriver reads as the empty path, and not as `None`.** A
-    # write of `None` gives the empty string, so the bytes agree with
-    # `common-protocol.cc:71` in both directions. The Python value does not
-    # come back the way it went out. `UnkeyedValidPathInfo.deriver` reads the
-    # same way, so this is the rule of the package and not of this codec.
+    # **An absent deriver reads as `None`, and the bytes do not move.**
+    # `common-protocol.cc:71` writes the empty string for an absent optional
+    # store path, and this reads that empty string back as `None`. The rule
+    # belongs to the package rather than to this codec: every optional
+    # `WireScalar` field reads the same way, and
+    # `UnkeyedValidPathInfo.deriver` is the other declaration of this one.
     # Issue #194.
-    assert response.infos[0].deriver == ""
+    assert response.infos[0].deriver is None
     assert [(one.download_size, one.nar_size) for one in response.infos] == [(1, 2), (3, 4)]
 
 

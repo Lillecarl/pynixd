@@ -112,3 +112,62 @@ async def test_every_wire_model_roundtrips(model_type: type[WireModel]) -> None:
     reencoded = BytesWriter()
     await decoded.to_writer(WriteContext(writer=reencoded, version=PROTOCOL_VERSION))
     assert reencoded.bytes() == encoded.bytes()
+
+
+def _optional_scalar_fields(model_type: type[WireModel]) -> list[str]:
+    """The names of the fields that are an optional `WireScalar`."""
+    names = []
+    for name, field in model_type.model_fields.items():
+        annotation = field.annotation
+        if get_origin(annotation) is not types.UnionType:
+            continue
+        members = get_args(annotation)
+        if type(None) not in members:
+            continue
+        rest = tuple(member for member in members if member is not type(None))
+        if len(rest) == 1 and inspect.isclass(rest[0]) and issubclass(rest[0], WireScalar):
+            names.append(name)
+    return names
+
+
+def _models_with_an_optional_scalar() -> list[type[WireModel]]:
+    return [model for model in _concrete_wire_models() if _optional_scalar_fields(model)]
+
+
+@pytest.mark.parametrize("model_type", _models_with_an_optional_scalar(), ids=_model_id)
+async def test_an_absent_optional_scalar_reads_back_as_none(model_type: type[WireModel]) -> None:
+    """The value survives the decode, and not the bytes alone.
+
+    `common-protocol.cc:71` writes the empty string for an absent optional
+    store path, so the bytes of `None` and of the empty scalar are the same
+    and the test above cannot tell them apart. It compares the re-encoding
+    with the encoding, which an empty scalar satisfies just as well.
+
+    This compares the **model**. A field that reads back as the empty scalar
+    is not equal to the one that was written, so a caller that tests
+    `is None` would take a branch that never runs. Issue #194.
+    """
+    value = _example_model(model_type)
+    # Every optional field, and not the scalar ones alone. A field that a
+    # feature gates off is never written, so it always reads back as its
+    # default; leaving a value in one would compare a field that the wire
+    # never carried. `QueryRealisationRequest` declares one of each.
+    for name, field in model_type.model_fields.items():
+        if get_origin(field.annotation) is types.UnionType and type(None) in get_args(field.annotation):
+            object.__setattr__(value, name, None)
+
+    encoded = BytesWriter()
+    await value.to_writer(WriteContext(writer=encoded, version=PROTOCOL_VERSION))
+
+    reader = BytesReader(encoded.bytes())
+    read_context = ReadContext(reader=reader, version=PROTOCOL_VERSION)
+    if issubclass(model_type, WireRequest):
+        request_type = cast("type[WireRequest]", model_type)
+        assert await reader.read_uint64() == request_type.op
+    elif "code" in model_type.model_fields and model_type.__name__ != "WireLogs":
+        await reader.read_uint64()
+    decoded = await model_type.from_reader(read_context)
+
+    for name in _optional_scalar_fields(model_type):
+        assert getattr(decoded, name) is None, f"{name} came back as {getattr(decoded, name)!r}"
+    assert decoded == value
