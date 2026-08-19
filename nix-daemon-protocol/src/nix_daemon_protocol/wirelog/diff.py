@@ -84,6 +84,24 @@ EXEMPTIONS: tuple[Exemption, ...] = (
         ),
     ),
     Exemption(
+        field="request.AddIndirectRoot.path",
+        reason=(
+            "`nix build` makes its own `result` symbolic link under "
+            "`nix-build-<pid>-<random>`, and the client sends that path. The two runs "
+            "are two processes, so the name differs between any two runs and says "
+            "nothing about pynixd. The operation is named here, and not the field "
+            "alone: a `path` that differs in any other request is a finding."
+        ),
+    ),
+    Exemption(
+        field="request.AddTempRoot.path",
+        reason=(
+            "The same shape as `AddIndirectRoot` above, and the same reason. The "
+            "client adds a temporary root for the path it is about to build, under "
+            "the build directory that carries its own pid."
+        ),
+    ),
+    Exemption(
         field="logs.pynixd_note",
         reason=(
             "A log line that starts with `pynixd: ` is a note of pynixd about itself, "
@@ -102,6 +120,15 @@ EXEMPTIONS: tuple[Exemption, ...] = (
 )
 
 EXEMPT_FIELDS: frozenset[str] = frozenset(item.field for item in EXEMPTIONS)
+
+# A field of one named request. `request.<Operation>.<field>` is the prefix
+# that `EXEMPTIONS` writes, and the operation is a part of the key on purpose:
+# a value that belongs to the run rather than to the answer belongs to one
+# operation, and the same field name in another one is a finding. Issue #202.
+REQUEST_PREFIX = "request."
+EXEMPT_REQUEST_FIELDS: frozenset[str] = frozenset(
+    item.field.removeprefix(REQUEST_PREFIX) for item in EXEMPTIONS if item.field.startswith(REQUEST_PREFIX)
+)
 
 # The name of a field of a response, whatever model holds it. `response.*.`
 # is the prefix that `EXEMPTIONS` writes, and the part after it is the name.
@@ -194,6 +221,35 @@ def _compare_handshake(control: Handshake | None, candidate: Handshake | None) -
     return found
 
 
+def _compare_request(where: str, control: Operation, candidate: Operation) -> list[Difference]:
+    """The requests differ. Name the fields when a model covers the request.
+
+    **The exemption names the operation as well as the field.** A value that
+    belongs to the run rather than to the answer belongs to one operation, and
+    the same field name in another one is a finding. So a difference in any
+    field that `EXEMPTIONS` does not name for *this* operation is reported,
+    and a request whose only difference is the exempt field is not.
+
+    A request that no model covers falls back to the raw bytes, which is what
+    the comparison did for every request before issue #202.
+    """
+    one_fields = control.request_fields
+    two_fields = candidate.request_fields
+    if one_fields is None or two_fields is None:
+        one, two, note = _pair(control.request_body, candidate.request_body)
+        return [Difference(f"{where} request", one, two, note)]
+
+    found: list[Difference] = []
+    for name in sorted(set(one_fields) | set(two_fields)):
+        if f"{control.name}.{name}" in EXEMPT_REQUEST_FIELDS:
+            continue
+        one_value = one_fields.get(name, "(absent)")
+        two_value = two_fields.get(name, "(absent)")
+        if one_value != two_value:
+            found.append(Difference(f"{where} request.{name}", one_value, two_value))
+    return found
+
+
 def _compare_response(where: str, control: Operation, candidate: Operation) -> list[Difference]:
     """The answers differ. Name the fields when a model covers the answer."""
     one_fields = control.response_fields
@@ -259,8 +315,10 @@ def _compare_operation(control: Operation, candidate: Operation) -> list[Differe
     if control.request_body != candidate.request_body:
         # The client sends the request, so a difference here means the client
         # took a different path, and an earlier answer of pynixd caused it.
-        one, two, note = _pair(control.request_body, candidate.request_body)
-        found.append(Difference(f"{where} request", one, two, note))
+        # **That is a finding, and this must not exempt a whole request.**
+        # `_compare_request` reads the named fields and exempts one of them,
+        # and it reports the raw bytes when no model covers the request.
+        found.extend(_compare_request(where, control, candidate))
     if control.response_payload != candidate.response_payload:
         found.extend(_compare_response(where, control, candidate))
     if (control.error is None) != (candidate.error is None):

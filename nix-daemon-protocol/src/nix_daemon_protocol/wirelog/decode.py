@@ -94,6 +94,21 @@ class Operation:
     error: str | None
     """The message of `STDERR_ERROR`, or None."""
 
+    request_fields: dict[str, str] | None = None
+    """The request as named fields, or None when the model does not cover it.
+
+    **A request is compared byte by byte without this, and some of those bytes
+    belong to the run rather than to the answer.** `AddIndirectRoot` carries
+    the `result` symbolic link that `nix build` makes under
+    `nix-build-<pid>-<random>`, so two runs differ there in every pair. A raw
+    comparison can say only "byte 39 differs", and `EXEMPTIONS` has no name to
+    reach.
+
+    A replacement inside the raw bytes could not answer it either: a string on
+    the wire carries an 8-byte length, and two pids of different width give
+    two lengths. So the comparison has to read the decoded value. Issue #202.
+    """
+
     response_fields: dict[str, str] | None = None
     """The payload as named fields, or None when no model covers it.
 
@@ -153,6 +168,34 @@ def _flatten(value: object, prefix: str, out: dict[str, str]) -> None:
         out[prefix] = repr(sorted(str(item) for item in value))
         return
     out[prefix] = repr(value)
+
+
+async def _decode_request(op: int, body: bytes, version: int) -> dict[str, str] | None:
+    """The request of one operation as named fields, or None.
+
+    `body` starts after the 8-byte operation code, which is where the model of
+    a request starts as well. A framed request carries its source after the
+    model, and `remaining()` is what says so.
+    """
+    request_cls = WIRE_REGISTRY.get(op)
+    if request_cls is None:
+        return None
+
+    reader = BytesReader(body, identifier="wirelog:request")
+    try:
+        model = await request_cls.from_reader(
+            ReadContext(reader=reader, version=version, logger=_QUIET),  # type: ignore[arg-type] -- see _Quiet
+        )
+    except (EOFError, ConnectionError, ValueError, TypeError, KeyError):
+        return None
+    if reader.remaining():
+        # The model covers a part of the request only, so its names would
+        # describe a part and hide the rest. A framed request is that case.
+        return None
+
+    out: dict[str, str] = {}
+    _flatten(model, "", out)
+    return out
 
 
 async def _decode_body(op: int, payload: bytes, version: int) -> dict[str, str] | None:
@@ -332,6 +375,7 @@ async def decode(path: Path) -> Session:
                 op=op,
                 name=request_cls.name,
                 request_body=body,
+                request_fields=await _decode_request(op, body, version),
                 response_payload=payload,
                 logs=tuple(logs),
                 error=error,

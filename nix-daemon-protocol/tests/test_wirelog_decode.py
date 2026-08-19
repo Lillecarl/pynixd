@@ -14,6 +14,8 @@ from pathlib import Path
 
 import pytest
 
+from nix_daemon_protocol.add_indirect_root import AddIndirectRootRequest
+from nix_daemon_protocol.add_temp_root import AddTempRootRequest
 from nix_daemon_protocol.constants import (
     STDERR_LAST,
     STDERR_NEXT,
@@ -488,3 +490,45 @@ async def test_the_exemptions_are_not_part_of_each_report(workdir):
     body = report(compare(control, candidate))
     assert "DIFFERENCES" in body
     assert EXEMPTIONS[0].reason not in body
+
+
+# `nix build` writes its `result` link under a directory that carries the pid
+# of the client, so these two stand for two runs of one command. Issue #202.
+RESULT_ONE = StorePath("/tmp/nix-build-1606846-2001787725/result")
+RESULT_TWO = StorePath("/tmp/nix-build-1610114-3168049170/result")
+
+
+@pytest.mark.anyio
+async def test_the_build_directory_of_the_client_is_exempt_in_add_indirect_root(workdir):
+    """The client sends its own `result` link, and its name holds a pid.
+
+    Two runs are two processes, so this differs in every pair and says nothing
+    about pynixd. The bytes cannot answer it: a string on the wire carries an
+    8-byte length, and two pids of different width give two lengths, so the
+    comparison reads the decoded field. Issue #202.
+    """
+    control = await decode(await build_ops(workdir / "a.wire", [(AddIndirectRootRequest(path=RESULT_ONE), valid(1))]))
+    candidate = await decode(await build_ops(workdir / "b.wire", [(AddIndirectRootRequest(path=RESULT_TWO), valid(1))]))
+    assert compare(control, candidate) == []
+
+
+@pytest.mark.anyio
+async def test_the_same_field_of_another_operation_is_a_finding(workdir):
+    """The exemption names the operation, and not the field alone.
+
+    `IsValidPath` carries a `path` as well. A store path that differs there is
+    a real difference, and an exemption that keyed on the field name alone
+    would hide it.
+    """
+    control = await decode(await build_ops(workdir / "a.wire", [(IsValidPathRequest(path=PATH_A), valid(True))]))
+    candidate = await decode(await build_ops(workdir / "b.wire", [(IsValidPathRequest(path=PATH_B), valid(True))]))
+    differences = compare(control, candidate)
+    assert [one.where for one in differences] == ["operation 0 IsValidPath request.path"]
+
+
+@pytest.mark.anyio
+async def test_add_temp_root_takes_the_same_exemption(workdir):
+    """`AddTempRoot` sends the same shape, for the same path."""
+    control = await decode(await build_ops(workdir / "a.wire", [(AddTempRootRequest(path=RESULT_ONE), valid(1))]))
+    candidate = await decode(await build_ops(workdir / "b.wire", [(AddTempRootRequest(path=RESULT_TWO), valid(1))]))
+    assert compare(control, candidate) == []
