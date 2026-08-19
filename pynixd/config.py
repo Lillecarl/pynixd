@@ -288,6 +288,29 @@ class SSHSubprocessStoreSpec(StoreSpecBase):
     port: int = 22
     username: str | None = None
     store_path: Path = Path("/")
+    known_hosts: str | None
+    """The file that names the host key of this builder, or `null` for none.
+
+    **This field has no default, so a configuration has to answer it.** A Nix
+    build store sees the whole content of every build that a client pushes,
+    and it returns the store paths that the client then registers as valid.
+    The host key is the check that makes the far side the machine the
+    configuration named, and a machine in the middle of that path substitutes
+    a build output without it.
+
+    `null` is `asyncssh`'s "accept any host key", which is what every SSH
+    store did before this field existed. It stays reachable, because a
+    loopback connection to a local virtual machine has no exposure worth the
+    ceremony, and because pynixd often runs as root where the `known_hosts`
+    of a user holds nothing. Writing it is the point: the choice is in the
+    configuration rather than in a default.
+
+    `nix` asks the same question. A `nix.buildMachines` entry carries
+    `publicHostKey`, and `ssh-ng://` verifies against it, so a person moving
+    a builder from `nix.buildMachines` to `stores` used to lose the check
+    without being told. Issue #165.
+    """
+
     monitor: bool = True
     client_keys: list[Any] = Field(default_factory=list)
     persistent_connection: bool = True
@@ -332,6 +355,29 @@ class SSHSocketStoreSpec(StoreSpecBase):
     port: int = 22
     username: str | None = None
     socket_path: Path = Path("/nix/var/nix/daemon-socket/socket")
+    known_hosts: str | None
+    """The file that names the host key of this builder, or `null` for none.
+
+    **This field has no default, so a configuration has to answer it.** A Nix
+    build store sees the whole content of every build that a client pushes,
+    and it returns the store paths that the client then registers as valid.
+    The host key is the check that makes the far side the machine the
+    configuration named, and a machine in the middle of that path substitutes
+    a build output without it.
+
+    `null` is `asyncssh`'s "accept any host key", which is what every SSH
+    store did before this field existed. It stays reachable, because a
+    loopback connection to a local virtual machine has no exposure worth the
+    ceremony, and because pynixd often runs as root where the `known_hosts`
+    of a user holds nothing. Writing it is the point: the choice is in the
+    configuration rather than in a default.
+
+    `nix` asks the same question. A `nix.buildMachines` entry carries
+    `publicHostKey`, and `ssh-ng://` verifies against it, so a person moving
+    a builder from `nix.buildMachines` to `stores` used to lose the check
+    without being told. Issue #165.
+    """
+
     monitor: bool = True
     client_keys: list[Any] = Field(default_factory=list)
     persistent_connection: bool = True

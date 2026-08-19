@@ -52,12 +52,20 @@ in
           stores.builder1 = {
             type = "ssh-subprocess";
             host = "builder1";
+            # The file that names the host key of this builder. A store sees
+            # the whole content of every build pushed to it, so this is the
+            # check that makes the far side the machine named here.
+            known_hosts = "/etc/ssh/ssh_known_hosts";
             systems = [ "x86_64-linux" ];
             priority = 2.0;
           };
           stores.builder2 = {
             type = "ssh-subprocess";
             host = "builder2";
+            # `null` accepts any host key, which is what every SSH store did
+            # before this field existed. It is worth writing only for a peer
+            # with no exposure, such as a local virtual machine.
+            known_hosts = null;
             systems = [ "aarch64-linux" ];
             priority = 0.5;
           };

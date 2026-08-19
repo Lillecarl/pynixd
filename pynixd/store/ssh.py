@@ -62,9 +62,14 @@ class SSHStore(DaemonStore):
         client_keys: list[str | Path | asyncssh.SSHKey] | None = None,
         settings: PynixdSettings | None = None,
         persistent_connection: bool = True,
+        known_hosts: str | None = None,
     ) -> None:
         """Initialise SSH connection state, backoff, and resource monitor settings."""
         self.persistent_connection = persistent_connection
+        # The spec has no default for this, so a configuration answered it.
+        # `None` is `asyncssh`'s "accept any host key", and it is now written
+        # rather than implied. Issue #165.
+        self.known_hosts = known_hosts
         if not persistent_connection and monitor_enabled:
             # The monitor polls over this store's own SSH connection, so it
             # would hold the builder awake by itself and undo the whole point
@@ -235,7 +240,7 @@ class SSHStore(DaemonStore):
                 connect_kwargs: dict[str, Any] = {
                     "host": self.host,
                     "port": self.port,
-                    "known_hosts": None,
+                    "known_hosts": self.known_hosts,
                 }
                 if self.username is not None:
                     connect_kwargs["username"] = self.username
@@ -305,6 +310,7 @@ class SSHSubprocessStore(SSHStore):
             client_keys=list(spec.client_keys) if spec.client_keys else None,
             settings=spec.settings,
             persistent_connection=spec.persistent_connection,
+            known_hosts=spec.known_hosts,
         )
         self.ssh_processes: list[asyncssh.SSHClientProcess] = []
 
@@ -371,6 +377,7 @@ class SSHSocketStore(SSHStore):
             client_keys=list(spec.client_keys) if spec.client_keys else None,
             settings=spec.settings,
             persistent_connection=spec.persistent_connection,
+            known_hosts=spec.known_hosts,
         )
 
     async def create_conn(self) -> Connection:

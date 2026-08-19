@@ -23,14 +23,17 @@ See issue #164.
 
 from __future__ import annotations
 
+import contextlib
+
 import anyio
+import asyncssh
 import pytest
 
 from pynixd.config import SSHSubprocessStoreSpec
 from pynixd.monitor import ResourceGate
 from pynixd.serde.ids import StoreId
 from pynixd.store.pool import ConnectionPool
-from pynixd.store.ssh import SSHStore
+from pynixd.store.ssh import SSHStore, SSHSubprocessStore
 
 
 class RecordingSSHStore(SSHStore):
@@ -69,6 +72,9 @@ def _store(*, persistent: bool = True) -> RecordingSSHStore:
             port=31122,
             monitor=False,
             persistent_connection=persistent,
+            # The peer of this fixture is a local virtual machine, which is
+            # the case the `null` form is for. Issue #165.
+            known_hosts=None,
         )
     )
 
@@ -187,3 +193,64 @@ class TestPoolEmptyNotification:
         )
         with anyio.fail_after(1):
             await pool._notify_if_empty()
+
+
+@pytest.mark.anyio
+async def test_the_host_key_file_of_the_spec_reaches_asyncssh(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The field is the whole point, so assert where it lands.
+
+    A store sees the content of every build pushed to it and returns the
+    paths that the client registers as valid, so the host key is the check
+    that makes the far side the machine the configuration named. A field that
+    the spec holds and the connection ignores would read as that check being
+    on. Issue #165.
+    """
+    seen: dict[str, object] = {}
+
+    async def _capture(**kwargs: object) -> object:
+        seen.update(kwargs)
+        raise OSError("the probe stops here")
+
+    monkeypatch.setattr(asyncssh, "connect", _capture)
+    store = SSHSubprocessStore(
+        SSHSubprocessStoreSpec(
+            store_id=StoreId("builder"),
+            host="builder",
+            monitor=False,
+            known_hosts="/etc/ssh/ssh_known_hosts",
+        )
+    )
+    with contextlib.suppress(Exception):
+        await store.ensure_ssh()
+
+    assert seen["known_hosts"] == "/etc/ssh/ssh_known_hosts"
+
+
+@pytest.mark.anyio
+async def test_accepting_any_host_key_is_written_and_not_implied(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`None` is `asyncssh`'s "accept any host key", and it stays reachable.
+
+    A loopback peer has no exposure worth the ceremony, and pynixd often runs
+    as root where the `known_hosts` of a user holds nothing. What changed is
+    that a configuration writes it. Issue #165.
+    """
+    seen: dict[str, object] = {}
+
+    async def _capture(**kwargs: object) -> object:
+        seen.update(kwargs)
+        raise OSError("the probe stops here")
+
+    monkeypatch.setattr(asyncssh, "connect", _capture)
+    store = SSHSubprocessStore(
+        SSHSubprocessStoreSpec(
+            store_id=StoreId("builder"),
+            host="builder",
+            monitor=False,
+            known_hosts=None,
+        )
+    )
+    with contextlib.suppress(Exception):
+        await store.ensure_ssh()
+
+    assert "known_hosts" in seen
+    assert seen["known_hosts"] is None
