@@ -32,6 +32,7 @@ from pynixd.serde import (
     QueryAllValidPathsResponse,
     QueryClosureWithInfoRequest,
     QueryClosureWithInfoResponse,
+    SetOptionsRequest,
     Time,
     UnkeyedValidPathInfo,
     ValidPathInfo,
@@ -57,8 +58,14 @@ class StatsTestStore(LocalDBStore):
         self.build_delays: dict[str, float] = {}
 
     @asynccontextmanager
-    async def build_conn(self):  # type: ignore[override]
-        async with self.pool.acquire("build"):
+    async def build_conn(self, options: SetOptionsRequest | None = None):  # type: ignore[override]
+        # **The `options` parameter is not decoration.** Issue #192 gave a
+        # build the option set of the client that asked for it, and
+        # `Scheduler.execute_build` has passed it ever since. A stand-in
+        # without it made the build crash with a `TypeError` that the
+        # scheduler reported as "Internal scheduler error", so this test read
+        # an empty stats table and blamed the recording. Issue #289.
+        async with self.pool.acquire("build", options):
 
             class MockConn:
                 def __init__(self, store):
@@ -77,6 +84,7 @@ class StatsTestStore(LocalDBStore):
                     client=None,
                     suppress_last=False,
                     raise_on_error=False,
+                    options=None,
                 ):
 
                     if isinstance(request, BuildDerivationRequest):
@@ -209,16 +217,30 @@ async def test_build_stats_recording(tmp_path: Path) -> None:
         )
         await future
 
-        # 2. Check the DB
+        # 2. Check the DB.
+        #
+        # **The future resolves before the row exists, and that is deliberate.**
+        # `Scheduler.execute_build` calls `queue.complete` as soon as the
+        # backend answers, and `_collect_outputs` runs after that and holds
+        # `_record_build_stats`. Issue #157 states the same order from the
+        # other side: the client is told the build succeeded before the pull
+        # runs. So the row lands a moment after `await future` returns, and a
+        # read at that instant found nothing and read as "the recording is
+        # broken". Issue #289.
         assert pynixd_local.db is not None
-        async with pynixd_local.db.execute(
-            "SELECT pname, duration_ms FROM PynixdDerivationStats WHERE pname = 'fast-pkg'",
-        ) as cursor:
-            row = await cursor.fetchone()
-            assert row is not None
-            assert row[0] == "fast-pkg"
-            # Duration should be around 50ms + some overhead
-            assert 50 <= row[1] <= 1000
+        row = None
+        with anyio.fail_after(10):
+            while row is None:
+                async with pynixd_local.db.execute(
+                    "SELECT pname, duration_ms FROM PynixdDerivationStats WHERE pname = 'fast-pkg'",
+                ) as cursor:
+                    row = await cursor.fetchone()
+                if row is None:
+                    await anyio.sleep(0.05)
+
+        assert row[0] == "fast-pkg"
+        # Duration should be around 50ms + some overhead
+        assert 50 <= row[1] <= 1000
 
 
 @pytest.mark.covers(F.BUILD_DERIVATION | F.GOAL_BUILD_QUEUE | F.GOAL_SCHEDULER | F.STORE_LOCAL)
