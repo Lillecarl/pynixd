@@ -15,18 +15,14 @@ import structlog
 
 from nix_daemon_protocol.store_dir import set_real_store_dir, set_store_dir
 
-from . import wire
+from . import _optional, wire
 from .config import ExternalUnixStoreSpec, HTTPBinaryCacheSpec, LocalSocketStoreSpec, PynixdSettings
 from .context import PynixdContext
-from .http_server import PynixdHttpServer
-from .reverse_client import ReverseInitiator
-from .reverse_server import start_reverse_acceptor
 from .scheduler import Scheduler
 from .serde import PynixdCollectGarbageRequest
 from .serde.ids import LOCAL_STORE_ID, StoreId
 from .serde.protocol import PynixdGCAction
-from .ssh_server import start_ssh_server
-from .store import DaemonStore, ExternalUnixStore, HTTPBinaryCacheStore, LocalDBStore, LocalStore, Store
+from .store import DaemonStore, ExternalUnixStore, LocalDBStore, LocalStore, Store, is_http_binary_cache
 from .store_layout import DEFAULT_STORE_DIR
 from .unix_server import start_unix_server
 
@@ -161,9 +157,7 @@ class Server:
         local_store = stores[LOCAL_STORE_ID]
         _adopt_store_dir(local_store)
 
-        existing_http_urls = {
-            store.url.rstrip("/") for store in stores.values() if isinstance(store, HTTPBinaryCacheStore)
-        }
+        existing_http_urls = {store.url.rstrip("/") for store in stores.values() if is_http_binary_cache(store)}
         for url in _default_http_substituter_urls(local_store):
             if url.rstrip("/") in existing_http_urls:
                 continue
@@ -419,7 +413,7 @@ class Server:
 
         s = self.settings
         if s.ssh_port is not None:
-            self.ssh_server = await start_ssh_server(
+            self.ssh_server = await _optional.ssh_server.start_ssh_server(
                 ctx=self.ctx,
                 host=s.ssh_host,
                 port=s.ssh_port,
@@ -428,13 +422,17 @@ class Server:
                 schedule_mode=s.schedule_mode,
             )
 
-        self.reverse_acceptor = await start_reverse_acceptor(
-            server=self,
-            settings=s.reverse_acceptor,
-        )
+        # **The `enabled` check belongs here as well as in the function.**
+        # `start_reverse_acceptor` answers `None` for a set that is off, and
+        # reaching it at all imports `asyncssh`. Issue #290.
+        if s.reverse_acceptor.enabled:
+            self.reverse_acceptor = await _optional.reverse_server.start_reverse_acceptor(
+                server=self,
+                settings=s.reverse_acceptor,
+            )
 
         if s.reverse_initiator.enabled:
-            initiator = ReverseInitiator(self.ctx, s.reverse_initiator)
+            initiator = _optional.reverse_client.ReverseInitiator(self.ctx, s.reverse_initiator)
             self.background_tasks.append(asyncio.create_task(initiator.run()))
 
         if s.unix_path:
@@ -446,7 +444,7 @@ class Server:
             )
 
         if s.http_port is not None or s.https_port is not None:
-            cache = PynixdHttpServer(
+            cache = _optional.http_server.PynixdHttpServer(
                 local_store,
                 enable_cache=s.http_enable_cache,
                 enable_metrics=s.http_enable_metrics,

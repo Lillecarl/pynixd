@@ -16,6 +16,7 @@ import structlog
 from nix_daemon_protocol.store_dir import store_prefix
 
 from .. import wire
+from .._lazy import ssh_errors
 from ..exceptions import BackendError
 from ..monitor import ResourceGate, ResourceMonitor
 from ..serde import (
@@ -51,19 +52,16 @@ log = structlog.get_logger(__name__)
 _CB_THRESHOLD: int = 3
 _CB_MAX_COOLDOWN: float = 300.0
 
-try:
-    import asyncssh
-except ImportError:
-    _SSH_ERRORS: tuple[type[BaseException], ...] = ()
-else:
-    _SSH_ERRORS = (asyncssh.misc.Error,)
-
+# **The asyncssh half is read at the moment of the `except`, and not here.**
+# A `try: import asyncssh` at module level loads the library for every store,
+# and a Unix-socket daemon opens no SSH connection. `ssh_errors` answers with
+# an empty tuple until something imports asyncssh, which is exact: no error of
+# that library can be in flight before the library is there. Issue #290.
 _TRANSPORT_ERRORS: tuple[type[BaseException], ...] = (
     ConnectionError,
     EOFError,
     OSError,
     TimeoutError,
-    *_SSH_ERRORS,
 )
 
 
@@ -331,7 +329,7 @@ class DaemonStore(Store):
 
                 try:
                     await self._do_reconnect()
-                except _TRANSPORT_ERRORS:
+                except _TRANSPORT_ERRORS + ssh_errors():
                     self._reconnect_delay = min(self._reconnect_delay * 2, self.reconnect_max_delay)
                     log.warning("store_reconnect_failed", store_id=self.store_id, next_retry=self._reconnect_delay)
                     continue
@@ -380,7 +378,7 @@ class DaemonStore(Store):
                 return await conn.call(
                     request, client=client, suppress_last=suppress_last, raise_on_error=raise_on_error
                 )
-        except _TRANSPORT_ERRORS:
+        except _TRANSPORT_ERRORS + ssh_errors():
             self.record_failure()
             raise
 

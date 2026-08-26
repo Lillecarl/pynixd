@@ -17,7 +17,7 @@ from .serde import AddToStoreNarRequest, NarFromPathRequest, QueryPathInfoReques
 from .serde.context import ReadContext, WriteContext
 from .serde.ids import LOCAL_STORE_ID
 from .serde.valid_path_info import ValidPathInfo
-from .store import DaemonStore, HTTPBinaryCacheStore
+from .store import DaemonStore, is_http_binary_cache
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -275,7 +275,7 @@ class SubstitutionQueue:
             await conn.w.drain()
 
             framed = conn.w.framed()
-            if isinstance(candidate.store, HTTPBinaryCacheStore):
+            if is_http_binary_cache(candidate.store):
                 http_narinfo = candidate.http_narinfo
                 if http_narinfo is None:
                     http_narinfo = await candidate.store.get_narinfo(path)

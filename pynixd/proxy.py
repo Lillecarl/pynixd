@@ -10,12 +10,12 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, Any, cast
 
-import asyncssh
 import structlog
 
 from nix_daemon_protocol.exceptions import DaemonProtocolError
 
 from . import wire
+from ._lazy import ssh_connection_lost
 from .config import ScheduleMode
 from .connection import ClientConn
 from .exceptions import OpNotImplementedError, PynixdError
@@ -166,7 +166,7 @@ class DaemonProxy:
         try:
             await self.handshake()
             await self.op_loop()
-        except (EOFError, BrokenPipeError, ConnectionError, OSError, asyncssh.misc.ConnectionLost):
+        except (EOFError, BrokenPipeError, ConnectionError, OSError) + ssh_connection_lost():
             log.debug("client_disconnected")
         except Exception:
             log.exception("session_error")
@@ -318,7 +318,7 @@ class DaemonProxy:
         while True:
             try:
                 op_num = await self.r.read_uint64()
-            except (EOFError, asyncssh.misc.ConnectionLost):
+            except (EOFError,) + ssh_connection_lost():
                 break
 
             req_cls = WIRE_REGISTRY.get(op_num)

@@ -13,12 +13,9 @@ from __future__ import annotations
 import struct
 from typing import TYPE_CHECKING, Protocol
 
-if TYPE_CHECKING:
-    from collections.abc import Callable
-
-import asyncssh
 from environs import env
 
+from ._lazy import ssh_connection_lost
 from .constants import (
     FEATURE_EXCHANGE_PROTOCOL as FEATURE_EXCHANGE_PROTOCOL,
     MINIMUM_REMOTE_PROTOCOL as MINIMUM_REMOTE_PROTOCOL,
@@ -37,7 +34,9 @@ from .serde.logs import LogMessage, drain as drain_log_stream, read_stream as re
 
 if TYPE_CHECKING:
     import asyncio
-    from collections.abc import AsyncIterator, Iterable
+    from collections.abc import AsyncIterator, Callable, Iterable
+
+    import asyncssh
 
 
 _CHUNK_SIZE = env.int("PYNIXD_CHUNK_SIZE", 1024 * 1024)
@@ -122,7 +121,7 @@ class SSHNixReader(NixReader):
     async def readexactly(self, n: int) -> bytes:
         try:
             return await self.reader.readexactly(n)
-        except asyncssh.misc.ConnectionLost:
+        except ssh_connection_lost():
             raise EOFError("SSH connection lost") from None
 
     def _transport_is_dirty(self) -> bool:
