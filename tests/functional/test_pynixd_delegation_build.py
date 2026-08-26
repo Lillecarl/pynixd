@@ -32,9 +32,20 @@ log = structlog.get_logger(__name__)
 
 
 @pytest.mark.covers(F.EXTENSION_BUILD | F.BUILD_DERIVATION | F.BUILD_PATHS | F.BUILD_PATHS_WITH_RESULTS | F.STORE_LOCAL)
-@pytest.mark.xfail(reason="build output path tracking mismatch between servers")
 async def test_pynixd_delegation_build(tmp_path: Path) -> None:
     """Test that pynixd can delegate build OPs to another pynixd instance.
+
+    **This carried an `xfail` that named a defect pynixd does not have.** The
+    mark read "build output path tracking mismatch between servers", and two
+    faults of the test hid behind it. `SSHSubprocessStoreSpec` gained a
+    required `known_hosts` in issue #165 and this call never grew one, so the
+    test died in construction and reached no build at all. With that fixed it
+    reached the build and the scheduler sent it to server A's own store,
+    because nothing here said not to.
+
+    With both corrected the whole chain works, and the log states each hop:
+    A assigns the build to `builder-b`, B assigns it to `b-local`, B pulls the
+    output, and A pulls it from `builder-b`. Issue #291.
 
     Setup:
     - Server B: Real Nix daemon backend.
@@ -80,6 +91,12 @@ async def test_pynixd_delegation_build(tmp_path: Path) -> None:
                 port=port_b,
                 username=server_b.username,
                 client_keys=[key],
+                # The builder is a server this test just started on the
+                # loopback interface, so there is no host key to pin and
+                # nothing in the path to substitute an output. Issue #165
+                # gives the field no default for exactly this reason: the
+                # choice belongs in the configuration and not in a default.
+                known_hosts=None,
                 nix_bin=str(NIX_BIN),
                 monitor=False,
             ),
@@ -94,6 +111,13 @@ async def test_pynixd_delegation_build(tmp_path: Path) -> None:
                 store_id="a-local",
                 store_path=store_a_path,
                 no_probe=True,
+                # **This is what makes the test a delegation test.**
+                # Server A holds two stores that can build, and the scheduler
+                # scored both at 0.0 and took its own. That is a correct
+                # answer to the question the scheduler was asked, and it is
+                # not the question this test means to ask, so the build ran on
+                # A and the assertion on B's store failed. Issue #291.
+                no_schedule=True,
             ),
         )
 

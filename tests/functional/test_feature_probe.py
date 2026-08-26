@@ -67,6 +67,11 @@ async def test_feature_probe_nixbuild_net() -> None:
             store_id=StoreId("nixbuild-net"),
             username="lillecarl",
             client_keys=[Path("~/.ssh/id_ed25519")],
+            # This test asks a real remote for its features and it needs a
+            # personal account there, so it never runs on a machine that has
+            # no such account. `None` keeps it running where it does run, and
+            # a person who wants the check writes their own file here.
+            known_hosts=None,
         ),
     )
 
