@@ -48,6 +48,7 @@
   diffutils,
   procps,
   python3,
+  openssh,
 }:
 let
   scripts = lib.fileset.toSource {
@@ -64,6 +65,27 @@ let
   # `nix_daemon_protocol` in it. The recorder of the `streams` mode is a
   # module of that package, and it has no entry point of its own.
   wirelogPython = "${pynixd.venv}/bin/python";
+  runtimeInputs = [
+    coreutils
+    findutils
+    gnugrep
+    gnused
+    gawk
+    diffutils
+    procps
+    meson
+    ninja
+    jq
+    git
+    python3
+    bash
+    busybox
+    # `fetchGitVerification.sh:6` looks for `ssh-keygen` and skips the whole
+    # test when it finds none. It used to find the one of the caller, so the
+    # test ran on a machine that had OpenSSH and skipped on a machine that did
+    # not. Issue #290.
+    openssh
+  ];
 in
 writeShellApplication {
   name = "nanopynix-nixft-${version}";
@@ -87,22 +109,7 @@ writeShellApplication {
   # must sleep 10 s so that `fast-fail` can fail while it runs; with no shell
   # it died at once, and the test asked which of two instant failures landed
   # first.
-  runtimeInputs = [
-    coreutils
-    findutils
-    gnugrep
-    gnused
-    gawk
-    diffutils
-    procps
-    meson
-    ninja
-    jq
-    git
-    python3
-    bash
-    busybox
-  ];
+  inherit runtimeInputs;
 
   text = ''
     NIXFT_VERSION=${lib.escapeShellArg version}
@@ -112,9 +119,23 @@ writeShellApplication {
     WIRELOG_PYTHON=${lib.escapeShellArg wirelogPython}
     SCRIPTS=${lib.escapeShellArg scripts}
 
+    # **The runner takes no directory from the caller.** The header of this
+    # file says that every tool comes from this closure, and an inherited
+    # `PATH` made that untrue: `writeShellApplication` appends `$PATH` after
+    # `runtimeInputs`, so the machine of the caller decided which `gcc`, which
+    # `ld` and which `nix` a test found.
+    #
+    # The measurement that named it is on issue #290. `asyncssh` calls
+    # `ctypes.util.find_library` at import, nixpkgs patches the `ldconfig`
+    # route of that function to answer `None`, and the rest of it runs the
+    # compiler. One call costs 80 `execve` with a dev shell on `PATH` and 4
+    # with coreutils alone. pynixd starts once for each configuration change
+    # of a test, 343 times over the suite, so `ca:signatures` took 32.02 s
+    # from a dev shell and 25.69 s under `env -i`.
+    #
     # The client must be the Nix that owns the test scripts, so it goes in
-    # front of everything. `runtimeInputs` above put the rest there already.
-    PATH=$NIX_PKG/bin:$PATH
+    # front.
+    PATH=$NIX_PKG/bin:${lib.makeBinPath runtimeInputs}
     export PATH
 
     # One work directory for each version, so two versions never share a build
