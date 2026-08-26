@@ -51,12 +51,16 @@ async def _the_result_unless_it_stops(goal: EnsureDerivedPathGoal, stop: anyio.E
     The difference is worth its cost because a build here is shared: a second
     client that asked for the same derivation still wants it, and killing it
     for the first client takes the work of the second. The cost is the builds
-    that nobody wants and that pynixd runs anyway. Measure those to reverse
-    the decision. `nix build -f fod-failing.nix -j1 -L` writes one
-    `building '...'` line through `nix-daemon` and three through pynixd,
-    measured on Nix 2.34.8: the slot that x1 frees reaches x2 and then x3
-    before the request that abandoned both lets them go. No assertion of
-    `build.sh` reads those lines, so `main:build` passes either way.
+    that nobody wants and that pynixd runs anyway, and today that cost is
+    zero on the one fixture that shows it. Measure it to reverse the
+    decision. `nix build -f fod-failing.nix -j1 -L` writes one
+    `building '...'` line through pynixd and one through `nix-daemon`,
+    measured on Nix 2.34.8. It wrote three until issue #287: the request took
+    2.05 s to act on the failure of x1, and the freed slot of `-j1` reached
+    x2 and then x3 in that time. The request now acts 2.3 ms after the
+    completion, and `BuildQueue.let_go` cancels x2 before it starts. Issue
+    #286 holds what is left of that race, which is 423 us between a
+    completion and the next assignment.
 
     `main:build` measured what the waiting costs. `nix flake check
     ./cancelled-builds -j2` builds `fast-fail` and `slow` together, and
