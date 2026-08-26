@@ -1,4 +1,13 @@
-"""Unit tests for the order in which root goals enqueue a build. Issue #207."""
+"""The order in which the root goals of one request enqueue a build.
+
+**This module stands for `build.sh:167` and `build.sh:176`.**
+`nix build -f fod-failing.nix -j1 -L` builds four fixed-output derivations,
+and every one of them gives the wrong hash. `build.sh:167` asserts one
+`error:` line, and `build.sh:176` asserts that the line names x1. Both hold
+only when the one slot of `-j1` goes to the goal that sorts first by
+derivation name. `dispatch_order.py` gives the mechanism and the measurement.
+Issue #207, and issue #196 holds the assertion.
+"""
 
 from __future__ import annotations
 

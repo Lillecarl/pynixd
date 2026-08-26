@@ -212,6 +212,8 @@ Copy the shape of these tests:
 | `tests/unit/test_derived_path.py` | `build.sh:91` |
 | `tests/unit/test_build_paths_goals.py` | `build.sh:8` |
 | `tests/unit/test_keep_going_and_max_jobs.py` | `build.sh:247`, `build.sh:269` |
+| `tests/unit/test_dispatch_order.py` | `build.sh:167`, `build.sh:176` |
+| `tests/unit/test_ensure_child_logs.py` | `build.sh:167` |
 | `tests/parity/test_wire_parity.py` | `build.sh:91` |
 
 The functional suite proves the bytes of a run. A test of this kind proves the
