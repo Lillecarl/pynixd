@@ -10,10 +10,9 @@ Write functions are sync (writer.write() buffers; callers await drain()).
 
 from __future__ import annotations
 
+import os
 import struct
 from typing import TYPE_CHECKING, Protocol
-
-from environs import env
 
 from ._lazy import ssh_connection_lost
 from .constants import (
@@ -39,9 +38,20 @@ if TYPE_CHECKING:
     import asyncssh
 
 
-_CHUNK_SIZE = env.int("PYNIXD_CHUNK_SIZE", 1024 * 1024)
+def _env_int(name: str, default: int) -> int:
+    """The integer that *name* holds, or *default* when it holds nothing.
 
-_SSH_WINDOW_SIZE = env.int("PYNIXD_SSH_WINDOW", 16 * 1024 * 1024)
+    `environs` did this, and it cost 64 ms of every daemon start for four
+    calls across three modules: it pulls `marshmallow` and `python-dotenv`,
+    and nothing here ever called `env.read_env()`. Issue #290.
+    """
+    raw = os.environ.get(name, "")
+    return int(raw) if raw else default
+
+
+_CHUNK_SIZE = _env_int("PYNIXD_CHUNK_SIZE", 1024 * 1024)
+
+_SSH_WINDOW_SIZE = _env_int("PYNIXD_SSH_WINDOW", 16 * 1024 * 1024)
 
 _SSH_READ_AHEAD = 16 * 1024  # read-ahead size to amortize asyncssh lock overhead
 

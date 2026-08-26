@@ -8,12 +8,12 @@ Uses the same key format and fingerprint construction as Nix:
 
 from __future__ import annotations
 
+import os
 from base64 import b64decode, b64encode
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import nacl.signing
-from environs import env
 
 from .utils import nix32_encode
 
@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 
 def get_default_signing_key() -> SecretKey | None:
     """Get the default signing key from PYNIXD_SIGNING_KEY env var."""
-    val = env.str("PYNIXD_SIGNING_KEY", "")
+    val = os.environ.get("PYNIXD_SIGNING_KEY", "")
     if not val:
         return None
     return SecretKey.from_string(val)

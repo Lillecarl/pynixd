@@ -17,10 +17,9 @@ Future directions:
 from __future__ import annotations
 
 import contextlib
+import os
 import time
 from dataclasses import dataclass, field
-
-from environs import env
 
 
 @dataclass
@@ -47,7 +46,7 @@ class PsiWeights:
     @classmethod
     def from_env(cls) -> PsiWeights:
         """Parse PYNIXD_PSI_WEIGHTS='cpu=0.4,mem=0.3,io=0.2,memfull=0.1'."""
-        raw = env.str("PYNIXD_PSI_WEIGHTS", "")
+        raw = os.environ.get("PYNIXD_PSI_WEIGHTS", "")
         if not raw:
             return cls()
         kv = dict(part.split("=") for part in raw.split(","))

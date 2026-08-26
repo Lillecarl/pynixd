@@ -11,7 +11,8 @@ start, and a daemon that serves a Unix socket runs neither an SSH server nor
 an HTTP cache. ``pynixd/store/__init__.py`` and ``pynixd/_optional.py`` now
 resolve their names on first read, and ``pynixd/_lazy.py`` answers the two
 ``except`` clauses and the one ``isinstance`` that named a class without
-needing one.
+needing one. ``environs`` went with them: it answered four calls and pulled
+``marshmallow``, for 64 ms more.
 
 **Without this file the next eager import puts the cost back in silence.**
 Nothing else fails. An eager import makes every daemon start slower and no
@@ -44,11 +45,12 @@ from pynixd.config import HTTPBinaryCacheSpec
 
 #: The most modules ``import pynixd.instance`` may load in a clean interpreter.
 #:
-#: Measured at 718 when issue #290 made both stacks lazy, down from 925.
+#: Measured at 703 when issue #290 made both stacks lazy and dropped
+#: `environs`, down from 925.
 #: The headroom is small on purpose. A legitimate new dependency raises this
 #: number in the commit that adds it, and a reader sees the cost. Raise it with
 #: a measurement in the commit message, and never to make a red run green.
-MODULE_BUDGET = 760
+MODULE_BUDGET = 740
 
 #: The libraries that only an SSH or an HTTP configuration may load.
 #:
