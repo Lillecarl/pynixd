@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -62,6 +63,12 @@ class MockConnection:
         self.connected = True
         self.dirty = False
         self.op_log = []
+        # `ConnectionPool._too_old` reads this on every `acquire`, so a stand-in
+        # for `Connection` has to carry it. `Connection.__init__` sets it from
+        # `time.monotonic()`, and this does the same rather than picking a
+        # constant, so a pool with a `max_lifetime` retires a mock the way it
+        # retires a real one.
+        self.opened_at: float = time.monotonic()
 
         # Dummy reader/writer to avoid AttributeErrors on .identifier
         class DummyRW:
