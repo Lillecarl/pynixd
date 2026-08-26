@@ -52,15 +52,17 @@ async def _the_result_unless_it_stops(goal: EnsureDerivedPathGoal, stop: anyio.E
     client that asked for the same derivation still wants it, and killing it
     for the first client takes the work of the second. The cost is the builds
     that nobody wants and that pynixd runs anyway, and today that cost is
-    zero on the one fixture that shows it. Measure it to reverse the
-    decision. `nix build -f fod-failing.nix -j1 -L` writes one
-    `building '...'` line through pynixd and one through `nix-daemon`,
-    measured on Nix 2.34.8. It wrote three until issue #287: the request took
-    2.05 s to act on the failure of x1, and the freed slot of `-j1` reached
-    x2 and then x3 in that time. The request now acts 2.3 ms after the
-    completion, and `BuildQueue.let_go` cancels x2 before it starts. Issue
-    #286 holds what is left of that race, which is 423 us between a
-    completion and the next assignment.
+    zero. Measure it to reverse the decision.
+    `nix build -f fod-failing.nix -j1 -L` writes one `building '...'` line
+    through pynixd and one through `nix-daemon`, measured on Nix 2.34.8.
+
+    It wrote three until issue #287 and issue #286, and the two answered
+    different halves. #287: the request took 2.05 s to act on the failure of
+    x1, because a failed build waited a 2 s deadline for an output it could
+    not have. #286: even at 2.3 ms the freed slot of `-j1` still went out
+    first, in the same pass as the completion, so `Scheduler._assign_to_stores`
+    now asks `BuildQueue.nobody_wants` before it assigns. That reads a fact
+    rather than winning a race, so the count above does not rest on timing.
 
     `main:build` measured what the waiting costs. `nix flake check
     ./cancelled-builds -j2` builds `fast-fail` and `slow` together, and
