@@ -23,7 +23,7 @@ from pynixd.serde import (
     SetOptionsRequest,
     StorePath as SerdeStorePath,
 )
-from pynixd.serde.ids import BuildId
+from pynixd.serde.ids import BuildId, RequestId
 from pynixd.wire import BytesWriter
 
 if TYPE_CHECKING:
@@ -38,15 +38,18 @@ class FakeScheduler:
     def __init__(self) -> None:
         self.started = anyio.Event()
         self.future: asyncio.Future[BuildDerivationResponse] | None = None
+        self.goal_request_id: RequestId | None = None
 
     async def build_derivation(
         self,
         request: BuildDerivationRequest,
         *,
         from_goal_path: bool = False,
+        goal_request_id: RequestId | None = None,
         options: SetOptionsRequest | None = None,
     ) -> tuple[BuildId, asyncio.Future[BuildDerivationResponse]]:
         del request, options
+        self.goal_request_id = goal_request_id
         if not from_goal_path:
             raise RuntimeError("BuildDerivationGoal must mark scheduler builds as goal-owned")
         self.future = asyncio.get_running_loop().create_future()
@@ -63,6 +66,9 @@ class FakeEngine:
                 local_store=SimpleNamespace(),
             ),
         )
+        # The engine *is* the request, as far as the build queue is
+        # concerned, and `BuildDerivationGoal` passes this on. Issue #286.
+        self.request_id = RequestId(1)
         self.subscribed: list[tuple[BuildId, ClientConn]] = []
         self.unsubscribed: list[tuple[BuildId, ClientConn]] = []
         self.held_builds: list[BuildId] = []

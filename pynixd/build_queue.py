@@ -147,6 +147,19 @@ class QueuedBuild:
         # states what the count decides. Issue #196.
         self.goal_holders = 0
 
+        # Every goal system that ever wanted this build, by request. This is
+        # the *support* of `goal_holders`, which is the count, and the two are
+        # not the same question. One request can hold one build through two
+        # goals -- `drv^out` and `drv^*` reach one derivation -- so the count
+        # can be two where this set holds one entry.
+        #
+        # **It is append-only, and that is deliberate.** `let_go` names no
+        # request, so a release cannot say which entry to drop, and a stale
+        # entry is the safe direction: `BuildQueue.nobody_wants` asks whether
+        # every entry gave up, and an entry that is still there and did not
+        # give up makes the answer False, which runs the build. Issue #286.
+        self.goal_request_ids: set[RequestId] = set()
+
         # Guards add_subscriber replay vs post_log_bytes fanout so that a
         # joining client never misses bytes that arrive during catch-up.
         self._sub_lock = anyio.Lock()
@@ -356,6 +369,11 @@ class BuildQueue:
         self._requests: dict[RequestId, SchedulerBuildRequest] = {}
         self.next_id = 1
         self.next_request_id = 1
+        # Each goal system that met a failed build and did not set
+        # `keep-going`. `complete` and `fail` write it, under this lock and
+        # before `Scheduler.trigger`, which is what lets `_assign_to_stores`
+        # read a fact rather than win a race. Issue #286.
+        self._given_up: set[RequestId] = set()
         self.lock: anyio.Lock = anyio.Lock()
 
     @property
@@ -407,6 +425,7 @@ class BuildQueue:
         scheduler_request_id: RequestId | None = None,
         derived_paths_for_request: set[DerivedPath] | None = None,
         from_goal_path: bool = False,
+        goal_request_id: RequestId | None = None,
         options: SetOptionsRequest | None = None,
     ) -> tuple[BuildId, asyncio.Future[BuildDerivationResponse]]:
         """Add a build to the queue (deduplicates if already present).
@@ -435,6 +454,8 @@ class BuildQueue:
                 # that let go in that moment brought the count to zero.
                 if from_goal_path:
                     existing.goal_holders += 1
+                    if goal_request_id is not None:
+                        existing.goal_request_ids.add(goal_request_id)
                 if scheduler_request_id is not None:
                     existing.scheduler_request_ids.add(scheduler_request_id)
                     if derived_paths_for_request:
@@ -464,6 +485,8 @@ class BuildQueue:
             build.from_goal_path = from_goal_path
             if from_goal_path:
                 build.goal_holders += 1
+                if goal_request_id is not None:
+                    build.goal_request_ids.add(goal_request_id)
             self.next_id += 1
             self._queue.append(build)
             self._by_path[drv_path] = build
@@ -580,6 +603,7 @@ class BuildQueue:
                         return
                     b.finished_at = time.monotonic()
                     b.future.set_result(response)
+                    self._note_a_request_that_gave_up(b, response.result.status)
                     log.info("build_completed", build_id=build_id)
 
                     metrics.QUEUE_SIZE.labels(status="building").dec()
@@ -612,6 +636,7 @@ class BuildQueue:
                         ),
                     )
                     b.future.set_result(response)
+                    self._note_a_request_that_gave_up(b, response.result.status)
                     log.info("build_failed", build_id=build_id, error_msg=error_msg)
 
                     if b.is_building:
@@ -624,8 +649,102 @@ class BuildQueue:
                     return
         raise ValueError(f"Build {build_id} not found")
 
-    def _cancel_locked(self, build: QueuedBuild, error_msg: str) -> None:
-        """Cancel a queued build while ``self.lock`` is held."""
+    def _note_a_request_that_gave_up(self, build: QueuedBuild, status: int) -> None:
+        """Record each goal system that this failure ends. Call it under the lock.
+
+        **A request stops at its first failed build, unless it set
+        `keep-going`.** `Worker::removeGoal` at `worker.cc:173` clears
+        `topGoals` then, and `Worker::run` leaves its loop, so Nix starts
+        nothing further for that request.
+
+        pynixd cannot copy the mechanism, because its goals are coroutines and
+        the request learns of the failure several awaits later. It copies the
+        *decision* instead, and it takes it here, where the failure first
+        becomes a fact. `Scheduler.execute_build` calls `complete` and then
+        `trigger`, so this runs before the scheduling pass that would give the
+        freed slot to the next build. Issue #286.
+
+        The option set is the one of the client that made the build, which is
+        the same set `_local_slot_is_full` reads. A build with no options is
+        one that pynixd made itself, and it ends no request.
+        """
+        if BuildResultStatus(status).is_success:
+            return
+        options = build.options
+        if options is None or options.keep_going:
+            return
+        self._given_up |= build.goal_request_ids
+
+    def nobody_wants(self, build: QueuedBuild) -> bool:
+        """Has every goal system that wanted *build* already given up?
+
+        This is the question `Scheduler._assign_to_stores` asks before it hands
+        out a build slot. It is a fact and not a race: the failure that ends a
+        request is recorded by `complete` under this lock, and the scheduling
+        pass runs after `trigger`.
+
+        **A build that a second, live request also wants is still wanted.**
+        That is the property `AGENTS.md` states -- a build of pynixd serves
+        every client that asked for it -- and the subset test is what keeps
+        it. A stale entry in `goal_request_ids` can only make the answer
+        False, which runs the build.
+
+        A build that no goal system asked for answers False, because the set
+        is empty and every set contains the empty set. Such a build belongs to
+        `build_derived_paths` or to pynixd itself, and no request ends it.
+        """
+        return bool(build.goal_request_ids) and build.goal_request_ids <= self._given_up
+
+    async def cancel_unwanted(self, build_id: BuildId) -> None:
+        """End a build that no live request wants, and answer everyone waiting.
+
+        **Skipping such a build is not enough, and leaving it pending
+        deadlocks.** A build of a request that gave up can still have a goal
+        of that request awaiting its future: `_realise_input_derivations`
+        waits for the input goals of a root, and the root has not answered
+        yet, so `let_go_of_every_build` has not run. `main:build` measured it
+        -- build 12 of `nix build -f fod-failing.nix -L x4` was skipped, never
+        cancelled and never completed, and the whole test hit its 300 s cap.
+
+        Resolving the future is what breaks that: the goal reads a failure,
+        the root fails with it, the request answers, and `let_go` then finds
+        nothing left to do. Nix reaches the same end differently --
+        `Goal::amDone` at `goal.cc:242` drops every waitee that is left when
+        one fails and `keep-going` is off, so those derivations are not built
+        either. Issue #286.
+        """
+        async with self.lock:
+            build = self._by_id.get(build_id)
+            if build is None or build.is_done:
+                return
+            # **The client hears nothing about this build.** Nix hears nothing
+            # either: the waitees that `Goal::amDone` drops are simply not
+            # built, and no goal reports them. `build.sh:167` counts the
+            # `error:` lines of the run and expects one, and a reason here
+            # made it three -- one for x1, which really failed, and one each
+            # for x2 and x3, which this cancelled.
+            self._cancel_locked(build, "", log_reason="the request that wanted it stopped")
+
+    async def forget_request(self, request_id: RequestId) -> None:
+        """Drop *request_id* from the give-up set, once it holds no build.
+
+        `GoalEngine.let_go_of_every_build` calls this after it gives every
+        reference back, and the order matters: a call before the last `let_go`
+        would let a pass assign a build that the request no longer wants.
+        """
+        async with self.lock:
+            self._given_up.discard(request_id)
+
+    def _cancel_locked(self, build: QueuedBuild, error_msg: str, *, log_reason: str | None = None) -> None:
+        """Cancel a queued build while ``self.lock`` is held.
+
+        *error_msg* reaches the client, through
+        `EnsureDerivedPathGoal._tell_the_client_it_failed`, which writes a
+        block for a goal that another goal waits for. **An empty one writes
+        nothing**, because that method guards on the text being there, and
+        *log_reason* then keeps the reason in the log line where a person
+        reading a run can still find it.
+        """
         build.finished_at = time.monotonic()
         if build.build_task is not None and not build.build_task.done():
             build.build_task.cancel()
@@ -644,7 +763,7 @@ class BuildQueue:
             build.future.set_result(response)
         # The reason belongs in the line, because two roads reach this
         # method: a client that disconnected, and a goal system that let go.
-        log.info("build_cancelled", build_id=build.build_id, reason=error_msg)
+        log.info("build_cancelled", build_id=build.build_id, reason=log_reason or error_msg)
 
         if build.is_building:
             metrics.QUEUE_SIZE.labels(status="building").dec()

@@ -36,7 +36,7 @@ from pynixd.serde import (
 )
 from pynixd.serde.auth import Role
 from pynixd.serde.context import WriteContext
-from pynixd.serde.ids import BuildId
+from pynixd.serde.ids import BuildId, RequestId
 from pynixd.store.pool import ConnectionPool
 from pynixd.wire import PROTOCOL_VERSION, STDERR_LAST, BytesReader, BytesWriter
 
@@ -203,9 +203,10 @@ class FakeScheduler:
         self,
         request: BuildDerivationRequest,
         from_goal_path: bool = False,
+        goal_request_id: RequestId | None = None,
         options: SetOptionsRequest | None = None,
     ) -> tuple[BuildId, asyncio.Future[BuildDerivationResponse]]:
-        del request, from_goal_path
+        del request, from_goal_path, goal_request_id
         self.options = options
         self.future = asyncio.get_running_loop().create_future()
         self.started.set()
@@ -220,6 +221,9 @@ class FakeCtx:
 class FakeEngine:
     def __init__(self, scheduler: FakeScheduler) -> None:
         self.ctx = FakeCtx(scheduler)
+        # The engine is the request, as far as the build queue is concerned.
+        # Issue #286.
+        self.request_id = RequestId(1)
         self.held_builds: list[BuildId] = []
 
     def note_a_held_build(self, build_id: BuildId) -> None:

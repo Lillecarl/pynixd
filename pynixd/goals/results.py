@@ -29,6 +29,12 @@ class GoalResult:
     #: `BuildPathsWithResultsGoal` reads it to decide which root of a request
     #: carries the answer. Issue #196.
     failing_derivation: StorePath | None = None
+    #: Whether pynixd ended this build because the request that wanted it had
+    #: already stopped. Such a result is not an answer: the client asked for
+    #: the derivation, pynixd chose not to build it, and Nix reports nothing
+    #: for the waitees that `Goal::amDone` drops. `_run_the_root_goals` reads
+    #: it and leaves the place of that root empty. Issue #286.
+    abandoned: bool = False
 
     def copy(self) -> GoalResult:
         """Return a shallow copy of this GoalResult with independent collections."""
@@ -38,6 +44,7 @@ class GoalResult:
             produced_paths=set(self.produced_paths),
             dynamic_paths=dict(self.dynamic_paths),
             failing_derivation=self.failing_derivation,
+            abandoned=self.abandoned,
         )
 
     def with_dynamic_outputs(self, drv_path: StorePath) -> GoalResult:

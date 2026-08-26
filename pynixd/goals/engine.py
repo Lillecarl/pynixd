@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 from typing import TYPE_CHECKING, Any
 
@@ -18,7 +19,7 @@ from ..serde import (
     QueryMissingRequest,
     QueryMissingResponse,
 )
-from ..serde.ids import LOCAL_STORE_ID
+from ..serde.ids import LOCAL_STORE_ID, RequestId
 from .build_derivation import BuildDerivationGoal
 from .ensure import EnsureDerivedPathGoal
 from .keys import BuildDerivationKey, EnsureDerivedPathKey, SubstitutePathKey
@@ -37,6 +38,9 @@ if TYPE_CHECKING:
     from ..store import Store
     from ..store_path import StorePath
     from .goal import Goal
+
+_REQUEST_IDS = itertools.count(1)
+"""Names the live goal systems apart, for `BuildQueue`. Issue #286."""
 
 
 def _build_failure_message(failed: list[Any]) -> str:
@@ -62,6 +66,12 @@ class GoalEngine:
 
     def __init__(self, ctx: PynixdContext) -> None:
         self.ctx = ctx
+        # What the build queue calls this request. `proxy.py` makes one engine
+        # for one request, so the engine *is* the request, and the queue needs
+        # a name for it to answer "does any live request still want this
+        # build". A counter is enough: the queue compares the names of live
+        # engines and nothing else. Issue #286.
+        self.request_id = RequestId(next(_REQUEST_IDS))
         self._lock = anyio.Lock()
         self._goals: dict[Any, Goal[Any]] = {}
         self.substitution_import_limiter = anyio.Semaphore(4)
@@ -105,6 +115,11 @@ class GoalEngine:
             return
         for build_id in held:
             await scheduler.queue.let_go(build_id)
+        # After the loop, and not before it. `nobody_wants` reads this set, so
+        # forgetting the request while it still held a build would let a
+        # scheduling pass assign a build that this request no longer wants.
+        # Issue #286.
+        await scheduler.queue.forget_request(self.request_id)
 
     async def subscribe_build(self, build_id: BuildId, client: ClientConn) -> bool:
         """Subscribe *client* to real-time log output for the given *build_id*."""

@@ -124,6 +124,7 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
         build_id, future = await self.engine.ctx.scheduler.build_derivation(
             self.request,
             from_goal_path=True,
+            goal_request_id=self.engine.request_id,
             options=options,
         )
         # `from_goal_path` made the queue take a reference for this request,
@@ -190,6 +191,12 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
             result=response.result,
             resolved_outputs=resolved,
             produced_paths=produced,
+            # `BuildQueue.cancel_unwanted` is the only failure that carries no
+            # message, and it says the request that wanted this build had
+            # already stopped. The mark travels up so the request leaves the
+            # place of that root empty rather than reporting a build it chose
+            # not to run. Issue #286.
+            abandoned=not result_succeeded(response.result) and not response.result.error_msg,
         )
 
     async def _wait_for_local_paths(self, paths: set[StorePath]) -> None:

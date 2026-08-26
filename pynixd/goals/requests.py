@@ -218,6 +218,20 @@ class BuildPathsWithResultsGoal(ExecutionGoal[BuildPathsWithResultsResponse]):
                     # lines of the whole run. Issue #196.
                     await goals[index].unsubscribe(self.client)
                     return
+                if result.abandoned:
+                    # pynixd chose not to run this build, because the request
+                    # had already stopped. That is not an answer, and Nix
+                    # reports nothing for the waitees it drops. Without this
+                    # the cancellation raced the failure that caused it, and
+                    # `build.sh:167` read two `error:` lines where it asserts
+                    # one. Issue #286.
+                    log.debug(
+                        "root_goal_abandoned_by_the_queue",
+                        index=index,
+                        derived_path=str(goals[index].derived_path),
+                    )
+                    await goals[index].unsubscribe(self.client)
+                    continue
                 if self._another_root_carries_this_failure(result, index, goals):
                     log.debug(
                         "root_goal_answered_by_another_root",

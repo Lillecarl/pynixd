@@ -164,6 +164,7 @@ class Scheduler:
         scheduler_request_id: RequestId | None = None,
         derived_paths_for_request: set[DerivedPath] | None = None,
         from_goal_path: bool = False,
+        goal_request_id: RequestId | None = None,
         options: SetOptionsRequest | None = None,
     ) -> tuple[BuildId, asyncio.Future[BuildDerivationResponse]]:
         """Add a build to the queue and trigger the scheduler."""
@@ -184,6 +185,7 @@ class Scheduler:
             scheduler_request_id=scheduler_request_id,
             derived_paths_for_request=derived_paths_for_request,
             from_goal_path=from_goal_path,
+            goal_request_id=goal_request_id,
             options=options,
         )
         t_enqueue = time.monotonic()
@@ -320,6 +322,28 @@ class Scheduler:
 
             # Check if another pass already assigned this build
             if build.is_building:
+                continue
+
+            # **A build that no live request wants does not take a slot.**
+            # This pass runs from the completion of the build that just
+            # failed, so without it the freed slot of `-j1` goes to the next
+            # build of a request that has already stopped. `main:build`
+            # measured 48 us between the goal system deciding and that build
+            # reaching the daemon, which is a race and not a margin.
+            #
+            # `BuildQueue.complete` writes the fact under its own lock and
+            # `Scheduler.execute_build` triggers this pass afterwards, so the
+            # answer is already there to read.
+            #
+            # **It ends the build rather than leaving it pending.** A goal of
+            # the same request can still be waiting for it -- an input of a
+            # root that has not answered -- and that root is what runs
+            # `let_go`, so a build left pending waits for a release that waits
+            # for the build. `cancel_unwanted` holds the measurement.
+            # Issue #286.
+            if self.queue.nobody_wants(build):
+                log.debug("build_wanted_by_nobody", build_id=build.build_id)
+                await self.queue.cancel_unwanted(build.build_id)
                 continue
 
             # Standard remote backend assignment
