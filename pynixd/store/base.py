@@ -186,6 +186,21 @@ class Store(ABC):
         """Retrieve a cached ValidPathInfo entry, or None."""
         return self.path_info_cache.get(str(path))
 
+    def forget_path_info(self, path: object) -> None:
+        """Drop the cached entry for *path*, because something changed it.
+
+        **A cache that nothing invalidates answers with the past.** This one
+        has a 300 s TTL, and an operation that changes what `QueryPathInfo`
+        returns has to call this or the store keeps answering with the value
+        from before its own write. `nix-daemon` holds no such cache and cannot
+        have the fault, so every case of it is a divergence.
+
+        `AddSignatures` and `SignPathInfo` are the operations that do it
+        today: `nix store sign` used to succeed and `nix path-info` then
+        reported no signature for the next five minutes.
+        """
+        self.path_info_cache.pop(str(path), None)
+
     # ── Executor infrastructure ─────────────────────────────────────
 
     @classmethod

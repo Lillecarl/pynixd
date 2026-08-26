@@ -713,8 +713,15 @@ class DaemonStore(Store):
         return await self.call(request, client=client, suppress_last=suppress_last)
 
     async def add_signatures(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
-        """AddSignatures (op 37) — delegate to daemon."""
-        return await self.call(request, client=client, suppress_last=suppress_last)
+        """AddSignatures (op 37) — delegate to daemon, and forget what it changed.
+
+        The cached `ValidPathInfo` of this path holds the signatures from
+        before this call, and `QueryPathInfo` answers from that cache for
+        300 s. `forget_path_info` says why that is a divergence.
+        """
+        response = await self.call(request, client=client, suppress_last=suppress_last)
+        self.forget_path_info(request.path)
+        return response
 
     async def nar_from_path(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """NarFromPath (op 38) — delegate to daemon."""
@@ -877,7 +884,9 @@ class DaemonStore(Store):
         """SignPathInfo (op 107) — sign with local keys and relay to daemon."""
 
         if "SignPathInfo" in self.features:
-            return await self.call(request, client=client, suppress_last=suppress_last)
+            response = await self.call(request, client=client, suppress_last=suppress_last)
+            self.forget_path_info(request.info.path)
+            return response
 
         # Decompose: sign locally with pynixd keys, then call AddSignatures on daemon
         from ..serde.add_signatures import AddSignaturesRequest
@@ -904,11 +913,14 @@ class DaemonStore(Store):
             name, _, sig_val = sig_str.partition(":")
             info.info.sigs.add(Signature(name=name, signature=sig_val))
 
+        # `self.call` and not `self.add_signatures`, so this path does not get
+        # the invalidation of that method and states it here instead.
         await self.call(
             AddSignaturesRequest(path=info.path, sigs=info.info.sigs),
             client=client,
             suppress_last=suppress_last,
         )
+        self.forget_path_info(info.path)
         return SignPathInfoResponse(info=info)
 
     async def probe_systems(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
