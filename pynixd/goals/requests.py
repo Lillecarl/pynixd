@@ -44,6 +44,20 @@ async def _the_result_unless_it_stops(goal: EnsureDerivedPathGoal, stop: anyio.E
     for the same derivation, and one client that gave up must not take the
     work of the others. So this stops waiting and leaves the build alone.
 
+    NIX-DEVIATION (#206): `Worker::run` at `worker.cc:352` leaves its loop
+    when `topGoals` is empty, and the destructor of the goals that are left
+    kills each builder. pynixd keeps every such build and ends it in
+    `BuildQueue.let_go`, when the **last** goal system stops waiting for it.
+    The difference is worth its cost because a build here is shared: a second
+    client that asked for the same derivation still wants it, and killing it
+    for the first client takes the work of the second. The cost is the builds
+    that nobody wants and that pynixd runs anyway. Measure those to reverse
+    the decision. `nix build -f fod-failing.nix -j1 -L` writes one
+    `building '...'` line through `nix-daemon` and three through pynixd,
+    measured on Nix 2.34.8: the slot that x1 frees reaches x2 and then x3
+    before the request that abandoned both lets them go. No assertion of
+    `build.sh` reads those lines, so `main:build` passes either way.
+
     `main:build` measured what the waiting costs. `nix flake check
     ./cancelled-builds -j2` builds `fast-fail` and `slow` together, and
     `slow` blocks on a fifo. Nix answers as soon as `fast-fail` fails and
