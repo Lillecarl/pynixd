@@ -18,6 +18,8 @@ from pynixd.serde import (
     BuildMode,
     BuildResult,
     BuildResultStatus,
+    DerivationOutput,
+    IsValidPathResponse,
     SetOptionsRequest,
     StorePath as SerdeStorePath,
 )
@@ -27,6 +29,9 @@ from pynixd.wire import BytesWriter
 if TYPE_CHECKING:
     from pynixd.context import PynixdContext
     from pynixd.goals.engine import GoalEngine
+
+OUTPUT_PATH = "/nix/store/00000000000000000000000000000002-test"
+"""The one output that the derivation of these tests declares."""
 
 
 class FakeScheduler:
@@ -104,3 +109,82 @@ async def test_build_derivation_goal_unsubscribes_late_subscriber() -> None:
 
     assert engine.subscribed == [(BuildId(1), client)]
     assert engine.unsubscribed == [(BuildId(1), client)]
+
+
+class CountingStore:
+    """A local store that answers `IsValidPath` and counts every question."""
+
+    def __init__(self, *, valid: bool) -> None:
+        self.valid = valid
+        self.questions = 0
+
+    async def execute(self, request: object) -> IsValidPathResponse:
+        del request
+        self.questions += 1
+        return IsValidPathResponse(valid=self.valid)
+
+
+def _request_with_an_output() -> BuildDerivationRequest:
+    """A derivation that declares an output path, so the wait has work to do."""
+    return BuildDerivationRequest(
+        drv_path=SerdeStorePath(path="/nix/store/00000000000000000000000000000001-test.drv"),
+        derivation=BasicDerivation(
+            platform="x86_64-linux",
+            builder="",
+            outputs={"out": DerivationOutput(path=OUTPUT_PATH)},
+        ),
+        build_mode=BuildMode.NORMAL,
+    )
+
+
+async def _run_with(status: BuildResultStatus, store: CountingStore) -> None:
+    """Run one build goal to its answer, with *store* as the local store."""
+    scheduler = FakeScheduler()
+    engine = FakeEngine(scheduler)
+    engine.ctx.local_store = store  # type: ignore[misc] -- SimpleNamespace, and the goal only calls execute
+    goal = BuildDerivationGoal(cast("GoalEngine", engine), _request_with_an_output())
+
+    task = asyncio.create_task(goal.result())
+    await scheduler.started.wait()
+    future = scheduler.future
+    if future is None:
+        raise RuntimeError("scheduler did not create a build future")
+    future.set_result(BuildDerivationResponse(result=BuildResult(status=status)))
+    await task
+
+
+@pytest.mark.anyio
+async def test_a_failed_build_asks_the_store_nothing() -> None:
+    """A build that failed produced nothing, so it waits for nothing.
+
+    `_wait_for_local_paths` polls for 2.0 s at 0.05 s, and `produced` holds
+    the path that the derivation *declares*, filled before anything reads the
+    status. So a failure waited the whole deadline for a path that the failure
+    means cannot appear.
+
+    Measured through the functional suite, before the correction:
+    `nix build -f fod-failing.nix -j1 -L` at `build.sh:164` took 2.0498 s
+    between `build_completed` for x1 and the moment its request acted on the
+    failure, and the gap held 226 `IsValidPath` queries and nothing else.
+    Issue #287, and issue #286 holds what the delay costs the scheduler.
+    """
+    store = CountingStore(valid=False)
+
+    await _run_with(BuildResultStatus.PERMANENT_FAILURE, store)
+
+    assert store.questions == 0
+
+
+@pytest.mark.anyio
+async def test_a_successful_build_still_waits_for_its_output() -> None:
+    """The wait exists for a real reason, and a success keeps it.
+
+    The local store registers an output a moment after the build reports it,
+    so a success that asks once and gives up reads a missing output. Issue
+    #287 narrows the wait to the successes; it does not remove it.
+    """
+    store = CountingStore(valid=True)
+
+    await _run_with(BuildResultStatus.BUILT, store)
+
+    assert store.questions == 1

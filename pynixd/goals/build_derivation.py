@@ -16,7 +16,7 @@ from ..serde import (
 )
 from ..store_path import StorePath
 from .goal import ExecutionGoal
-from .results import GoalResult, goal_failure
+from .results import GoalResult, goal_failure, result_succeeded
 
 if TYPE_CHECKING:
     from ..connection import ClientConn
@@ -169,7 +169,16 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
                 resolved[output_name] = path
                 produced.add(path)
 
-        await self._wait_for_local_paths(produced)
+        # **A build that failed produced nothing, so it waits for nothing.**
+        # `produced` holds the path that the derivation *declares*, which the
+        # loop above fills before anything reads the status, so the set is
+        # never empty and the wait always ran. A failure means that path
+        # cannot appear, so the wait ended at its deadline every time.
+        # Measured: 2.0498 s for each failed build of
+        # `nix build -f fod-failing.nix -j1 -L`, holding 226 `IsValidPath`
+        # queries and nothing else. Issue #287.
+        if result_succeeded(response.result):
+            await self._wait_for_local_paths(produced)
 
         status = response.result.status
         if not produced and status == BuildResultStatus.BUILT:
