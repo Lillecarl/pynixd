@@ -14,22 +14,18 @@ they are pulled automatically.
 from __future__ import annotations
 
 import asyncio
-import json
-import shutil
 import time
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import anyio
 import structlog
-from anyio import to_thread
 
 from . import metrics
 from .allocator import BuildAllocator, RankedStore, TelemetryStoreRanker
 from .build_queue import BuildQueue, QueuedBuild
 from .exceptions import BackendError, InfrastructureError, ResourceExhaustedError
-from .serde import LogNext, QueryValidPathsRequest
-from .serde import StorePath as SerdeStorePath
+from .serde import LogNext, QueryValidPathsRequest, StorePath as SerdeStorePath
+from .serde.ids import LOCAL_STORE_ID
 from .store import DaemonStore, LocalDBStore
 from .store.transfer import stream_paths_store_to_store
 from .store_path import StorePath
@@ -44,6 +40,7 @@ if TYPE_CHECKING:
     from .serde import (
         BuildDerivationRequest,
         BuildDerivationResponse,
+        SetOptionsRequest,
     )
     from .serde.aliases import StorePathSet
     from .serde.ids import BuildId, RequestId, StoreId
@@ -167,6 +164,8 @@ class Scheduler:
         scheduler_request_id: RequestId | None = None,
         derived_paths_for_request: set[DerivedPath] | None = None,
         from_goal_path: bool = False,
+        goal_request_id: RequestId | None = None,
+        options: SetOptionsRequest | None = None,
     ) -> tuple[BuildId, asyncio.Future[BuildDerivationResponse]]:
         """Add a build to the queue and trigger the scheduler."""
         t0 = time.monotonic()
@@ -186,6 +185,8 @@ class Scheduler:
             scheduler_request_id=scheduler_request_id,
             derived_paths_for_request=derived_paths_for_request,
             from_goal_path=from_goal_path,
+            goal_request_id=goal_request_id,
+            options=options,
         )
         t_enqueue = time.monotonic()
         self.trigger()
@@ -238,9 +239,9 @@ class Scheduler:
             self._update_store_metrics()
             return
 
-        schedulable, override_in_flight = self._filter_schedulable(pending)
+        schedulable, override_in_flight, running_builds = self._filter_schedulable(pending)
 
-        waiting_slot = await self._assign_to_stores(schedulable, override_in_flight)
+        waiting_slot = await self._assign_to_stores(schedulable, override_in_flight, running_builds)
 
         self._update_store_metrics()
 
@@ -257,12 +258,22 @@ class Scheduler:
     def _filter_schedulable(
         self,
         pending: list[QueuedBuild],
-    ) -> tuple[list[QueuedBuild], dict[StoreId, int]]:
+    ) -> tuple[list[QueuedBuild], dict[StoreId, int], dict[StoreId, int]]:
         """Triage pending builds into schedulable.
 
-        Returns (schedulable, override_in_flight).
+        Returns (schedulable, override_in_flight, running_builds).
         override_in_flight accounts for builds assigned this cycle but not yet
         reflected in ``store.in_flight``.
+
+        **`running_builds` counts builds, and `override_in_flight` counts
+        connections.** `DaemonStore.in_flight` at `store/daemon.py:221` answers
+        `pool.active_connections`, so a single `QueryPathInfo` raises it. The
+        ranker wants that number, because a busy store is a poor place to send
+        more work. `max-jobs` wants the other one, and the two are not
+        interchangeable: `_local_slot_is_full` read `override_in_flight` first,
+        so one active connection filled the single slot of `-j1` and every
+        build waited for a completion that no build was running to give.
+        Issue #196.
         """
         schedulable: list[QueuedBuild] = []
 
@@ -287,12 +298,13 @@ class Scheduler:
             # discovered and pulled during execution.
             schedulable.append(build)
 
-        return schedulable, override_in_flight
+        return schedulable, override_in_flight, assigned_count
 
     async def _assign_to_stores(
         self,
         schedulable: list[QueuedBuild],
         override_in_flight: dict[StoreId, int],
+        running_builds: dict[StoreId, int],
     ) -> list[QueuedBuild]:
         """Assign schedulable builds to backends.
 
@@ -310,6 +322,28 @@ class Scheduler:
 
             # Check if another pass already assigned this build
             if build.is_building:
+                continue
+
+            # **A build that no live request wants does not take a slot.**
+            # This pass runs from the completion of the build that just
+            # failed, so without it the freed slot of `-j1` goes to the next
+            # build of a request that has already stopped. `main:build`
+            # measured 48 us between the goal system deciding and that build
+            # reaching the daemon, which is a race and not a margin.
+            #
+            # `BuildQueue.complete` writes the fact under its own lock and
+            # `Scheduler.execute_build` triggers this pass afterwards, so the
+            # answer is already there to read.
+            #
+            # **It ends the build rather than leaving it pending.** A goal of
+            # the same request can still be waiting for it -- an input of a
+            # root that has not answered -- and that root is what runs
+            # `let_go`, so a build left pending waits for a release that waits
+            # for the build. `cancel_unwanted` holds the measurement.
+            # Issue #286.
+            if self.queue.nobody_wants(build):
+                log.debug("build_wanted_by_nobody", build_id=build.build_id)
+                await self.queue.cancel_unwanted(build.build_id)
                 continue
 
             # Standard remote backend assignment
@@ -334,6 +368,13 @@ class Scheduler:
 
             if ranked or local_is_fallback:
                 rs = next(iter(ranked)) if ranked else RankedStore(local_store.store_id, 0.0, local_store)
+                if rs.store_id == local_store.store_id and self._local_slot_is_full(
+                    build,
+                    running_builds,
+                    assigned_this_pass,
+                ):
+                    waiting_slot.append(build)
+                    continue
                 log.debug(
                     "build_assigned_to_store",
                     build_id=build.build_id,
@@ -342,6 +383,10 @@ class Scheduler:
                 )
                 metrics.QUEUE_SIZE.labels(status="pending").dec()
                 metrics.QUEUE_SIZE.labels(status="building").inc()
+                # Named here, and not in `execute_build` alone. The count of
+                # running builds reads this field, and a task that has not
+                # started yet would otherwise carry no store and go uncounted.
+                build.assigned_store_id = rs.store_id
                 build.build_task = asyncio.create_task(
                     self.execute_build(build, rs.store),
                 )
@@ -359,6 +404,57 @@ class Scheduler:
                 waiting_slot.append(build)
 
         return waiting_slot
+
+    def _local_slot_is_full(
+        self,
+        build: QueuedBuild,
+        running_builds: Mapping[StoreId, int],
+        assigned_this_pass: Mapping[StoreId, int],
+    ) -> bool:
+        """Answer whether `max-jobs` of the client leaves no local slot.
+
+        This is `Worker::waitForBuildSlot` at `worker.cc:261`, which counts
+        `getNrLocalBuilds()` against `settings.maxBuildJobs` and starts no
+        further local build until one ends. A build on a backend costs no
+        slot, and this method reaches only the local store for that reason.
+
+        **The option set of the build decides, and not a setting of pynixd.**
+        `QueuedBuild.options` holds the set of the client that made the build,
+        which is the same rule that `store.build_conn` takes. A build with no
+        options is one that pynixd made itself, and it takes no limit: the
+        request behind it named none.
+
+        `main:build` of the functional suite reads this. It builds four
+        fixed-output derivations that give the wrong hash, with `-j1`, and it
+        asserts one `error:` line. `_build_slots` of `goals/requests.py`
+        limited the root goals of one request already, and that is not the
+        whole fan-out: a root goal realises the input derivations of its
+        derivation at the same time, and each one is a separate build. Three
+        builds ran together under `-j1` for that reason. Issue #196.
+
+        **`running_builds` counts builds, and not connections.**
+        `DaemonStore.in_flight` answers `pool.active_connections`, which one
+        `QueryPathInfo` raises. This method read that number first, so a
+        single query filled the one slot of `-j1`, every build waited, and no
+        build was running to end and trigger the next pass. The `ca` suite
+        went from about a minute to more than ten. `_filter_schedulable`
+        answers the build count beside it.
+        """
+        options = build.options
+        if options is None:
+            return False
+        slots = max(1, int(options.max_build_jobs))
+        local_id = self.local_store.store_id
+        running = running_builds.get(local_id, 0) + assigned_this_pass.get(local_id, 0)
+        if running < slots:
+            return False
+        log.debug(
+            "build_waits_for_a_local_slot",
+            build_id=build.build_id,
+            running=running,
+            max_build_jobs=slots,
+        )
+        return True
 
     def _has_compatible_store(
         self,
@@ -414,19 +510,24 @@ class Scheduler:
                     s.cpu_util.utilization,
                 )
 
-    async def validate_known_paths(self, paths: StorePathSet) -> None:
-        """Query paths against the local store via QueryValidPaths."""
-        if not paths:
+    @staticmethod
+    async def _say_where_it_builds(build: QueuedBuild, store: DaemonStore) -> None:
+        """Name the backend, but only when the backend is not the local one.
+
+        Nix writes `building '<drv>'...` for a local build, and `building
+        '<drv>' on '<machine>'...` for a remote one. The location is news only
+        in the second case, and the backend daemon writes the first line
+        itself, which pynixd forwards to the client.
+
+        pynixd wrote `pynixd: starting build on local at <timestamp>` for every
+        build, and two faults came from that. The extra line broke
+        `main:cli-characterisation`, which compares the output of a command
+        against a recorded `.exp` file. The timestamp also made the output
+        different on each run, so no two recordings of one build could agree.
+        """
+        if store.store_id == LOCAL_STORE_ID:
             return
-        try:
-            await self.local_store.execute(
-                QueryValidPathsRequest(
-                    paths={SerdeStorePath(path=str(path)) for path in paths},  # pyright: ignore[reportUnhashable]
-                    substitute=0,
-                ),
-            )
-        except (BackendError, OSError, ConnectionError):
-            log.exception("validate_known_paths_failed", count=len(paths))
+        await build.post_log_and_fanout(LogNext(text=f"pynixd: building on {store.store_id}\n"))
 
     async def execute_build(self, build: QueuedBuild, store: DaemonStore) -> None:
         """Execute build on a store, handling inputs and outputs.
@@ -440,11 +541,9 @@ class Scheduler:
         build_resp: BuildDerivationResponse | None = None
         completed = False
         try:
-            async with store.build_conn() as conn:
+            async with store.build_conn(build.options) as conn:
                 await self._prepare_build(build, store, conn)
-                await build.post_log_and_fanout(
-                    LogNext(text=f"pynixd: starting build on {store.store_id} at {datetime.now(UTC).isoformat()}\n")
-                )
+                await self._say_where_it_builds(build, store)
                 build_resp = await self._execute(build, store, conn)
                 if build_resp.result.status == 0:
                     await self.queue.complete(build.build_id, build_resp)
@@ -540,13 +639,24 @@ class Scheduler:
         if build.wait_time is not None:
             metrics.QUEUE_WAIT_DURATION.observe(build.wait_time)
 
-        resp = await conn.call(build.request)
+        resp = await conn.call(build.request, options=build.options)
         if resp.logs.messages:
+            # The count, so a run can tell one fan-out of many messages from
+            # many fan-outs of one message.
+            log.debug("build_logs_fanned_out", build_id=build.build_id, count=len(resp.logs.messages))
             for msg in resp.logs.messages:
                 await build.post_log_and_fanout(msg)
-        if resp.result.status != 0 and resp.result.error_msg:
-            for line in resp.result.error_msg.split("\n"):
-                await build.post_log_and_fanout(LogNext(text=f"pynixd: {line}\n"))
+        # **A failure of the build itself gets no log line here.** The message
+        # travels in `BuildResult.error_msg`, and the goal that asked for the
+        # build decides what a reader sees. `Goal::amDone` at `goal.cc:214`
+        # takes the same decision: it logs the failure of a goal that another
+        # goal waits for, and it stays quiet for a goal at the top, because
+        # the caller reports that one.
+        #
+        # pynixd wrote one `pynixd: <line>` for each line of the message. A
+        # `BuildPathsWithResults` request then carried a log that `nix-daemon`
+        # does not send, and the client printed the same text twice. Issue
+        # #188.
         log.debug(
             "build_executed",
             build_id=build.build_id,
@@ -570,14 +680,17 @@ class Scheduler:
 
         # Pull outputs from remote store to local store
         ca_output_paths: StorePathSet = set()
-        if resp.result.built_outputs:
-            for realisation in resp.result.built_outputs.values():
+        # `realised_outputs` reads whichever of the two wire shapes the answer
+        # carried. Issue #162.
+        realised = resp.result.realised_outputs()
+        if realised:
+            for realisation in realised.values():
                 out_path = StorePath(str(realisation.out_path)) if realisation.out_path else StorePath("")
                 if out_path:
                     ca_output_paths.add(
                         out_path.with_store_prefix(),
                     )
-            build.ca_realisations = list(resp.result.built_outputs.values())
+            build.ca_realisations = list(realised.values())
 
         outputs = build.request.derivation.output_paths()
         static_paths = {p for p in outputs.values() if p != StorePath("")}
@@ -590,37 +703,54 @@ class Scheduler:
             count=len(all_output_paths),
         )
 
-        log.debug(
-            "output_paths_left_to_frontend_daemon",
-            count=len(all_output_paths),
-            store_id=store.store_id,
-        )
-        await self._direct_import_localdb_outputs(store, all_output_paths)
+        await self._record_build_stats(build, resp)
+        await self._pull_outputs(store, all_output_paths)
 
-        # Record build statistics
-        if isinstance(self.local_store, LocalDBStore):
-            pname = build.request.derivation.env.get("pname")
-            if pname:
-                started_at = build.started_at
-                if started_at is not None:
-                    duration = int((time.monotonic() - started_at) * 1000)
-                    await self.local_store.db.record_build_stats(
-                        pname=pname,
-                        platform=build.request.derivation.platform,
-                        derivation_json=build.request.derivation.to_stats_json(),
-                        cpu_user_us=resp.result.cpu_user.value if resp.result.cpu_user else None,
-                        cpu_system_us=resp.result.cpu_system.value if resp.result.cpu_system else None,
-                        duration_ms=duration,
-                    )
-                    expected = build.expected_duration
-                    log.info(
-                        "build_stats_recorded",
-                        pname=pname,
-                        platform=build.request.derivation.platform,
-                        expected_ms=expected,
-                        actual_ms=duration,
-                        error_pct=f"{(duration - expected) / expected * 100:.1f}" if expected else None,
-                    )
+    async def _record_build_stats(
+        self,
+        build: QueuedBuild,
+        resp: BuildDerivationResponse,
+    ) -> None:
+        """Write what this build cost, for the next build of the same package.
+
+        This runs before `_pull_outputs`, and both reasons are about what the
+        number means.
+
+        The scheduler reads it back through `get_build_stats_hint` to predict
+        how long a derivation takes, so the number has to measure the build
+        alone. Taken after the pull, it also held the time to copy the closure
+        from the backend to the local store, which depends on the size of the
+        outputs and on the network, and not on the builder.
+
+        A pull that fails also raises, and the statistics of a build that
+        already succeeded went with it. Issue #157 is the larger half of that:
+        the client is told the build succeeded before the pull runs.
+        """
+        if not isinstance(self.local_store, LocalDBStore):
+            return
+        pname = build.request.derivation.env.get("pname")
+        started_at = build.started_at
+        if not pname or started_at is None:
+            return
+
+        duration = int((time.monotonic() - started_at) * 1000)
+        await self.local_store.db.record_build_stats(
+            pname=pname,
+            platform=build.request.derivation.platform,
+            derivation_json=build.request.derivation.to_stats_json(),
+            cpu_user_us=resp.result.cpu_user.value if resp.result.cpu_user else None,
+            cpu_system_us=resp.result.cpu_system.value if resp.result.cpu_system else None,
+            duration_ms=duration,
+        )
+        expected = build.expected_duration
+        log.info(
+            "build_stats_recorded",
+            pname=pname,
+            platform=build.request.derivation.platform,
+            expected_ms=expected,
+            actual_ms=duration,
+            error_pct=f"{(duration - expected) / expected * 100:.1f}" if expected else None,
+        )
 
     async def _wait_for_local_paths(
         self,
@@ -657,77 +787,51 @@ class Scheduler:
 
             await anyio.sleep(0.05)
 
-    async def _direct_import_localdb_outputs(
+    async def _pull_outputs(
         self,
         store: DaemonStore,
         paths: StorePathSet,
     ) -> None:
-        if not paths or not isinstance(store, LocalDBStore) or not isinstance(self.local_store, LocalDBStore):
+        """Bring the outputs of a backend build into the local store.
+
+        The local store has to hold the paths, and a record of where they came
+        from is not enough. A client on a Unix socket never asks pynixd for a
+        NAR: `UDSRemoteStore::narFromPath` calls `Store::narFromPath`, which
+        reads the store directory through `LocalFSStore::getFSAccessor`. So
+        `nix copy --from unix://...` of a backend-built path reported "path
+        ... does not exist" and named the local store directory -- issue #160.
+
+        `ctx.output_locations` still holds, and it still answers for the
+        clients that do use the wire, such as `ssh-ng://` and the HTTP cache.
+        This is the transfer that path mapping cannot replace.
+
+        One route, over the wire, for every backend. A second route copied the
+        store directory and then the SQLite rows of the builder database
+        straight into the local one, when both ends were a `LocalDBStore`.
+        Issue #158 removed it, and it was wrong in four ways:
+
+        - No NAR was written and no hash was checked, so a truncated copy
+          registered as valid.
+        - The `Refs` copy carried only rows whose referrer was a new output,
+          and inserted with `INSERT OR IGNORE ... SELECT`. A reference whose
+          path had no row in the destination yet was dropped in silence.
+        - It wrote into a running daemon's database behind that daemon's back.
+        - It copied `ultimate` verbatim, which marked the local store as the
+          builder of a path it never built. Nix sets `ultimate` in
+          `unix/build/derivation-builder.cc` alone -- the local builder -- and
+          clears it on every copy. A distributed build leaves `ultimate =
+          false` in the store that receives the output, and the shortcut said
+          `true`.
+
+        `stream_paths_store_to_store` has none of those. It asks for the
+        closure, so a reference cannot go missing, and it hands each path to
+        the destination daemon, which hashes it and registers it itself.
+        """
+        if not paths:
             return
-        if store.store_path is None or self.local_store.store_path is None:
-            return
-
-        for path in paths:
-            src = store.store_path / str(path).lstrip("/")
-            dst = self.local_store.store_path / str(path).lstrip("/")
-            if not src.exists() and not src.is_symlink():
-                log.warning("direct_output_import_missing_source", path=str(path), store_id=store.store_id)
-                continue
-            if not dst.exists() and not dst.is_symlink():
-                await to_thread.run_sync(self._copy_store_path, src, dst)
-
-        paths_json = json.dumps([str(path) for path in paths])
-        async with store.db.acquire_conn() as src_db, self.local_store.db.acquire_conn() as dst_db:
-            rows_cursor = await src_db.execute(
-                """
-                    SELECT path, hash, registrationTime, narSize, deriver, ultimate, sigs, ca
-                    FROM ValidPaths
-                    WHERE path IN (SELECT value FROM json_each(?))
-                    """,
-                (paths_json,),
-            )
-            rows = await rows_cursor.fetchall()
-            for row in rows:
-                await dst_db.execute(
-                    """
-                        INSERT OR IGNORE INTO ValidPaths
-                            (path, hash, registrationTime, narSize, deriver, ultimate, sigs, ca)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                    row,
-                )
-
-            refs_cursor = await src_db.execute(
-                """
-                    SELECT referrer.path, reference.path
-                    FROM Refs r
-                    JOIN ValidPaths referrer ON r.referrer = referrer.id
-                    JOIN ValidPaths reference ON r.reference = reference.id
-                    WHERE referrer.path IN (SELECT value FROM json_each(?))
-                    """,
-                (paths_json,),
-            )
-            refs = await refs_cursor.fetchall()
-            for referrer, reference in refs:
-                await dst_db.execute(
-                    """
-                        INSERT OR IGNORE INTO Refs (referrer, reference)
-                        SELECT referrer.id, reference.id
-                        FROM ValidPaths referrer, ValidPaths reference
-                        WHERE referrer.path = ? AND reference.path = ?
-                        """,
-                    (referrer, reference),
-                )
-            await dst_db.commit()
-
-        log.info("direct_output_import_complete", count=len(paths), store_id=store.store_id)
-
-    @staticmethod
-    def _copy_store_path(src, dst) -> None:
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        if src.is_symlink():
-            dst.symlink_to(src.readlink())
-        elif src.is_dir():
-            shutil.copytree(src, dst, symlinks=True)
-        else:
-            shutil.copy2(src, dst)
+        log.debug(
+            "pull_outputs_streaming",
+            store_id=store.store_id,
+            count=len(paths),
+        )
+        await stream_paths_store_to_store(store, self.local_store, paths)

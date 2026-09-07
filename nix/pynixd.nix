@@ -25,6 +25,7 @@
   prometheus-client,
   anyio,
   uvloop,
+  nix-daemon-protocol,
 }:
 let
   overrides = {
@@ -57,7 +58,8 @@ pythonBuilder (finalAttrs: {
   build-system = [ hatchling ];
 
   dependencies = [
-    overrides.asyncssh
+    # overrides.asyncssh
+    asyncssh
     structlog
     aiohttp
     pyinstrument
@@ -74,6 +76,7 @@ pythonBuilder (finalAttrs: {
     prometheus-client
     anyio
     uvloop
+    nix-daemon-protocol
   ];
 
   nativeCheckInputs = [

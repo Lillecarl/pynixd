@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 import random
 import time
@@ -10,6 +9,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import anyio.to_thread
 import pytest
 import structlog
 
@@ -173,4 +173,4 @@ async def cleanup_extra_stores(pynixd_server: Server | tuple | None):
         store_path = getattr(store, "store_path", None)
         await actual_server.remove_store(sid)
         if store_path and str(store_path).startswith(str(SESSION_STORE_PREFIX)):
-            await asyncio.to_thread(rmtree_robust, store_path)
+            await anyio.to_thread.run_sync(rmtree_robust, store_path)

@@ -6,6 +6,14 @@
 
 A Nix daemon protocol proxy and distributed build cache implemented in Python using AsyncSSH. pynixd acts as an intermediary between Nix clients and remote builders, providing query caching, build deduplication, and intelligent scheduling across multiple build backends.
 
+## nanopynix umbrella
+
+`pynixd` is preparing to be the daemon-service project under the broader
+`nanopynix` Python-and-Nix umbrella. It remains a standalone package and Nix
+project while the integration shape is decided. The intended ownership boundary
+and staged convergence plan are documented in [pynixd in the nanopynix
+umbrella](docs/umbrella.md).
+
 ## Features
 
 - **Nix Daemon Protocol Proxy**: Implements the Nix daemon wire protocol over SSH, allowing Nix clients to connect and route builds to remote machines

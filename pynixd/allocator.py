@@ -227,8 +227,7 @@ class BuildAllocator:
         kept so the allocator can correctly match stores.
 
         This prevents sending unresolved CA/dynamic derivations to stores
-        (like Lix) whose builders don't support the corresponding protocol
-        operations.
+        whose builders don't support the corresponding protocol operations.
         """
 
         raw = build.request.derivation.env.get("requiredSystemFeatures", "")

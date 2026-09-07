@@ -15,7 +15,7 @@ import structlog
 from cachetools import TTLCache
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
+    from collections.abc import Iterable, Mapping, Set as AbstractSet
 
     from ..config import StoreSpecBase
     from ..connection import ClientConn, Connection
@@ -132,6 +132,26 @@ class Store(ABC):
         """Fetch and parse a .drv file from this store."""
         ...
 
+    async def add_text_to_store(self, name: str, text: str, references: AbstractSet[str]) -> str:
+        """Put a text file in this store, and answer the path it took.
+
+        `Store::addTextToStore` of Nix, which `writeDerivation` uses to put a
+        resolved derivation in the store. A store that cannot do this raises,
+        and the caller then keeps the derivation it has.
+        """
+        raise NotImplementedError(f"{type(self).__name__} cannot add a text file to its store")
+
+    async def retire_idle_connections(self) -> int:
+        """Close each connection to this store that nobody uses now.
+
+        A garbage collection calls this first. A worker of the daemon holds a
+        temporary root for each path that it took, and an idle connection
+        keeps that worker alive, so the collector frees nothing that passed
+        through pynixd. A store that pools no connection holds no such root
+        and answers zero. Issue #174.
+        """
+        return 0
+
     # ── Signing ─────────────────────────────────────────────────────
 
     @property
@@ -165,6 +185,21 @@ class Store(ABC):
     def get_path_info(self, path: object) -> ValidPathInfo | None:
         """Retrieve a cached ValidPathInfo entry, or None."""
         return self.path_info_cache.get(str(path))
+
+    def forget_path_info(self, path: object) -> None:
+        """Drop the cached entry for *path*, because something changed it.
+
+        **A cache that nothing invalidates answers with the past.** This one
+        has a 300 s TTL, and an operation that changes what `QueryPathInfo`
+        returns has to call this or the store keeps answering with the value
+        from before its own write. `nix-daemon` holds no such cache and cannot
+        have the fault, so every case of it is a divergence.
+
+        `AddSignatures` and `SignPathInfo` are the operations that do it
+        today: `nix store sign` used to succeed and `nix path-info` then
+        reported no signature for the next five minutes.
+        """
+        self.path_info_cache.pop(str(path), None)
 
     # ── Executor infrastructure ─────────────────────────────────────
 

@@ -51,6 +51,28 @@ The pattern used to separate protocol IO from logic:
 2. **Logic Hook** (`execute`): Implements optimizations and core business logic.
 3. **Transport** (`call`): Low-level wire protocol implementation for upstream communication.
 
+### Umbrella Repository
+A repository that composes related projects while their package ownership and
+physical source layout remain independent. For the nanopynix umbrella, this
+means composing `nanopynix` and `pynixd` through explicit versioned package or
+service boundaries first; it does not imply sibling-relative Python imports or
+an immediate source-tree merger.
+
+### Daemon Protocol Package
+The reusable `nix_daemon_protocol` Python package. It contains the standard
+Nix daemon wire codecs and protocol value models, but no daemon scheduling,
+authentication, client forwarding, or pynixd-private operation definitions.
+Those runtime concerns remain in `pynixd`; its private wire extensions live in
+`pynixd.daemon_extensions`.
+
+### Wire Scalar
+An immutable domain value whose complete daemon-protocol representation is one
+string. `StorePath`, `NARHash`, `ContentAddress`, and `DerivedPath` are wire
+scalars: they subclass `str` to retain native string equality and hashing while
+adding Nix-specific helpers. The protocol codec recognizes these values
+directly; Pydantic support exists only for model/API boundaries rather than
+making the scalar itself a Pydantic model.
+
 ### Proxy (`DaemonProxy`)
 The component that manages the connection from a Nix client, handles the protocol handshake, and routes requests to the internal logic.
 

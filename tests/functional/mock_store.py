@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+import anyio
 import structlog
 
 from pynixd.config import StoreSpecBase
@@ -17,16 +18,16 @@ from pynixd.serde import (
     QueryClosureWithInfoResponse,
     QueryValidPathsRequest,
     QueryValidPathsResponse,
-)
-from pynixd.serde import (
     StorePath as SerdeStorePath,
 )
 from pynixd.serde.content_address import ContentAddress
 from pynixd.serde.ids import StoreId
 from pynixd.serde.nar_hash import NARHash
 from pynixd.serde.path_info import UnkeyedValidPathInfo
-from pynixd.serde.query_all_valid_paths import QueryAllValidPathsRequest as SerdeQueryAllValidPathsRequest
-from pynixd.serde.query_all_valid_paths import QueryAllValidPathsResponse as SerdeQueryAllValidPathsResponse
+from pynixd.serde.query_all_valid_paths import (
+    QueryAllValidPathsRequest as SerdeQueryAllValidPathsRequest,
+    QueryAllValidPathsResponse as SerdeQueryAllValidPathsResponse,
+)
 from pynixd.serde.valid_path_info import ValidPathInfo
 from pynixd.serde.wire_message import WireModel
 from pynixd.serde.wire_time import Time
@@ -62,6 +63,12 @@ class MockConnection:
         self.connected = True
         self.dirty = False
         self.op_log = []
+        # `ConnectionPool._too_old` reads this on every `acquire`, so a stand-in
+        # for `Connection` has to carry it. `Connection.__init__` sets it from
+        # `time.monotonic()`, and this does the same rather than picking a
+        # constant, so a pool with a `max_lifetime` retires a mock the way it
+        # retires a real one.
+        self.opened_at: float = time.monotonic()
 
         # Dummy reader/writer to avoid AttributeErrors on .identifier
         class DummyRW:
@@ -145,7 +152,7 @@ class MockStore(DaemonStore):
         # call_handlers: Maps Request type -> async handler function
         self.call_handlers: dict[type[WireRequest], Any] = {}
 
-        self.build_blockers: dict[str, asyncio.Event] = {}
+        self.build_blockers: dict[str, anyio.Event] = {}
         self.cpu_utilization_val = cpu_utilization
 
     @property
@@ -161,9 +168,9 @@ class MockStore(DaemonStore):
     def set_cpu_utilization(self, val: float) -> None:
         self.cpu_utilization_val = val
 
-    def block_build(self, drv_path: str | StorePath, blocker: asyncio.Event | None = None) -> asyncio.Event:
+    def block_build(self, drv_path: str | StorePath, blocker: anyio.Event | None = None) -> anyio.Event:
         """Create or use an event that will block builds of this drv_path."""
-        event = blocker or asyncio.Event()
+        event = blocker or anyio.Event()
         self.build_blockers[str(drv_path)] = event
         return event
 
@@ -235,7 +242,7 @@ class MockStore(DaemonStore):
         """Read a .drv file from the mock filesystem."""
         from pynixd.drv_parser import read_drv_file
 
-        return await read_drv_file(self.store_path, drv_store_path)
+        return await read_drv_file(drv_store_path)
 
     async def execute(  # type: ignore[override]
         self,

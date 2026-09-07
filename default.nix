@@ -65,11 +65,17 @@ in
 let
   inherit (pkgs) lib;
 
+  daemon-protocol = pkgs.python3Packages.callPackage ./nix/nix-daemon-protocol.nix {
+    pythonBuilder = pkgs.python3Packages.buildPythonPackage;
+  };
+
   package = pkgs.python3Packages.callPackage ./nix/pynixd.nix {
     pythonBuilder = pkgs.python3Packages.buildPythonApplication;
+    nix-daemon-protocol = daemon-protocol;
   };
   library = pkgs.python3Packages.callPackage ./nix/pynixd.nix {
     pythonBuilder = pkgs.python3Packages.buildPythonPackage;
+    nix-daemon-protocol = daemon-protocol;
   };
 
   mkTests =
@@ -87,7 +93,6 @@ let
         ]))
       ];
       text = ''
-        export LIX_BIN=${lib.getExe pkgs.lix}
         export NIX_BIN=${lib.getExe pkgs.nix}
         exec pytest -p no:cacheprovider --timeout=60 ${testArgs} "$@"
       '';
@@ -131,6 +136,7 @@ package
   inherit
     package
     library
+    daemon-protocol
     specifictest
     lint
     pkgs

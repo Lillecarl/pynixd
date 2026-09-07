@@ -9,8 +9,7 @@ import aiohttp
 import pytest
 import structlog
 
-from pynixd.serde import QueryAllValidPathsRequest, QueryPathInfoRequest
-from pynixd.serde import StorePath as StorePath
+from pynixd.serde import QueryAllValidPathsRequest, QueryPathInfoRequest, StorePath as StorePath
 from tests.conftest import (
     CLIENT_BIN,
     SESSION_HTTP_PASS,

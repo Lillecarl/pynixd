@@ -16,8 +16,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from pynixd.nix_config import NixConfig
-from pynixd.serde import NarFromPathRequest
-from pynixd.serde import StorePath as SerdeStorePath
+from pynixd.serde import NarFromPathRequest, StorePath as SerdeStorePath
 from pynixd.serde.context import WriteContext
 from tests._conftest.constants import DEFAULT_NIX_CONFIG, DEFAULT_SSH_OPTS
 
@@ -37,14 +36,21 @@ def rmtree_robust(path: str | Path) -> None:
 
     if path.is_dir():
 
-        def handle_errors(func, path, _excinfo):
-            try:
-                Path(path).chmod(stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC)
-                func(path)
-            except OSError:
-                pass  # Best-effort cleanup; ignore failures
+        def handle_errors(func, path, _exc):
+            # `func` is whichever call failed, and `shutil` uses four of them:
+            # `os.open`, `os.scandir`, `os.unlink` and `os.rmdir`. Only the
+            # last two accept a path alone, so a blind retry of `func(path)`
+            # raises `TypeError: open() missing required argument 'flags'`.
+            # That exception is not an `OSError`, so it left the handler and
+            # aborted the whole session with an INTERNALERROR. One root-owned
+            # overlayfs work directory in the tree was enough to do it.
+            with contextlib.suppress(OSError):
+                Path(path).chmod(stat.S_IRWXU)
+            if func in (os.unlink, os.rmdir):
+                with contextlib.suppress(OSError):
+                    func(path)
 
-        shutil.rmtree(path, onerror=handle_errors)
+        shutil.rmtree(path, onexc=handle_errors)
     else:
         try:
             path.unlink()

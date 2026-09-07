@@ -9,7 +9,6 @@
   python3,
   pynixd,
   nix,
-  lix,
 }:
 let
   python = python3.withPackages (
@@ -33,8 +32,7 @@ mkShell {
     sqlite
   ];
   shellHook = ''
-    export PYTHONPATH="$PWD:${python}/${python.sitePackages}:$PYTHONPATH"
-    export LIX_BIN=${lib.getExe lix}
+    export PYTHONPATH="$PWD:$PWD/nix-daemon-protocol/src:${python}/${python.sitePackages}:$PYTHONPATH"
     export NIX_BIN=${lib.getExe nix}
   '';
 }

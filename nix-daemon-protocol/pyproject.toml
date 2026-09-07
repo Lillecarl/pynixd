@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nix-daemon-protocol"
+version = "0.1.0"
+description = "Declarative Python codecs for the Nix daemon wire protocol"
+readme = "README.md"
+requires-python = ">=3.13"
+# PEP 639. The repository is Apache-2.0. `nanopynix-bindings` alone is
+# LGPL-2.1-or-later, because that project links libnixexpr and libnixstore,
+# and `AGENTS.md` says why the two live together without a conflict.
+#
+# The file is a copy of the one at the root of the repository, because the
+# source root of this project is this directory, and a path above it is not in
+# the sdist.
+license = "Apache-2.0"
+license-files = [ "LICENSE" ]
+dependencies = [
+    "pydantic>=2",
+]
+
+[project.optional-dependencies]
+structlog = ["structlog"]
+# `anyio`, because every test of this project is `async def` and the plugin
+# of anyio is what runs one. It reached the suite through pynixd until the
+# gate ran the suite against this project alone.
+test = ["pytest", "anyio"]
+benchmark = ["pyinstrument"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nix_daemon_protocol"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["F", "E", "W", "I", "B", "SIM", "TC", "RUF", "C4", "UP", "A", "PTH", "ARG", "PERF", "RET", "RSE", "T20", "PIE", "FURB", "TID", "N", "Q", "FA", "PT", "BLE", "TD", "LOG"]
+ignore = ["E501", "ARG002", "TRY003", "BLE001", "TID252", "N818"]
+
+[tool.ruff.lint.flake8-type-checking]
+quote-annotations = true
+
+[tool.ruff.lint.per-file-ignores]
+"src/nix_daemon_protocol/**" = ["TC001"]
+"benchmarks/**" = ["T201"]
+# A `__main__.py` is a command-line program, and a command-line program
+# writes to the terminal. `structlog` is the rule everywhere else in this
+# package, because everywhere else the reader is a log.
+"src/nix_daemon_protocol/**/__main__.py" = ["T201"]
+
+[tool.pyright]
+pythonVersion = "3.13"

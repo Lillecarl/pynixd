@@ -58,9 +58,11 @@ KNOWN_FEATURES: frozenset[str] = frozenset(
 # recursive-nix is NOT here — the builder truly needs nix available at
 # runtime to execute recursive builds.
 #
-# ca-derivations is NOT here — Lix's daemon cannot parse floating CA
-# outputs in BuildDerivation, so the allocator must keep this feature
-# to correctly exclude incompatible builders.
+# ca-derivations is NOT here — a backend daemon that cannot parse floating
+# CA outputs in BuildDerivation must not receive such a build, so the
+# allocator keeps this feature and excludes that backend. Lix was the daemon
+# that named the rule, and the rule does not belong to Lix: it holds for every
+# backend that answers the same way.
 PYNIXD_HANDLED_FEATURES: frozenset[str] = frozenset(
     {
         SystemFeature.DYNAMIC_DERIVATIONS,

@@ -2,33 +2,119 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
+import structlog
+from pydantic import BaseModel
+
+from nix_daemon_protocol.store_dir import store_prefix
+
 from ..local_store_db import LocalStoreDB
+from ..serde import StorePath as SerdeStorePath
 from .local_daemon import LocalStore
+
+log = structlog.get_logger(__name__)
+
+
+def referenced_paths(request: object) -> set[str]:
+    """Every store path that a request names in its own fields.
+
+    The fields are the declaration, so this reads the model rather than a
+    list of operations that somebody has to keep current. A new operation
+    that carries a `StorePath` is counted on the day it is added.
+
+    Only the fields of the request itself. A nested model, such as the
+    `BasicDerivation` of a build, names the paths that the build will
+    *produce*, and a path that does not exist yet was referenced by nothing.
+    """
+    if not isinstance(request, BaseModel):
+        return set()
+    found: set[str] = set()
+    for name in type(request).model_fields:
+        value = getattr(request, name, None)
+        if isinstance(value, SerdeStorePath):
+            found.add(str(value))
+        elif isinstance(value, (set, frozenset, list, tuple)):
+            found.update(str(item) for item in value if isinstance(item, SerdeStorePath))
+    found.discard("")
+    return found
 
 
 class LocalDBStore(LocalStore):
     """LocalStore with SQLite database for fast-path query optimizations.
 
-    The database is always present — it is created unconditionally
-    during start().  All executor methods use SQLite fast-paths
-    exclusively; there is no fallthrough to wire delegation.
+    Each executor method answers from SQLite when the database is open, and
+    returns `None` when it is not. `DaemonStore.execute` treats a falsy result
+    as "no fast path" and calls the wire, so a database pynixd cannot open
+    costs correctness nothing.
+
+    **The fast paths are valid for a plain local store only. A
+    `local-overlay-store` must not use this class.** They read one database,
+    and an overlay store keeps its lower store's paths in a second one:
+    `LocalOverlayStore::isValidPathUncached` asks `LocalStore` first, then
+    `lowerStore`, and only then copies the lower path's info up with
+    `LocalStore::registerValidPath`. Reading the upper database alone would
+    report a valid lower path as invalid *and* skip the sync that would have
+    made it valid. The same applies to `queryPathInfoUncached`,
+    `queryReferrers`, `queryValidPaths` and `queryPathFromHashPart`, each of
+    which overlay overrides for the same reason.
+
+    `_refuses_a_database` is what keeps that from happening quietly.
     """
 
     db: LocalStoreDB
 
+    def _refuses_a_database(self) -> str | None:
+        """Why this store must not use SQLite, or `None` when it may.
+
+        Only the store URI can answer this, and pynixd builds the managed
+        daemon's URI itself -- `StoreLayout.daemon_arguments` passes `--store
+        <root>` for a chroot store and nothing at all for a relocated one, and
+        both are a plain local store. `extra_args` is the one way a different
+        store reaches the daemon, because it is appended after those arguments
+        and a later `--store` wins.
+        """
+        overlay = next((arg for arg in self.extra_args if "local-overlay" in arg), None)
+        if overlay is not None:
+            return (
+                f"the daemon is started with {overlay!r}, and the SQLite fast paths read one "
+                f"database. An overlay store keeps its lower paths in another one, so a fast "
+                f"path would call a valid path invalid."
+            )
+        return None
+
     async def start(self, sync_paths: bool = True) -> None:
         """Initialise the SQLite database and start the daemon store."""
         await self.ensure_daemon()
-        self.db = await LocalStoreDB.open(self.store_path or Path("/"))
+        refusal = self._refuses_a_database()
+        if refusal is not None:
+            log.warning("local_store_db_refused", store_id=str(self.store_id), reason=refusal)
+            self.db = LocalStoreDB.inactive(self.layout)
+        else:
+            self.db = await LocalStoreDB.open(self.layout)
         await super().start(sync_paths=sync_paths)
 
     async def close(self) -> None:
         """Close the SQLite database and the daemon store."""
         await self.db.close()
         await super().close()
+
+    async def execute(self, request, client=None, suppress_last=False, skip_probe=False):  # type: ignore[no-untyped-def] -- the parent is untyped
+        """Note the paths of the request, then run it.
+
+        This is the one place that sees every operation, whichever route
+        answers it: a fast path over SQLite, or the wire. `LocalStoreDB`
+        collects the paths and writes them a few seconds later.
+
+        `mark_path` and `mark_paths` had no caller anywhere, in any project of
+        this repository. The set they fill was therefore always empty,
+        `flush_references` returned at its first line every time, and the
+        background task woke every five seconds to do nothing. So
+        `registrationTime` was never refreshed, and the LRU garbage collection
+        that the refresh exists for never had an input. Issue #166.
+        """
+        self.db.mark_paths(referenced_paths(request))
+        return await super().execute(request, client=client, suppress_last=suppress_last, skip_probe=skip_probe)
 
     # ── Fast-path overrides ────────────────────────────────────────
 
@@ -58,8 +144,7 @@ class LocalDBStore(LocalStore):
 
             return QueryPathInfoResponse(valid=True, info=cached.info)
 
-        from pynixd.serde import QueryPathInfoResponse
-        from pynixd.serde import StorePath as SerdeStorePath
+        from pynixd.serde import QueryPathInfoResponse, StorePath as SerdeStorePath
         from pynixd.serde.content_address import ContentAddress
         from pynixd.serde.nar_hash import NARHash
         from pynixd.serde.path_info import UnkeyedValidPathInfo as SerdeUnkeyedValidPathInfo
@@ -99,8 +184,7 @@ class LocalDBStore(LocalStore):
     async def query_all_valid_paths(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """QueryAllValidPaths — fast-path via SQLite."""
 
-        from pynixd.serde import QueryAllValidPathsResponse
-        from pynixd.serde import StorePath as SerdeStorePath
+        from pynixd.serde import QueryAllValidPathsResponse, StorePath as SerdeStorePath
 
         from .queries import QUERY_ALL_VALID_PATHS
 
@@ -114,8 +198,7 @@ class LocalDBStore(LocalStore):
 
         import json
 
-        from pynixd.serde import QueryValidPathsResponse
-        from pynixd.serde import StorePath as SerdeStorePath
+        from pynixd.serde import QueryValidPathsResponse, StorePath as SerdeStorePath
 
         from .queries import QUERY_VALID_PATHS
 
@@ -129,12 +212,11 @@ class LocalDBStore(LocalStore):
     async def query_path_from_hash_part(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """QueryPathFromHashPart — fast-path via SQLite."""
 
-        from pynixd.serde import QueryPathFromHashPartResponse
-        from pynixd.serde import StorePath as SerdeStorePath
+        from pynixd.serde import QueryPathFromHashPartResponse, StorePath as SerdeStorePath
 
         from .queries import QUERY_PATH_FROM_HASH_PART
 
-        prefix = f"/nix/store/{request.path}"
+        prefix = f"{store_prefix()}{request.path}"
         upper = prefix[:-1] + chr(ord(prefix[-1]) + 1)
         async with self.db.execute(QUERY_PATH_FROM_HASH_PART, (prefix, upper)) as cursor:
             row = await cursor.fetchone()
@@ -148,8 +230,7 @@ class LocalDBStore(LocalStore):
 
         import json
 
-        from pynixd.serde import QueryClosureResponse
-        from pynixd.serde import StorePath as SerdeStorePath
+        from pynixd.serde import QueryClosureResponse, StorePath as SerdeStorePath
 
         from .queries import QUERY_CLOSURE
 
@@ -169,8 +250,7 @@ class LocalDBStore(LocalStore):
 
         import json
 
-        from pynixd.serde import QueryClosureWithInfoResponse
-        from pynixd.serde import StorePath as SerdeStorePath
+        from pynixd.serde import QueryClosureWithInfoResponse, StorePath as SerdeStorePath
         from pynixd.serde.content_address import ContentAddress
         from pynixd.serde.nar_hash import NARHash
         from pynixd.serde.path_info import UnkeyedValidPathInfo as SerdeUnkeyedValidPathInfo
@@ -230,8 +310,7 @@ class LocalDBStore(LocalStore):
 
         import json
 
-        from pynixd.serde import QueryPathInfosResponse
-        from pynixd.serde import StorePath as SerdeStorePath
+        from pynixd.serde import QueryPathInfosResponse, StorePath as SerdeStorePath
         from pynixd.serde.content_address import ContentAddress
         from pynixd.serde.nar_hash import NARHash
         from pynixd.serde.path_info import UnkeyedValidPathInfo as SerdeUnkeyedValidPathInfo

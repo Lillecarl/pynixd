@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -15,6 +14,7 @@ from tests.conftest import (
     CLIENT_BIN,
     SESSION_STORE_PREFIX,
     STORE_PREFIX,
+    TEST_NIX,
     make_test_spec,
     rmtree_robust,
     run_subproc,
@@ -28,7 +28,6 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
-TEST_NIX = Path("tests/nix")
 
 CA_NIX_CONFIG = for_ca_derivations(
     substituters=(
@@ -45,7 +44,6 @@ async def ca_env(pynixd_server: Server):
     return pynixd_server, server_uri(pynixd_server)
 
 
-@pytest.mark.no_pynixd
 @pytest.mark.ca_derivations
 async def test_ca_simple_build_root_store(
     profiler: pyinstrument.Profiler,
@@ -82,7 +80,6 @@ async def test_ca_simple_build_root_store(
         await store.close()
 
 
-@pytest.mark.no_pynixd
 @pytest.mark.ca_derivations
 async def test_ca_multi_output_build_root_store(
     profiler: pyinstrument.Profiler,
@@ -121,7 +118,6 @@ async def test_ca_multi_output_build_root_store(
         await store.close()
 
 
-@pytest.mark.no_pynixd
 @pytest.mark.ca_derivations
 async def test_ca_depends_on_ca_root_store(
     profiler: pyinstrument.Profiler,
@@ -158,7 +154,6 @@ async def test_ca_depends_on_ca_root_store(
         await store.close()
 
 
-@pytest.mark.no_pynixd
 @pytest.mark.ca_derivations
 async def test_non_ca_depends_on_ca_root_store(
     profiler: pyinstrument.Profiler,
@@ -429,7 +424,6 @@ async def test_ca_query_derivation_output_map_via_pynixd(
         assert "ca" in data, f"Expected 'ca' field in {data}"
 
 
-@pytest.mark.no_pynixd
 @pytest.mark.ca_derivations
 async def test_ca_query_derivation_output_map_root_store(
     profiler: pyinstrument.Profiler,
@@ -670,7 +664,6 @@ async def test_dynamic_drv_producing_via_pynixd(
     log.info("producingDrv_via_pynixd", output=producing_out)
 
 
-@pytest.mark.no_pynixd
 @pytest.mark.ca_derivations
 async def test_text_hashed_ca_build_root_store(
     profiler: pyinstrument.Profiler,

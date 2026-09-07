@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
-from enum import Enum, auto
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlsplit
@@ -13,18 +13,17 @@ from urllib.parse import parse_qs, urlsplit
 import anyio
 import structlog
 
-from . import wire
+from nix_daemon_protocol.store_dir import set_real_store_dir, set_store_dir
+
+from . import _optional, wire
 from .config import ExternalUnixStoreSpec, HTTPBinaryCacheSpec, LocalSocketStoreSpec, PynixdSettings
 from .context import PynixdContext
-from .http_server import PynixdHttpServer
-from .reverse_client import ReverseInitiator
-from .reverse_server import start_reverse_acceptor
 from .scheduler import Scheduler
 from .serde import PynixdCollectGarbageRequest
-from .serde.ids import StoreId
+from .serde.ids import LOCAL_STORE_ID, StoreId
 from .serde.protocol import PynixdGCAction
-from .ssh_server import start_ssh_server
-from .store import DaemonStore, ExternalUnixStore, HTTPBinaryCacheStore, LocalDBStore, LocalStore, Store
+from .store import DaemonStore, ExternalUnixStore, LocalDBStore, LocalStore, Store, is_http_binary_cache
+from .store_layout import DEFAULT_STORE_DIR
 from .unix_server import start_unix_server
 
 if TYPE_CHECKING:
@@ -35,12 +34,44 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
+# The size of `sun_path` in `struct sockaddr_un`, per platform. The kernel
+# copies the path into that array, so a longer one cannot be bound at all.
+# `sys.platform` and not a `uname` call, because the value is a property of
+# the C library this process was built against.
+_SUN_PATH_LIMIT = {"linux": 108, "darwin": 104}
+_SUN_PATH_LIMIT_DEFAULT = 104
+"""The smaller of the two, for a platform this table does not name. A path
+that a stricter limit accepts is bindable everywhere."""
 
-class NixImplementation(Enum):
-    """Known Nix implementations for ssh-ng URI generation."""
 
-    NIX = auto()
-    LIX = auto()
+def _adopt_store_dir(local_store: Store) -> None:
+    """Take the two store directories from the store that pynixd serves.
+
+    **They are not always the same directory, and which one moves depends on
+    the shape of the store.** `--store <root>` puts the files at
+    `<root>/nix/store` and leaves `builtins.storeDir` at `/nix/store`.
+    Measured against Nix 2.34.8: `nix --store $T eval --expr
+    builtins.storeDir` answers `"/nix/store"`, and the layout appears under
+    `$T/nix/store`. `NIX_STORE_DIR` moves both, because a relocated store
+    keeps its files at the directory that its paths name.
+
+    `StoreLayout` answers both, so this reads the layout of the store rather
+    than a root. It used to set the real directory alone, from the root, and
+    a relocated store then got `/nix/store` for the logical one and answered
+    a store path that no client could read. Issue #176.
+
+    A store at `/` changes neither, and it is the default.
+
+    Issue #173 holds what one constant did instead: it put `/nix/store/` in
+    front of a path that already named another store, and reported nothing.
+    """
+    layout = getattr(local_store, "layout", None)
+    if layout is None:
+        return
+    if layout.real_store_dir != DEFAULT_STORE_DIR:
+        set_real_store_dir(layout.real_store_dir)
+    if layout.store_dir != DEFAULT_STORE_DIR:
+        set_store_dir(layout.store_dir)
 
 
 def _default_http_substituter_urls(local_store: Store) -> list[str]:
@@ -116,18 +147,17 @@ class Server:
             settings = PynixdSettings(**kwargs)
 
         if stores is None:
-            spec = LocalSocketStoreSpec(store_id=StoreId("local"), monitor=False)
-            stores = {StoreId("local"): spec.to_store(str(StoreId("local")))}
-        elif StoreId("local") not in stores:
+            spec = LocalSocketStoreSpec(store_id=LOCAL_STORE_ID, monitor=False)
+            stores = {LOCAL_STORE_ID: spec.to_store(str(LOCAL_STORE_ID))}
+        elif LOCAL_STORE_ID not in stores:
             stores = dict(stores)
-            spec = LocalSocketStoreSpec(store_id=StoreId("local"), monitor=False)
-            stores[StoreId("local")] = spec.to_store(str(StoreId("local")))
+            spec = LocalSocketStoreSpec(store_id=LOCAL_STORE_ID, monitor=False)
+            stores[LOCAL_STORE_ID] = spec.to_store(str(LOCAL_STORE_ID))
 
-        local_store = stores[StoreId("local")]
+        local_store = stores[LOCAL_STORE_ID]
+        _adopt_store_dir(local_store)
 
-        existing_http_urls = {
-            store.url.rstrip("/") for store in stores.values() if isinstance(store, HTTPBinaryCacheStore)
-        }
+        existing_http_urls = {store.url.rstrip("/") for store in stores.values() if is_http_binary_cache(store)}
         for url in _default_http_substituter_urls(local_store):
             if url.rstrip("/") in existing_http_urls:
                 continue
@@ -174,6 +204,7 @@ class Server:
 
     @staticmethod
     def _ensure_unix_socket_parent(socket_path: Path) -> None:
+        Server._check_unix_socket_length(socket_path)
         parent = socket_path.parent
         try:
             parent.mkdir(parents=True, exist_ok=True)
@@ -183,6 +214,26 @@ class Server:
             raise RuntimeError(f"Unix socket parent is not a directory: {parent}")
         if not os.access(parent, os.W_OK):
             raise RuntimeError(f"Unix socket directory is not writable: {parent}")
+
+    @staticmethod
+    def _check_unix_socket_length(socket_path: Path) -> None:
+        """Refuse a socket path the operating system cannot bind.
+
+        `sun_path` is `char[108]` on Linux and `char[104]` on darwin, and a
+        path over the limit fails at `bind`. The failure arrives late and from
+        the wrong place: the directory is made, the server starts, and uvloop
+        raises `OSError: AF_UNIX path too long` with no path in the message.
+
+        The check is here, beside the directory check, so the error names the
+        path and the limit before anything is created.
+        """
+        limit = _SUN_PATH_LIMIT.get(sys.platform, _SUN_PATH_LIMIT_DEFAULT)
+        encoded = len(os.fsencode(socket_path))
+        if encoded > limit:
+            raise RuntimeError(
+                f"Unix socket path is {encoded} bytes, and {sys.platform} allows {limit}: {socket_path}. "
+                f"Shorten `unix_path`."
+            )
 
     @property
     def local_store(self) -> LocalStore:
@@ -244,7 +295,7 @@ class Server:
 
         NOTE: Used by external projects — do not remove.
         """
-        if store_id == StoreId("local"):
+        if store_id == LOCAL_STORE_ID:
             raise RuntimeError("Cannot remove local store")
         if self.scheduler:
             # First, drain the store in the scheduler to cancel/requeue jobs
@@ -293,16 +344,9 @@ class Server:
         """Current OS user for ssh-ng URI generation."""
         return os.environ.get("USER", "root")
 
-    def uri(self, implementation: NixImplementation = NixImplementation.NIX) -> str:
+    def uri(self) -> str:
         """ssh-ng:// URI for --store."""
-        username = self.username
-        match implementation:
-            case NixImplementation.NIX:
-                return f"ssh-ng://{username}@{self.host}:{self.port}"
-            case NixImplementation.LIX:
-                return f"ssh-ng://{username}@{self.host}?port={self.port}"
-
-        return f"ssh-ng://{username}@{self.host}:{self.port}"
+        return f"ssh-ng://{self.username}@{self.host}:{self.port}"
 
     async def __aenter__(self) -> Server:
         await self.start()
@@ -335,7 +379,20 @@ class Server:
             )
         else:
             self.ctx.db = None
-            log.warning("local_store_db_disabled")
+            # Say which store it is and why. The line carried no field at all,
+            # so a reader could see that the SQLite fast path was off and not
+            # what had turned it off -- and the two ways to build a local store
+            # disagree about the answer. `PynixdSettings.to_stores` hardcodes
+            # `LocalStore`, so the shipped `pynixd daemon` always lands here;
+            # `Server.__init__` calls `spec.to_store()` and honours
+            # `use_db`, so a programmatic server and the test suite do not.
+            # Issue #163 holds the decision.
+            log.warning(
+                "local_store_db_disabled",
+                store_id=str(local_store.store_id),
+                store_type=type(local_store).__name__,
+                reason="the local store is not a LocalDBStore, so no SQLite fast path is available",
+            )
 
         if self.ctx.db:
             self.ctx.db.start()
@@ -343,7 +400,7 @@ class Server:
         # Start non-local stores concurrently — they're already in _stores.
         async with anyio.create_task_group() as tg:
             for store_id, store in list(self.ctx._stores.items()):
-                if store_id != StoreId("local"):
+                if store_id != LOCAL_STORE_ID:
                     tg.start_soon(self.add_store, store)
 
         if self.ctx.scheduler:
@@ -356,7 +413,7 @@ class Server:
 
         s = self.settings
         if s.ssh_port is not None:
-            self.ssh_server = await start_ssh_server(
+            self.ssh_server = await _optional.ssh_server.start_ssh_server(
                 ctx=self.ctx,
                 host=s.ssh_host,
                 port=s.ssh_port,
@@ -365,13 +422,17 @@ class Server:
                 schedule_mode=s.schedule_mode,
             )
 
-        self.reverse_acceptor = await start_reverse_acceptor(
-            server=self,
-            settings=s.reverse_acceptor,
-        )
+        # **The `enabled` check belongs here as well as in the function.**
+        # `start_reverse_acceptor` answers `None` for a set that is off, and
+        # reaching it at all imports `asyncssh`. Issue #290.
+        if s.reverse_acceptor.enabled:
+            self.reverse_acceptor = await _optional.reverse_server.start_reverse_acceptor(
+                server=self,
+                settings=s.reverse_acceptor,
+            )
 
         if s.reverse_initiator.enabled:
-            initiator = ReverseInitiator(self.ctx, s.reverse_initiator)
+            initiator = _optional.reverse_client.ReverseInitiator(self.ctx, s.reverse_initiator)
             self.background_tasks.append(asyncio.create_task(initiator.run()))
 
         if s.unix_path:
@@ -383,7 +444,7 @@ class Server:
             )
 
         if s.http_port is not None or s.https_port is not None:
-            cache = PynixdHttpServer(
+            cache = _optional.http_server.PynixdHttpServer(
                 local_store,
                 enable_cache=s.http_enable_cache,
                 enable_metrics=s.http_enable_metrics,

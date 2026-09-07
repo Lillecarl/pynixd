@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 from typing import TYPE_CHECKING, Any
 
 import anyio
 
+from ..exceptions import BackendError
 from ..serde import (
     BuildDerivationRequest,
     BuildMode,
@@ -17,6 +19,7 @@ from ..serde import (
     QueryMissingRequest,
     QueryMissingResponse,
 )
+from ..serde.ids import LOCAL_STORE_ID, RequestId
 from .build_derivation import BuildDerivationGoal
 from .ensure import EnsureDerivedPathGoal
 from .keys import BuildDerivationKey, EnsureDerivedPathKey, SubstitutePathKey
@@ -36,6 +39,21 @@ if TYPE_CHECKING:
     from ..store_path import StorePath
     from .goal import Goal
 
+_REQUEST_IDS = itertools.count(1)
+"""Names the live goal systems apart, for `BuildQueue`. Issue #286."""
+
+
+def _build_failure_message(failed: list[Any]) -> str:
+    """What `BuildPaths` tells the client when a build did not succeed.
+
+    `Store::buildPaths` of Nix collects the message of each failed goal, so
+    this collects the `error_msg` of each failed result.
+    """
+    parts = [str(item.result.error_msg) for item in failed if str(item.result.error_msg)]
+    if not parts:
+        return f"{len(failed)} of the requested paths failed to build"
+    return "; ".join(parts)
+
 
 def _derivation_fingerprint(request: BuildDerivationRequest) -> str:
     payload = request.derivation.model_dump(mode="json")
@@ -48,9 +66,60 @@ class GoalEngine:
 
     def __init__(self, ctx: PynixdContext) -> None:
         self.ctx = ctx
+        # What the build queue calls this request. `proxy.py` makes one engine
+        # for one request, so the engine *is* the request, and the queue needs
+        # a name for it to answer "does any live request still want this
+        # build". A counter is enough: the queue compares the names of live
+        # engines and nothing else. Issue #286.
+        self.request_id = RequestId(next(_REQUEST_IDS))
         self._lock = anyio.Lock()
         self._goals: dict[Any, Goal[Any]] = {}
         self.substitution_import_limiter = anyio.Semaphore(4)
+        # Every build that a goal of this engine waits for. `proxy.py` makes
+        # one engine for one request, so this list is the reference that the
+        # request holds on the build queue. `let_go_of_every_build` gives it
+        # back. Issue #196.
+        self._held_builds: list[BuildId] = []
+
+    def note_a_held_build(self, build_id: BuildId) -> None:
+        """Record that a goal of this request waits for *build_id*.
+
+        `BuildQueue.enqueue` already took the reference, under its own lock,
+        for every call that `from_goal_path` marks. This only remembers which
+        reference to give back. It takes no await, so a cancellation cannot
+        land between the two and lose the record.
+        """
+        self._held_builds.append(build_id)
+
+    async def let_go_of_every_build(self) -> None:
+        """Give back every build reference that this request took.
+
+        **The request is the unit that wants a build, and not the goal.** A
+        request stops at its first failure with `keep-going` off, and the
+        goals it leaves behind keep running: `_the_result_unless_it_stops` in
+        `goals/requests.py` states why, and a build of pynixd serves every
+        client that asked for the same derivation. So the moment the request
+        answers is the moment this request wants nothing more, whatever state
+        its goals are in.
+
+        `BuildQueue.let_go` ends a build that no other request holds.
+
+        This runs once. A second call finds the list empty, so the entry point
+        of `build_paths`, which calls `build_paths_with_results` on the same
+        engine, gives no reference back twice.
+        """
+        held = self._held_builds
+        self._held_builds = []
+        scheduler = self.ctx.scheduler
+        if scheduler is None:
+            return
+        for build_id in held:
+            await scheduler.queue.let_go(build_id)
+        # After the loop, and not before it. `nobody_wants` reads this set, so
+        # forgetting the request while it still held a build would let a
+        # scheduling pass assign a build that this request no longer wants.
+        # Issue #286.
+        await scheduler.queue.forget_request(self.request_id)
 
     async def subscribe_build(self, build_id: BuildId, client: ClientConn) -> bool:
         """Subscribe *client* to real-time log output for the given *build_id*."""
@@ -68,7 +137,8 @@ class GoalEngine:
 
     async def build_paths(self, request: BuildPathsRequest, client: ClientConn | None = None) -> BuildPathsResponse:
         """Execute a BuildPaths request, returning a simple success/failure response."""
-        _require_normal_build_mode(request.build_mode)
+        if request.build_mode != BuildMode.NORMAL:
+            return await self._straight_to_the_store(request, client)
         response = await self.build_paths_with_results(
             BuildPathsWithResultsRequest(
                 derived_paths=request.derived_paths,
@@ -76,7 +146,16 @@ class GoalEngine:
             ),
             client=client,
         )
-        return BuildPathsResponse(value=0 if all(result_succeeded(item.result) for item in response.results) else 1)
+        # **The value is always 1, and a failure is an error and not a value.**
+        # `daemon.cc:558` of Nix writes `conn.to << 1` after `buildPaths`, and
+        # `buildPaths` throws when a build fails. A client of Nix reads the
+        # number and drops it, so a value of 0 for success reached no client
+        # and no test, and a value of 1 for failure read as success. Issue
+        # #177 holds the measurement that found this.
+        failed = [item for item in response.results if not result_succeeded(item.result)]
+        if failed:
+            raise BackendError(_build_failure_message(failed))
+        return BuildPathsResponse(value=1)
 
     async def build_paths_with_results(
         self,
@@ -84,12 +163,49 @@ class GoalEngine:
         client: ClientConn | None = None,
     ):
         """Execute a BuildPathsWithResults request, returning per-path results."""
-        _require_normal_build_mode(request.build_mode)
-        return await BuildPathsWithResultsGoal(self, request, client).result()
+        if request.build_mode != BuildMode.NORMAL:
+            return await self._straight_to_the_store(request, client)
+        try:
+            return await BuildPathsWithResultsGoal(self, request, client).result()
+        finally:
+            # The answer of this request is the moment it wants nothing more.
+            # `let_go_of_every_build` says what the build queue does with that.
+            await self.let_go_of_every_build()
 
-    async def query_missing(self, request: QueryMissingRequest) -> QueryMissingResponse:
+    async def _straight_to_the_store(self, request: Any, client: ClientConn | None) -> Any:
+        """A check or a repair goes to the local store, and the goal system stands aside.
+
+        `nix build --rebuild` sends `BuildMode.CHECK`, and `--repair` sends
+        `BuildMode.REPAIR`. `nix-store --realise --check`, `--repair-path` and
+        `--verify --repair` send the same two. The goal system raised
+        `RuntimeError` for each one, so every such command failed through
+        pynixd and succeeded through `nix-daemon`.
+
+        **Neither mode is a build that pynixd can schedule.** A check builds
+        the derivation again in the same store and compares the two outputs,
+        at `derivation-building-goal.cc:990`. A repair reads the closure and
+        rewrites what is corrupt, at `derivation-goal.cc:152`. Both are
+        operations on one store, and a second builder answers no part of
+        either one. The local store is a whole Nix daemon, so it does the
+        work, and pynixd carries the bytes.
+
+        The scheduling of pynixd, the dedup of a build and the fleet are all
+        out of the path here, and that is the point: they answer a question
+        that a check does not ask.
+
+        A mode that no version of Nix defines takes the same road. The store
+        answers what it answers, and pynixd invents no behaviour for a number
+        that it does not know.
+        """
+        return await self.ctx.local_store.call(request, client=client)
+
+    async def query_missing(
+        self,
+        request: QueryMissingRequest,
+        client: ClientConn | None = None,
+    ) -> QueryMissingResponse:
         """Execute a read-only QueryMissing request, classifying paths as build/substitute/unknown."""
-        return await QueryMissingPlanGoal(self, request).result()
+        return await QueryMissingPlanGoal(self, request, client).result()
 
     async def get_ensure_derived_path_goal(
         self,
@@ -141,25 +257,14 @@ class GoalEngine:
         return tuple(
             str(store_id)
             for store_id, store in self.ctx.stores.items()
-            if str(store_id) != "local" and store.no_schedule
+            if store_id != LOCAL_STORE_ID and store.no_schedule
         )
 
     def substituter_stores(self) -> Iterable[Store]:
         """Yield healthy substituter stores, ordered by store ID."""
-        local_id = "local"
         ids = set(self.substituter_ids())
         return (
             store
             for store_id, store in sorted(self.ctx.stores.items(), key=lambda item: str(item[0]))
-            if str(store_id) != local_id and str(store_id) in ids and store.is_healthy
+            if store_id != LOCAL_STORE_ID and str(store_id) in ids and store.is_healthy
         )
-
-
-def _require_normal_build_mode(build_mode: int) -> None:
-    if build_mode == BuildMode.NORMAL:
-        return
-    try:
-        name = BuildMode(build_mode).name
-    except ValueError:
-        name = f"unknown({build_mode})"
-    raise RuntimeError(f"pynixd goal system only supports BuildMode.NORMAL for now; got {name}")

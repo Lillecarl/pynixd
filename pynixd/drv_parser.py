@@ -40,13 +40,14 @@ from typing import TYPE_CHECKING, ClassVar, TypedDict
 
 import anyio
 
-from .serde import BasicDerivation, DerivationOutput, OutputKind
-from .serde import StorePath as SerdeStorePath
+from nix_daemon_protocol.store_dir import on_disk
+
+from .serde import BasicDerivation, DerivationOutput, OutputKind, StorePath as SerdeStorePath
 from .store_path import DrvOutput, StorePath
 from .utils import compress_hash, nix32_encode
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Collection
 
     from .serde.aliases import OutputMap, StorePathSet
 
@@ -182,6 +183,18 @@ class Derivation:
         """Return {output_name: output_path} for all outputs."""
         return {o.name: StorePath(o.path) for o in self.outputs}
 
+    def selected_output_paths(self, wanted: Collection[str]) -> dict[str, StorePath]:
+        """The path of each output that *wanted* names, by name.
+
+        `{"*"}` means every output, which is what a derived path with no
+        output list means. An output with no path is in the answer, with an
+        empty path: the name is what asks the store for a realisation.
+        """
+        paths = self.output_paths()
+        if wanted == {"*"}:
+            return paths
+        return {name: path for name, path in paths.items() if name in wanted}
+
     def output_kinds(self) -> list[OutputKind]:
         """Return the OutputKind for each output.
 
@@ -196,6 +209,106 @@ class Derivation:
             )
             result.append(dop.kind)
         return result
+
+    @property
+    def is_fixed_output(self) -> bool:
+        """True when every output takes its path from a hash the derivation names.
+
+        `DerivationType::isFixed` at `derivation-options.hh`. Such a
+        derivation has one hash for each output, and that hash does not
+        depend on the derivation at all. `hashDerivationModulo` at
+        `derivations.cc:902` branches on this.
+        """
+        return all(kind is OutputKind.CA_FIXED for kind in self.output_kinds())
+
+    @property
+    def is_impure(self) -> bool:
+        """True when no existing output of this derivation counts as built.
+
+        `DerivationGoal` at `derivation-goal.cc:87` skips `checkPathValidity`
+        for an impure derivation, and the comment there gives the reason: "We
+        don't yet have any safe way to cache an impure derivation at this
+        step." So Nix builds it every time, and the output of the last build
+        is not an answer.
+
+        pynixd read the realisation of the last build and answered with it, so
+        a second `nix build` of an impure derivation gave the first output.
+        `impure-derivations.sh:36` of the functional suite states the rule: the
+        builder writes a counter, and the second build must write `1`.
+        """
+        return OutputKind.IMPURE in self.output_kinds()
+
+    @property
+    def needs_realisations(self) -> bool:
+        """True when the store holds a realisation for each output of this.
+
+        Nix registers a realisation for every output of every derivation while
+        `ca-derivations` is on, at `derivation-builder.cc:1994` and again at
+        `derivation-goal.cc:236`. It asks the setting, and pynixd cannot: a
+        daemon with the feature off answers "experimental Nix feature
+        'ca-derivations' is disabled" to `RegisterDrvOutput`, and pynixd then
+        discards a good connection as dirty.
+
+        So this asks the derivation instead. An output with no path is the one
+        case that needs the feature, and no such derivation exists while the
+        feature is off. A floating content-addressed output names no path, and
+        a deferred output names none either. An input-addressed output and a
+        fixed-output one both name theirs.
+
+        **An impure derivation is the exception, and it names no path.** Nix
+        guards the registration with `if (!drv->type().isImpure())` at
+        `derivation-goal.cc:226`, because every build of an impure derivation
+        makes a new output and one id cannot hold two. pynixd registered one
+        anyway, and the daemon answered "Trying to register a realisation of
+        '...', but we already have another one locally". The refusal made the
+        connection dirty, so the pool discarded it and the temporary roots it
+        held stayed in the file. `main:impure-derivations` reaches line 50 of
+        its script with this corrected, and it stopped at line 36 before.
+
+        **The question is about the original derivation, and not the resolved
+        one.** pynixd fills in a deferred output before it sends the
+        derivation, so the resolved one names every path and answers False.
+        The client holds the original, and `queryPartialDerivationOutputMap`
+        at `store-api.cc:406` reads a realisation for each output that the
+        original leaves open. `ca:build` builds `dependentNonCA`, which is
+        that derivation.
+        """
+        if self.is_impure:
+            return False
+        return any(not output.path for output in self.outputs)
+
+    @property
+    def should_resolve(self) -> bool:
+        """True when Nix writes a resolved derivation for this one, and builds that.
+
+        `Derivation::shouldResolve` at `derivations.cc:1129`. A derivation with
+        no input derivation has nothing to resolve. After that the type of the
+        derivation decides: an input-addressed one resolves only when its
+        output is deferred, a content-addressed one always resolves, and an
+        impure one always resolves. An input that is the output of a dynamic
+        derivation also makes it resolve.
+
+        **An input-addressed output belongs to the hash of the derivation that
+        names it.** The resolved derivation is a different derivation, so the
+        right path for that output is a different path, and the daemon says so
+        at `derivations.cc:1324`: "derivation has incorrect output ..., should
+        be ...". pynixd stored the resolved form of every derivation that had
+        an input, and the daemon refused each input-addressed one. `main:gc` of
+        the functional suite is where that showed: the refused connection went
+        out of the pool as dirty, and the temporary root that it held stayed in
+        the file.
+
+        pynixd still resolves every derivation for the wire, because
+        `BuildDerivation` carries a `BasicDerivation` and that model holds no
+        input derivation. This decides one thing only: whether the request
+        names the path of the resolved derivation or the path of the original
+        one.
+        """
+        if not self.input_drvs and not self.dynamic_input_drvs:
+            return False
+        if self.dynamic_input_drvs:
+            return True
+        return any(kind is not OutputKind.INPUT_ADDRESSED for kind in self.output_kinds())
 
     def to_json(self, drv_path: StorePath | str) -> dict[str, NixDerivationShow]:
         """Serialize to the same JSON format as `nix derivation show`.
@@ -371,14 +484,17 @@ class Derivation:
         """
         parts: list[str] = []
 
-        # Choose format: if actualInputs is provided, check if any node has
-        # dynamic deps (matching C++ logic where actualInputs can also trigger
-        # the dynamic format); otherwise fall back to self.dynamic_input_drvs.
-        if actualInputs is not None:
-            has_dynamic = any(child_map or is_dyn for _, child_map, is_dyn in actualInputs.values())
-        else:
-            has_dynamic = self._has_dynamic_drv_dep()
-        if has_dynamic:
+        # **The derivation chooses the format, and the replacement inputs do
+        # not.** `Derivation::unparse` at `derivations.cc:641` asks
+        # `hasDynamicDrvDep(*this)`, which reads the input derivations of the
+        # derivation itself.
+        #
+        # This read *actualInputs* instead, and `hashDerivationModulo` builds
+        # one that carries no child at all: it takes the direct outputs of each
+        # input and drops the tree. So a dynamic derivation unparsed as
+        # `Derive(` here and as `DrvWithVersion("xp-dyn-drv",` in Nix, and the
+        # two hashes could never agree.
+        if self._has_dynamic_drv_dep():
             parts.append("DrvWithVersion(")
             parts.append(self._print_unquoted_string("xp-dyn-drv"))
             parts.append(",")
@@ -515,8 +631,16 @@ class Derivation:
             ``{output_name: hex_hash}`` — one SHA256 hex hash per
             derivation output.
         """
-        # Fixed-output derivations: each output gets its own hash
-        if all(o.hash_algo and o.hash_value for o in self.outputs):
+        # Fixed-output derivations: each output gets its own hash.
+        #
+        # **An impure output is not a fixed one.** `hashDerivationModulo` asks
+        # `type().isFixed()` at `derivations.cc:902`, and `DerivationType::Impure`
+        # answers no. The test here read the two raw fields instead, and an
+        # impure output carries `r:sha256` in one and the word `impure` in the
+        # other, so it read as fixed. pynixd then gave every realisation of an
+        # impure derivation an id that no Nix agrees with. `OutputKind` is the
+        # one place that classifies an output, so this asks it.
+        if self.is_fixed_output:
             result: dict[str, str] = {}
             for o in self.outputs:
                 method_algo = self._format_output_hash_algo(o)
@@ -924,7 +1048,7 @@ async def to_basic_derivation(
             continue
 
         try:
-            input_parsed = await read_drv_file(store_path, drv_path)
+            input_parsed = await read_drv_file(drv_path)
         except FileNotFoundError:
             input_parsed = None
 
@@ -954,23 +1078,36 @@ def parse_drv(content: str) -> Derivation:
     return _Parser(content).parse_derivation()
 
 
-async def read_drv_file(
-    store_path: Path,
-    drv_store_path: StorePath | str,
-) -> Derivation | None:
-    """Read and parse a .drv file from a store's filesystem.
+async def read_drv_file(drv_store_path: StorePath | str) -> Derivation | None:
+    """Read and parse a `.drv` file from the file system of the store.
+
+    This took the root of the store as well, and it no longer does.
+    `real_store_dir()` holds that value for the process, so a caller that
+    passed a different root got an answer from the store of the process
+    anyway, and the argument said otherwise.
 
     Args:
-        store_path: The store root (e.g., "/tmp/pynixd-test-local")
-        drv_store_path: The full store path (e.g., "/nix/store/xxx.drv")
+        drv_store_path: A whole store path, such as `/nix/store/xxx.drv`.
 
     Returns:
-        Parsed derivation
+        The parsed derivation, or `None` when the file is not there.
     """
-    # drv_store_path is like "/nix/store/xxx.drv"
-    # On disk it's at "{store_path}/nix/store/xxx.drv"
-    fs_path = store_path / str(drv_store_path).lstrip("/")
-    path = anyio.Path(fs_path)
+    # `on_disk` and not `store_path / str(drv_store_path).lstrip("/")`.
+    #
+    # That line assumed every store path starts with `/nix/store/`, so removing
+    # the first separator and joining the root gave `<root>/nix/store/xxx.drv`.
+    # A store that answers `<root>/nix/store/xxx.drv` broke it: the join then
+    # made `<root><root>/nix/store/xxx.drv`, the file was not there, and the
+    # caller took the `None` branch. `to_basic_derivation` then sent the daemon
+    # a derivation whose `inputSrcs` named the input `.drv` rather than the
+    # output of that `.drv`. The daemon scans the build output for the paths in
+    # `inputSrcs` alone, so it found no reference and registered the output
+    # with none. `tests/functional/dependencies.sh` of Nix caught it.
+    #
+    # `real_store_dir` is where the files are. `store_dir` is what a store path
+    # says. A chroot store makes the two differ, and only the first one names a
+    # file. Issue #173.
+    path = anyio.Path(on_disk(str(drv_store_path)))
     if not await path.exists():
         return None
     content = await path.read_text()

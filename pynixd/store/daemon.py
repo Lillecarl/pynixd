@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import time
 from enum import IntEnum
 from pathlib import Path
@@ -12,46 +13,55 @@ from typing import TYPE_CHECKING, Any
 import anyio
 import structlog
 
+from nix_daemon_protocol.store_dir import store_prefix
+
 from .. import wire
+from .._lazy import ssh_errors
 from ..exceptions import BackendError
 from ..monitor import ResourceGate, ResourceMonitor
-from ..serde import BasicDerivation, BuildDerivationRequest, BuildMode, BuildResultStatus, DerivationOutput
-from ..serde import StorePath as SerdeStorePath
+from ..serde import (
+    AddToStoreRequest,
+    BasicDerivation,
+    BuildDerivationRequest,
+    BuildMode,
+    BuildResultStatus,
+    ContentAddress,
+    DerivationOutput,
+    StorePath as SerdeStorePath,
+)
 from ..serde.context import WriteContext
 from ..serde.wire_ops import WireRequest
+from ..store_layout import StoreLayout
 from ..system_features import KNOWN_FEATURES, PROBE_SYSTEMS
 from ..utils import random_nix32_hash
 from .base import Store
 from .pool import ConnectionPool
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
-    from collections.abc import Set as AbstractSet
+    from collections.abc import Awaitable, Callable, Set as AbstractSet
     from contextlib import AbstractAsyncContextManager
 
     from ..config import StoreSpecBase
     from ..connection import Connection
     from ..drv_parser import Derivation
     from ..psi import CpuUtil, MemInfo
+    from ..serde import SetOptionsRequest
     from ..store_path import StorePath
 
 log = structlog.get_logger(__name__)
 _CB_THRESHOLD: int = 3
 _CB_MAX_COOLDOWN: float = 300.0
 
-try:
-    import asyncssh
-except ImportError:
-    _SSH_ERRORS: tuple[type[BaseException], ...] = ()
-else:
-    _SSH_ERRORS = (asyncssh.misc.Error,)
-
+# **The asyncssh half is read at the moment of the `except`, and not here.**
+# A `try: import asyncssh` at module level loads the library for every store,
+# and a Unix-socket daemon opens no SSH connection. `ssh_errors` answers with
+# an empty tuple until something imports asyncssh, which is exact: no error of
+# that library can be in flight before the library is there. Issue #290.
 _TRANSPORT_ERRORS: tuple[type[BaseException], ...] = (
     ConnectionError,
     EOFError,
     OSError,
     TimeoutError,
-    *_SSH_ERRORS,
 )
 
 
@@ -74,6 +84,16 @@ class DaemonStore(Store):
         """Initialize daemon store with pool, probing state, circuit breaker, and reconnect loop."""
         super().__init__(spec)
         self.store_path = getattr(spec, "store_path", Path("/"))
+        self.layout: StoreLayout = (
+            spec.layout() if hasattr(spec, "layout") else StoreLayout.chroot(getattr(spec, "store_path", None))
+        )
+        """The three directories of this store. Issue #176.
+
+        A store that is not local has no layout of its own, so it takes the
+        chroot layout of its root. Nothing reads the state directory of such
+        a store: the temporary roots and the SQLite fast paths belong to the
+        local store that pynixd serves.
+        """
         self.scheduleable = spec.scheduleable
         self.priority = spec.priority
         self.score_penalty = spec.score_penalty
@@ -81,6 +101,7 @@ class DaemonStore(Store):
         self.gc_max_age = spec.gc_max_age
         self.no_schedule = spec.no_schedule
         self.idle_ttl = spec.idle_ttl
+        self.max_lifetime = spec.max_lifetime
         self.version: int = wire.PROTOCOL_VERSION
         self.nix_version: str = ""
         self.conn_counter = 0
@@ -98,7 +119,9 @@ class DaemonStore(Store):
             factory=self._create_conn_with_counter,
             gate=self.gate,
             idle_ttl=self.idle_ttl,
+            max_lifetime=self.max_lifetime,
             on_connection_created=self._on_connection_created,
+            on_pool_empty=self._on_pool_empty,
         )
 
         self.monitor: ResourceMonitor | None = None
@@ -176,13 +199,6 @@ class DaemonStore(Store):
         _platform_specific = frozenset({"kvm", "apple-virt"})
         return features.isdisjoint(_platform_specific)
 
-    @property
-    def is_lix(self) -> bool:
-        """Whether the connected daemon is a Lix daemon."""
-        if self.version != wire.proto(1, 35):
-            return False
-        return "lix" in self.nix_version.lower()
-
     # ── Resource metrics ────────────────────────────────────────────
 
     @property
@@ -209,13 +225,41 @@ class DaemonStore(Store):
         """Human-readable pool statistics string."""
         return self.pool.stats
 
-    def build_conn(self) -> AbstractAsyncContextManager[Connection]:
+    def build_conn(self, options: SetOptionsRequest | None = None) -> AbstractAsyncContextManager[Connection]:
         """Acquire a connection for build operations."""
-        return self.pool.acquire("build")
+        return self.pool.acquire("build", options)
 
-    def transfer_conn(self) -> AbstractAsyncContextManager[Connection]:
+    def transfer_conn(self, options: SetOptionsRequest | None = None) -> AbstractAsyncContextManager[Connection]:
         """Acquire a connection for transfer operations."""
-        return self.pool.acquire("transfer")
+        return self.pool.acquire("transfer", options)
+
+    async def retire_idle_connections(self) -> int:
+        """Close each pooled connection that nobody uses, and release its roots."""
+        return await self.pool.retire_idle()
+
+    async def add_text_to_store(self, name: str, text: str, references: AbstractSet[str]) -> str:
+        """Put a text file in the store of the daemon, and answer the path it took.
+
+        `AddToStore` with `text:sha256` is what `Store::addTextToStore` of Nix
+        sends. The ingestion method is flat, so the framed body is the file
+        itself and not a NAR, at `daemon.cc:436`.
+
+        The daemon computes the path. pynixd could compute it as well, and
+        then two implementations of one formula would have to agree; the
+        answer of the daemon is the path that the daemon will read.
+        """
+        request = AddToStoreRequest(
+            path_name=name,
+            cam=ContentAddress("text:sha256"),
+            references={SerdeStorePath(path=str(ref)) for ref in references},  # pyright: ignore[reportUnhashable]
+            repair=0,
+        )
+        await self.probe()
+        async with self.transfer_conn() as conn:
+            response = await conn.call_with_payload(request, text.encode())
+        info = response.info
+        self.add_path_info(info)
+        return str(info.path)
 
     async def _create_conn_with_counter(self) -> Connection:
         self.conn_counter += 1
@@ -285,7 +329,7 @@ class DaemonStore(Store):
 
                 try:
                     await self._do_reconnect()
-                except _TRANSPORT_ERRORS:
+                except _TRANSPORT_ERRORS + ssh_errors():
                     self._reconnect_delay = min(self._reconnect_delay * 2, self.reconnect_max_delay)
                     log.warning("store_reconnect_failed", store_id=self.store_id, next_retry=self._reconnect_delay)
                     continue
@@ -327,13 +371,14 @@ class DaemonStore(Store):
 
         is_build = not request.forward if isinstance(request, WireRequest) else request.is_build
         pool = self.build_conn if is_build else self.transfer_conn
+        options = client.options if client is not None else None
 
         try:
-            async with pool() as conn:
+            async with pool(options) as conn:
                 return await conn.call(
                     request, client=client, suppress_last=suppress_last, raise_on_error=raise_on_error
                 )
-        except _TRANSPORT_ERRORS:
+        except _TRANSPORT_ERRORS + ssh_errors():
             self.record_failure()
             raise
 
@@ -350,6 +395,16 @@ class DaemonStore(Store):
         return await self.call(request, client=client, suppress_last=suppress_last)
 
     # ── Probing ─────────────────────────────────────────────────────
+
+    async def _on_pool_empty(self) -> None:
+        """Release whatever this store holds under the pool. Nothing, by default.
+
+        A store whose connections ride on a transport of its own overrides
+        this. `SSHStore` does: its `asyncssh` connection outlives every
+        channel, and holding it open keeps a builder that starts on demand
+        awake for as long as pynixd runs.
+        """
+        return None
 
     def _on_connection_created(self, conn: Connection) -> None:
         self.version = conn.version
@@ -428,26 +483,32 @@ class DaemonStore(Store):
         self._probe_event.set()
 
     async def _probe_systems(self, candidates: set[str]) -> set[str]:
-        async with asyncio.TaskGroup() as tg:
-            tasks = [
-                tg.create_task(
-                    self._send_probe(
-                        f"probe-system-{system}",
-                        system,
-                        "",
-                        ["-c", f"echo {system} > $out"],
-                    )
-                )
-                for system in candidates
-            ]
+        # An anyio task group hands back no task object, so each child records
+        # its answer at its own index. `candidates` becomes a list first,
+        # because the zip below needs the same order twice.
+        ordered = sorted(candidates)
+        supported: list[bool] = [False] * len(ordered)
 
-        systems = {system for system, task in zip(candidates, tasks, strict=True) if task.result()[1]}
+        async def probe_system(index: int, system: str) -> None:
+            _, ok = await self._send_probe(
+                f"probe-system-{system}",
+                system,
+                "",
+                ["-c", f"echo {system} > $out"],
+            )
+            supported[index] = ok
+
+        async with anyio.create_task_group() as tg:
+            for index, system in enumerate(ordered):
+                tg.start_soon(probe_system, index, system)
+
+        systems = {system for system, ok in zip(ordered, supported, strict=True) if ok}
         log.info("systems_probed", store_id=self.store_id, systems=sorted(systems))
         return systems
 
     async def _probe_features(self, systems: set[str], system_features: set[str]) -> dict[str, set[str]]:
         to_probe = (system_features or set()) | KNOWN_FEATURES
-        probes = []
+        probes: list[Callable[[], Awaitable[tuple[str, bool]]]] = []
         probe_keys: list[tuple[str, str]] = []
         for system in systems:
             for feature in to_probe:
@@ -467,8 +528,12 @@ class DaemonStore(Store):
                     "NIXBUILDNET_MAX_MEM": "128",
                 }
                 probe_keys.append((system, feature))
+                # A partial, and not a coroutine object: `start_soon` takes a
+                # callable and its arguments, and it calls that callable in the
+                # child task.
                 probes.append(
-                    self._send_probe(
+                    functools.partial(
+                        self._send_probe,
                         f"probe-feature-{feature}",
                         system,
                         feature,
@@ -477,12 +542,19 @@ class DaemonStore(Store):
                     ),
                 )
 
-        async with asyncio.TaskGroup() as tg:
-            tasks = [tg.create_task(probe) for probe in probes]
+        supported: list[bool] = [False] * len(probes)
+
+        async def run_probe(index: int, probe: Callable[[], Awaitable[tuple[str, bool]]]) -> None:
+            _, ok = await probe()
+            supported[index] = ok
+
+        async with anyio.create_task_group() as tg:
+            for index, probe in enumerate(probes):
+                tg.start_soon(run_probe, index, probe)
 
         feature_matrix: dict[str, set[str]] = {system: set() for system in systems}
-        for (system, feature), task in zip(probe_keys, tasks, strict=True):
-            if task.result()[1]:
+        for (system, feature), ok in zip(probe_keys, supported, strict=True):
+            if ok:
                 feature_matrix[system].add(feature)
 
         self._feature_matrix = feature_matrix
@@ -502,8 +574,8 @@ class DaemonStore(Store):
         extra_env: dict[str, str] | None = None,
     ) -> tuple[str, bool]:
         drv_hash = random_nix32_hash()
-        out_path = f"/nix/store/{drv_hash}-{name}"
-        drv_path = SerdeStorePath(path=f"/nix/store/{drv_hash}-{name}.drv")
+        out_path = f"{store_prefix()}{drv_hash}-{name}"
+        drv_path = SerdeStorePath(path=f"{store_prefix()}{drv_hash}-{name}.drv")
 
         env: dict[str, str] = {
             "builder": "/bin/sh",
@@ -584,7 +656,16 @@ class DaemonStore(Store):
         return await self.call(request, client=client, suppress_last=suppress_last)
 
     async def find_roots(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
-        """FindRoots (op 14) — delegate to daemon."""
+        """FindRoots (op 14) — delegate to daemon.
+
+        The idle connections go first, for the reason that
+        `retire_idle_connections` gives: each one keeps a worker of the daemon
+        alive, and that worker holds a temporary root for every path that it
+        took. `nix-store -q --roots` reads those roots and prints `{temp:NNN}`
+        beside the root that the client really made. `gc.sh:16` of the
+        functional tests of Nix compares that output with one line.
+        """
+        await self.retire_idle_connections()
         return await self.call(request, client=client, suppress_last=suppress_last)
 
     async def set_options(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
@@ -632,8 +713,15 @@ class DaemonStore(Store):
         return await self.call(request, client=client, suppress_last=suppress_last)
 
     async def add_signatures(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
-        """AddSignatures (op 37) — delegate to daemon."""
-        return await self.call(request, client=client, suppress_last=suppress_last)
+        """AddSignatures (op 37) — delegate to daemon, and forget what it changed.
+
+        The cached `ValidPathInfo` of this path holds the signatures from
+        before this call, and `QueryPathInfo` answers from that cache for
+        300 s. `forget_path_info` says why that is a divergence.
+        """
+        response = await self.call(request, client=client, suppress_last=suppress_last)
+        self.forget_path_info(request.path)
+        return response
 
     async def nar_from_path(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """NarFromPath (op 38) — delegate to daemon."""
@@ -796,7 +884,9 @@ class DaemonStore(Store):
         """SignPathInfo (op 107) — sign with local keys and relay to daemon."""
 
         if "SignPathInfo" in self.features:
-            return await self.call(request, client=client, suppress_last=suppress_last)
+            response = await self.call(request, client=client, suppress_last=suppress_last)
+            self.forget_path_info(request.info.path)
+            return response
 
         # Decompose: sign locally with pynixd keys, then call AddSignatures on daemon
         from ..serde.add_signatures import AddSignaturesRequest
@@ -806,9 +896,15 @@ class DaemonStore(Store):
 
         info = request.info
         refs = {str(r) for r in info.info.references}
+        # `fingerprint` renders the NAR hash the way `path-info.cc:48` of Nix
+        # does, so this passes the value of the wire and converts nothing.
+        # This call used to pass it with no name of an algorithm and
+        # `sign_path_info` used to put `sha256:` in front of the base-16
+        # digest, so one path signed two ways gave two signatures and a
+        # verifier of Nix read both as false.
         fp = fingerprint(
             store_path=str(info.path),
-            nar_hash=str(info.info.nar_hash),
+            nar_hash=info.info.nar_hash,
             nar_size=info.info.nar_size,
             references=refs,
         )
@@ -817,11 +913,14 @@ class DaemonStore(Store):
             name, _, sig_val = sig_str.partition(":")
             info.info.sigs.add(Signature(name=name, signature=sig_val))
 
+        # `self.call` and not `self.add_signatures`, so this path does not get
+        # the invalidation of that method and states it here instead.
         await self.call(
             AddSignaturesRequest(path=info.path, sigs=info.info.sigs),
             client=client,
             suppress_last=suppress_last,
         )
+        self.forget_path_info(info.path)
         return SignPathInfoResponse(info=info)
 
     async def probe_systems(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
@@ -839,8 +938,7 @@ class DaemonStore(Store):
 
         from ..drv_parser import parse_drv
         from ..nar import NarRegular, parse_nar
-        from ..serde import IsValidPathRequest, NarFromPathRequest, QueryPathInfoRequest
-        from ..serde import StorePath as SerdeStorePath
+        from ..serde import IsValidPathRequest, NarFromPathRequest, QueryPathInfoRequest, StorePath as SerdeStorePath
 
         sp = SerdeStorePath(path=str(drv_store_path))
 

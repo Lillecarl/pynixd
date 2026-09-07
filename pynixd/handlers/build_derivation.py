@@ -34,7 +34,9 @@ class BuildDerivationHandler(Handler):
 
             if result.result.status == 0:
                 logger.debug("responded_op")
-            return result
+            return result.model_copy(
+                update={"result": result.result.for_the_wire(ctx.proxy.standard_features)},
+            )
 
         if ctx.proxy.scheduler is None:
             raise RuntimeError("BuildDerivation requires a configured scheduler")
@@ -56,7 +58,14 @@ class BuildDerivationHandler(Handler):
         try:
             response = await future
             logger.debug("responded_op")
-            return response
+            # **The backend and this client negotiate their features apart.**
+            # A backend that offers `realisation-with-path-not-hash` fills one
+            # `builtOutputs` field of the result and leaves the other at
+            # `None`, and this client reads whichever its own set names.
+            # `for_the_wire` fills the one it will read. Issue #162.
+            return response.model_copy(
+                update={"result": response.result.for_the_wire(ctx.proxy.standard_features)},
+            )
         finally:
             if subscribed and ctx.proxy.client is not None:
                 await ctx.proxy.scheduler.queue.unsubscribe(build_id, ctx.proxy.client)

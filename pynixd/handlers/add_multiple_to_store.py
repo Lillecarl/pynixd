@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, ClassVar
 
+import anyio
 import structlog
 
 from ..serde.add_multiple_to_store import (
@@ -29,10 +30,21 @@ class AddMultipleToStoreHandler(Handler):
 
     async def handle(self, ctx: RequestContext) -> AddMultipleToStoreResponse | None:
         """Decode AddMultipleToStore request, stream framed NAR payloads to daemon, cache path infos, return response."""
-        async with ctx.proxy.local_store.transfer_conn() as conn:
+        # **The connection that adds the path carries the options of the
+        # client.** `LocalStore::addToStore` of Nix checks the signature of
+        # each path against `trusted-public-keys`, and that setting reaches
+        # the daemon through `SetOptions` alone. A transfer connection with no
+        # options made the daemon read its own keys, so `nix copy --from` with
+        # `--trusted-public-keys` was refused with "cannot add path ...
+        # because it lacks a signature by a trusted key" for a path the cache
+        # had signed correctly. `require-sigs` and `secret-key-files` travel
+        # the same way. Issues #197 and #192.
+        options = ctx.proxy.client.options if ctx.proxy.client is not None else None
+        async with ctx.proxy.local_store.transfer_conn(options) as conn:
+            await conn.apply_options(options)
             # 1. Read request header from client (serde)
             req = await AddMultipleToStoreRequest.from_reader(
-                ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version),
+                ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version, features=ctx.proxy.standard_features),
             )
 
             # 2. Write request header to daemon
@@ -40,15 +52,25 @@ class AddMultipleToStoreHandler(Handler):
             await conn.w.drain()
 
             # 3. Concurrently: forward payload + read daemon response
-            async def _read_response() -> AddMultipleToStoreResponse:
-                return await AddMultipleToStoreResponse.from_reader(
-                    ReadContext.from_conn(conn),
+            # An anyio task group hands back no task object, so the child
+            # records its result in this list. The group waits for the child
+            # on exit, which is what `await resp_task` did before.
+            responses: list[AddMultipleToStoreResponse] = []
+
+            async def _read_response() -> None:
+                responses.append(
+                    await AddMultipleToStoreResponse.from_reader(
+                        ReadContext.from_conn(conn),
+                    ),
                 )
 
-            async with asyncio.TaskGroup() as tg:
-                resp_task = tg.create_task(_read_response())
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(_read_response)
                 infos = await self._forward_stream(ctx.proxy.r, conn.w)
-                resp = await resp_task
+
+            if not responses:
+                raise RuntimeError("the AddMultipleToStore reader task recorded no response")
+            resp = responses[0]
 
             # Update path info cache
             ctx.proxy.local_store.add_path_infos(infos)

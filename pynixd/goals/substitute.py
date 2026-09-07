@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 import structlog
 
-from ..serde import BuildResultStatus, IsValidPathRequest
-from ..serde import StorePath as SerdeStorePath
+from ..serde import BuildResultStatus, IsValidPathRequest, StorePath as SerdeStorePath
 from ..store_path import StorePath
 from .goal import ExecutionGoal
 from .results import GoalResult, goal_failure, goal_success
@@ -31,6 +30,12 @@ class SubstituteAttempt:
 
 class SubstitutePathGoal(ExecutionGoal[SubstituteAttempt]):
     """Substitute one store path and its reference closure."""
+
+    may_reach_a_root_goal: ClassVar[bool] = False
+    """A substitute goal reaches substitute goals alone, and no root goal.
+
+    `Goal.may_reach_a_root_goal` gives the rule. Issue #207.
+    """
 
     def __init__(self, engine: GoalEngine, path: StorePath, substituter_ids: tuple[str, ...]) -> None:
         """Initialize the goal with the path to substitute and eligible substituter IDs."""

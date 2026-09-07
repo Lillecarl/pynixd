@@ -7,7 +7,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -15,7 +15,8 @@ from pydantic_settings import (
 )
 
 from .nix_config import NixConfig
-from .serde.ids import StoreId
+from .serde.ids import LOCAL_STORE_ID, StoreId
+from .store_layout import StoreLayout
 
 
 class ScheduleMode(StrEnum):
@@ -95,6 +96,14 @@ class StoreSpecBase(BaseModel):
     feature_matrix: dict[str, set[str]] | None = None
     nix_bin: str = "nix"
     idle_ttl: float = 10.0
+    max_lifetime: float = 300.0
+    """How long a pooled connection may serve before the pool retires it.
+
+    A worker of the daemon holds a temporary root for each path that it
+    builds or substitutes, and it releases those roots when it exits. A
+    pooled connection keeps that worker alive, so a connection in steady
+    use holds every root it ever made. Zero turns the rule off. Issue #174.
+    """
     scheduleable: bool = True
     priority: float = 1.0
     score_penalty: int = 0
@@ -126,12 +135,63 @@ class LocalSocketStoreSpec(StoreSpecBase):
 
     type: Literal["local-socket"] = "local-socket"
     store_path: Path = Path("/")
-    socket_path: Path = Path("nix/var/nix/daemon-socket/pynixd-nix")
+    """The root of a chroot store, which `nix daemon --store` takes.
+
+    Leave `store_dir` unset to use this. `/` is the store of the machine.
+    """
+
+    store_dir: Path | None = None
+    """The directory in a store path, for a relocated store.
+
+    Set this and `state_dir` together to serve a store that `NIX_STORE_DIR`
+    moved, rather than one that `--store <root>` moved. The two shapes differ:
+    a chroot store keeps `builtins.storeDir` at `/nix/store` and puts the
+    files under the root, and a relocated store moves the store path itself.
+    `pynixd/store_layout.py` states both. Issue #176.
+    """
+
+    state_dir: Path | None = None
+    """The directory that holds `db/` and `temproots/`, for a relocated store.
+
+    Required with `store_dir`, and refused without it. Nix keeps the two
+    independent, so neither one gives the other.
+    """
+
+    socket_path: Path = Path("pynixd-nix")
+    """Where the managed daemon listens.
+
+    An absolute path is used as it is. A relative one is a name under
+    `<state_dir>/daemon-socket/`, which is where Nix puts its own socket. The
+    value was `nix/var/nix/daemon-socket/pynixd-nix` and it was joined to the
+    store root, which gives the same path for a chroot store and no path at
+    all for a relocated one.
+    """
+
     nix_config: NixConfig | None = None
     extra_env: dict[str, str] | None = None
     extra_args: list[str] | None = None
     use_db: bool = True
     monitor: bool = True
+
+    @model_validator(mode="after")
+    def _check_the_two_shapes(self) -> LocalSocketStoreSpec:
+        """A relocated store names both of its directories, or neither.
+
+        A default of `/nix/var/nix` for the state would put the temporary
+        roots and the database of a relocated store in the store of the
+        machine, and nothing would report it.
+        """
+        if self.store_dir is None and self.state_dir is not None:
+            raise ValueError("state_dir needs store_dir: it describes a relocated store")
+        if self.store_dir is not None and self.state_dir is None:
+            raise ValueError("store_dir needs state_dir: Nix keeps the two independent")
+        return self
+
+    def layout(self) -> StoreLayout:
+        """The three directories of the store that this spec names."""
+        if self.store_dir is not None and self.state_dir is not None:
+            return StoreLayout.relocated_store(self.store_dir, self.state_dir)
+        return StoreLayout.chroot(self.store_path)
 
     def to_store(self, store_id: str) -> LocalStore | LocalDBStore:
         """Build a ``LocalStore`` or ``LocalDBStore`` from this spec."""
@@ -228,8 +288,51 @@ class SSHSubprocessStoreSpec(StoreSpecBase):
     port: int = 22
     username: str | None = None
     store_path: Path = Path("/")
+    known_hosts: str | None
+    """The file that names the host key of this builder, or `null` for none.
+
+    **This field has no default, so a configuration has to answer it.** A Nix
+    build store sees the whole content of every build that a client pushes,
+    and it returns the store paths that the client then registers as valid.
+    The host key is the check that makes the far side the machine the
+    configuration named, and a machine in the middle of that path substitutes
+    a build output without it.
+
+    `null` is `asyncssh`'s "accept any host key", which is what every SSH
+    store did before this field existed. It stays reachable, because a
+    loopback connection to a local virtual machine has no exposure worth the
+    ceremony, and because pynixd often runs as root where the `known_hosts`
+    of a user holds nothing. Writing it is the point: the choice is in the
+    configuration rather than in a default.
+
+    `nix` asks the same question. A `nix.buildMachines` entry carries
+    `publicHostKey`, and `ssh-ng://` verifies against it, so a person moving
+    a builder from `nix.buildMachines` to `stores` used to lose the check
+    without being told. Issue #165.
+    """
+
     monitor: bool = True
     client_keys: list[Any] = Field(default_factory=list)
+    persistent_connection: bool = True
+    """Whether to hold one SSH connection open for the life of the store.
+
+    True, the default, is what a normal remote builder wants. The connection
+    is opened at startup and kept, so its state *is* the health of the store:
+    the reconnect loop, the backoff and the circuit breaker all read it, and
+    the resource monitor polls over it. A builder that is up looks up because
+    the socket is there.
+
+    False suits a builder that starts on demand -- a local VM behind a
+    socket-activated unit, with a watchdog that stops it once the last
+    connection closes. pynixd then connects on first use and drops the
+    transport once its pool holds nothing, so the builder is free to go away.
+    The cost is the measurement above: with no connection there is nothing to
+    read the store's health from, and pynixd learns a backend is down by
+    failing to reach it.
+
+    Set `monitor = false` alongside it. The monitor polls over the same
+    connection, so it would hold the builder awake by itself. Issue #164.
+    """
 
     def to_store(self, store_id: str) -> SSHSubprocessStore:
         """Build an ``SSHSubprocessStore`` from this spec."""
@@ -252,8 +355,51 @@ class SSHSocketStoreSpec(StoreSpecBase):
     port: int = 22
     username: str | None = None
     socket_path: Path = Path("/nix/var/nix/daemon-socket/socket")
+    known_hosts: str | None
+    """The file that names the host key of this builder, or `null` for none.
+
+    **This field has no default, so a configuration has to answer it.** A Nix
+    build store sees the whole content of every build that a client pushes,
+    and it returns the store paths that the client then registers as valid.
+    The host key is the check that makes the far side the machine the
+    configuration named, and a machine in the middle of that path substitutes
+    a build output without it.
+
+    `null` is `asyncssh`'s "accept any host key", which is what every SSH
+    store did before this field existed. It stays reachable, because a
+    loopback connection to a local virtual machine has no exposure worth the
+    ceremony, and because pynixd often runs as root where the `known_hosts`
+    of a user holds nothing. Writing it is the point: the choice is in the
+    configuration rather than in a default.
+
+    `nix` asks the same question. A `nix.buildMachines` entry carries
+    `publicHostKey`, and `ssh-ng://` verifies against it, so a person moving
+    a builder from `nix.buildMachines` to `stores` used to lose the check
+    without being told. Issue #165.
+    """
+
     monitor: bool = True
     client_keys: list[Any] = Field(default_factory=list)
+    persistent_connection: bool = True
+    """Whether to hold one SSH connection open for the life of the store.
+
+    True, the default, is what a normal remote builder wants. The connection
+    is opened at startup and kept, so its state *is* the health of the store:
+    the reconnect loop, the backoff and the circuit breaker all read it, and
+    the resource monitor polls over it. A builder that is up looks up because
+    the socket is there.
+
+    False suits a builder that starts on demand -- a local VM behind a
+    socket-activated unit, with a watchdog that stops it once the last
+    connection closes. pynixd then connects on first use and drops the
+    transport once its pool holds nothing, so the builder is free to go away.
+    The cost is the measurement above: with no connection there is nothing to
+    read the store's health from, and pynixd learns a backend is down by
+    failing to reach it.
+
+    Set `monitor = false` alongside it. The monitor polls over the same
+    connection, so it would hold the builder awake by itself. Issue #164.
+    """
 
     def to_store(self, store_id: str) -> SSHSocketStore:
         """Build an ``SSHSocketStore`` from this spec."""
@@ -413,21 +559,32 @@ class PynixdSettings(BaseSettings):
 
     def to_stores(self) -> dict[StoreId, Store]:
         """Convert all store specs to live Store instances."""
-        from .store import LocalStore
-
         stores: dict[StoreId, Store] = {}
         for key, spec in self.stores.items():
             spec.settings = self
             store = spec.to_store(store_id=key)
             stores[store.store_id] = store
 
-        if StoreId("local") not in stores:
+        if LOCAL_STORE_ID not in stores:
             spec = LocalSocketStoreSpec(
-                store_id=StoreId("local"),
+                store_id=LOCAL_STORE_ID,
                 monitor=False,
                 settings=self,
             )
-            stores[StoreId("local")] = LocalStore(spec)
+            # `spec.to_store`, so the implicit local store honours `use_db`
+            # like a configured one. This line read `LocalStore(spec)`, which
+            # ignored the option and hardcoded the answer. `use_db` defaults to
+            # true, and a configured `stores.local` already reached the loop
+            # above and got a `LocalDBStore` -- so the SQLite fast paths were
+            # on for anyone who wrote the store out and off for everyone who
+            # did not, including every deployment of `pynixd daemon`.
+            #
+            # `LocalStoreDB.open` degrades on its own when it cannot open the
+            # database: it returns an inactive instance, every fast path of
+            # `LocalDBStore` returns `None` for that, and `DaemonStore.execute`
+            # falls through to the wire. So "on by default" costs a store that
+            # cannot read the database nothing but one warning.
+            stores[LOCAL_STORE_ID] = spec.to_store(store_id=str(LOCAL_STORE_ID))
 
         return stores
 

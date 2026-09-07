@@ -27,9 +27,10 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from nix_daemon_protocol.store_dir import store_dir as current_store_dir
+
 from ..drv_parser import ChildMapNode, _aterm_escape
-from ..serde import BasicDerivation, DerivationOutput
-from ..serde import StorePath as SerdeStorePath
+from ..serde import BasicDerivation, DerivationOutput, StorePath as SerdeStorePath
 from ..store_path import StorePath
 from ..utils import nix32_encode
 
@@ -37,8 +38,6 @@ if TYPE_CHECKING:
     from ..drv_parser import Derivation
 
 log = structlog.get_logger(__name__)
-
-STORE_DIR = "/nix/store"
 
 
 def _output_path_name(drv_name: str, output_name: str) -> str:
@@ -116,9 +115,16 @@ def _make_store_path(
     type_str: str,
     hash_modulo: bytes,
     name: str,
-    store_dir: str = STORE_DIR,
+    store_dir: str = "",
 ) -> str:
-    """Build a store path string from a type prefix, content hash, and name (Nix makeStorePath)."""
+    """Build a store path string from a type prefix, content hash, and name (Nix makeStorePath).
+
+    The store directory is a part of the text that Nix hashes, so a wrong one
+    gives a wrong path. `current_store_dir()` reads the value of this process,
+    and a default argument cannot: Python evaluates a default once, at import,
+    and the daemon sets the directory after that.
+    """
+    store_dir = store_dir or current_store_dir()
     hash_str = "sha256:" + hash_modulo.hex()
     s = f"{type_str}:{hash_str}:{store_dir}:{name}"
     digest = hashlib.sha256(s.encode()).digest()
@@ -130,11 +136,21 @@ def _make_output_path(
     output_id: str,
     hash_modulo: bytes,
     drv_name: str,
-    store_dir: str = STORE_DIR,
+    store_dir: str = "",
 ) -> str:
     """Derive an output store path for a given output ID (Nix makeOutputPath)."""
     name = _output_path_name(drv_name, output_id)
     return _make_store_path(f"output:{output_id}", hash_modulo, name, store_dir)
+
+
+def unparse_basic_derivation(drv: BasicDerivation) -> str:
+    """Serialize a BasicDerivation to ATerm format, the way a `.drv` file holds it.
+
+    `Derivation::unparse` of Nix with `maskOutputs` false. A resolved
+    derivation has no input derivation, so the form is `Derive(` and never
+    `DrvWithVersion(`.
+    """
+    return _unparse_basic_derivation(drv, mask_outputs=False)
 
 
 def _unparse_basic_derivation(drv: BasicDerivation, mask_outputs: bool = True) -> str:
@@ -233,6 +249,11 @@ def _hash_derivation_modulo(
     return dict.fromkeys(drv.outputs, h)
 
 
+def _is_deferred(output: DerivationOutput) -> bool:
+    """True for `DerivationOutput::Deferred`, which the ATerm writes as three empty strings."""
+    return output.path == "" and output.method == "" and output.hash_digest == ""
+
+
 def _resolve_deferred_outputs(
     resolved: BasicDerivation,
     drv_name: str,
@@ -242,12 +263,19 @@ def _resolve_deferred_outputs(
     Given a resolved BasicDerivation, computes hashDerivationModulo and
     replaces any Deferred outputs (``("", "", "")``) with concrete
     InputAddressed paths derived from the hash.
+
+    A derivation with no deferred output returns as it is. Every derivation
+    with an input derivation comes through here now, and the hash reads the
+    whole ATerm, so the early answer is worth taking.
     """
+    if not any(_is_deferred(o) for o in resolved.outputs.values()):
+        return resolved
+
     hash_modulo = _hash_derivation_modulo(resolved, mask_outputs=True)
 
     new_outputs: dict[str, DerivationOutput] = {}
     for name, o in resolved.outputs.items():
-        if o.path == "" and o.method == "" and o.hash_digest == "":
+        if _is_deferred(o):
             h = hash_modulo[name]
             out_path = _make_output_path(name, h, drv_name)
             new_outputs[name] = DerivationOutput(

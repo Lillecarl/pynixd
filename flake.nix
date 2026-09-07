@@ -21,6 +21,7 @@
           default = defNix.package;
           pynixd = defNix.package;
           libpynixd = defNix.library;
+          nix-daemon-protocol = defNix.daemon-protocol;
           pynixd-docs = defNix.pynixd-docs;
         }
       );

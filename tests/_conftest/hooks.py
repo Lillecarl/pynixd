@@ -8,6 +8,7 @@ import json
 import time
 from pathlib import Path
 
+import anyio
 import pytest
 import structlog
 
@@ -42,8 +43,16 @@ def pytest_sessionstart(session: pytest.Session) -> None:
 
     from tests._conftest.helpers import rmtree_robust_glob
 
+    # Only the directories that this project makes. `/tmp/pytest-of-lillecarl/*`
+    # was here as well, and that directory is the shared temporary root of
+    # pytest: every suite of this repository puts its `tmp_path` under it. The
+    # line therefore deleted the leftovers of another project at the start of
+    # each run, and one of those leftovers was a root-owned overlayfs work
+    # directory that no cleanup can remove.
+    #
+    # pytest keeps the last three roots of its own and removes the rest, so
+    # nothing here has to.
     rmtree_robust_glob("/tmp/pynixd-test-*")
-    rmtree_robust_glob("/tmp/pytest-of-lillecarl/*")
 
 
 def pytest_terminal_summary(
@@ -61,7 +70,7 @@ def pytest_terminal_summary(
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]):
-    """Wrap async tests in asyncio.timeout, sort by subsumption, handle Lix skips."""
+    """Wrap each async test in a deadline, and sort by subsumption."""
 
     # Sort by descending covers-popcount so broad tests run first.
     if not config.getoption("no_test_subsumption"):
@@ -73,28 +82,19 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             and asyncio.iscoroutinefunction(item.obj)
             and not getattr(item.obj, "_pynixd_timeout_wrapped", False)
         ):
-            item.obj = _wrap_with_asyncio_timeout(item)
+            item.obj = _wrap_with_timeout(item)
             item.obj._pynixd_timeout_wrapped = True  # type: ignore[reportAttributeAccessIssue]
 
-    # Lix: skip CA/dynamic tests.
-    client_bin = config.getoption("client_bin", "nix")
-    local_bin = config.getoption("local_bin", "nix")
-    builder_bin = config.getoption("builder_bin", "nix")
-    if "lix" in (client_bin, local_bin, builder_bin):
-        for item in items:
-            if item.get_closest_marker("ca_derivations"):
-                item.add_marker(pytest.mark.skip(reason="Not supported with Lix"))
 
-
-def _wrap_with_asyncio_timeout(item: pytest.Function):
-    """Wrap an async test function with asyncio.timeout for timeout protection."""
+def _wrap_with_timeout(item: pytest.Function):
+    """Wrap an async test function in `anyio.fail_after`, so that it cannot hang."""
     original_func = item.obj
 
     @functools.wraps(original_func)
     async def wrapped(*args, **kwargs):
         timeout = item.config.getoption("async_test_timeout")
         try:
-            async with asyncio.timeout(timeout):
+            with anyio.fail_after(timeout):
                 return await original_func(*args, **kwargs)
         except TimeoutError:
             log.exception(

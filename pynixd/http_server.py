@@ -32,9 +32,16 @@ from aiohttp import web
 from anyio.to_thread import run_sync
 from passlib.apache import HtpasswdFile
 
+from nix_daemon_protocol.store_dir import store_dir
+
 from . import metrics
-from .serde import AddToStoreNarRequest, NarFromPathRequest, QueryPathFromHashPartRequest, QueryPathInfoRequest
-from .serde import StorePath as SerdeStorePath
+from .serde import (
+    AddToStoreNarRequest,
+    NarFromPathRequest,
+    QueryPathFromHashPartRequest,
+    QueryPathInfoRequest,
+    StorePath as SerdeStorePath,
+)
 from .serde.context import ReadContext, WriteContext
 from .serde.valid_path_info import ValidPathInfo as SerdeValidPathInfo
 from .store_path import StorePath
@@ -179,7 +186,7 @@ class PynixdHttpServer:
     async def handle_cache_info(self, request: web.Request) -> web.Response:
         """Serve the ``/nix-cache-info`` endpoint with store metadata."""
         lines = [
-            "StoreDir: /nix/store",
+            f"StoreDir: {store_dir()}",
             "WantMassQuery: 1",
             f"Priority: {self.priority}",
         ]

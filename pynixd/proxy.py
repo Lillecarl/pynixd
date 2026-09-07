@@ -10,13 +10,15 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, Any, cast
 
-import asyncssh
 import structlog
 
+from nix_daemon_protocol.exceptions import DaemonProtocolError
+
 from . import wire
+from ._lazy import ssh_connection_lost
 from .config import ScheduleMode
 from .connection import ClientConn
-from .exceptions import OpNotImplementedError
+from .exceptions import OpNotImplementedError, PynixdError
 from .goals import GoalEngine
 from .handlers._base import HANDLER_REGISTRY
 from .protocol import get_extension_features
@@ -32,11 +34,12 @@ from .serde import (
     QueryValidPathsResponse,
 )
 from .serde.auth import Role
-from .serde.context import ReadContext, WriteContext
-from .serde.context import RequestContext as RequestContext
-from .serde.ids import StoreId
+from .serde.context import ReadContext, RequestContext as RequestContext, WriteContext
+from .serde.ids import LOCAL_STORE_ID, StoreId
 from .serde.protocol import OptTrusted, Verbosity
 from .serde.wire_ops import WIRE_REGISTRY, WireResponse
+from .store_layout import StoreLayout
+from .temp_roots import TempRoots
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -51,6 +54,35 @@ if TYPE_CHECKING:
 from .store import DaemonStore as DaemonStore
 
 log = structlog.get_logger(__name__)
+
+
+def _error_text(ex: BaseException) -> str:
+    """The text that `STDERR_ERROR` carries for *ex*.
+
+    **A client prints this text after the word "error:", so it must read as
+    one.** This was `repr(ex)`, which gave the client
+    `error: BackendError("Cannot build '\\x1b[35;1m/nix/store/...")` -- the
+    name of a Python class, a quoted string, and every escape of the message
+    doubled. Nix writes the message alone.
+
+    A `PynixdError` carries a message that pynixd wrote for a reader, and a
+    `DaemonProtocolError` carries the message of a daemon behind pynixd. Both
+    are the whole text. Any other exception is a fault of pynixd, and the name
+    of the class is the part that says so.
+
+    **A task group carries the failure of its task, and the group itself says
+    nothing.** Every handler that fans out uses `anyio.create_task_group`, and
+    a task that raises leaves an `ExceptionGroup`. The client then read
+    `error: ExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)`
+    and never learned the reason. `ca:signatures` reads the reason, which is
+    "cannot add path '...' because it lacks a signature by a trusted key".
+    """
+    if isinstance(ex, BaseExceptionGroup):
+        return "\n".join(_error_text(inner) for inner in ex.exceptions)
+    if isinstance(ex, PynixdError | DaemonProtocolError):
+        return str(ex)
+    return f"{type(ex).__name__}: {ex}"
+
 
 NIX_VERSION: str = "pynixd-0.1.0"
 
@@ -77,10 +109,12 @@ class DaemonProxy:
         self.client = ClientConn(w=self.w)
         self.ctx = ctx
         self.version: int = wire.PROTOCOL_VERSION
+        self.standard_features: frozenset[str] = frozenset()
         self.role: Role = role
         self.username: str = username
         self.schedule_mode: ScheduleMode = schedule_mode
         self._op_timing: dict[int, tuple[int, float]] = {}
+        self._temp_roots: TempRoots | None = None
 
     @property
     def local_store(self) -> LocalStore:
@@ -132,11 +166,13 @@ class DaemonProxy:
         try:
             await self.handshake()
             await self.op_loop()
-        except (EOFError, BrokenPipeError, ConnectionError, OSError, asyncssh.misc.ConnectionLost):
+        except (EOFError, BrokenPipeError, ConnectionError, OSError) + ssh_connection_lost():
             log.debug("client_disconnected")
         except Exception:
             log.exception("session_error")
         finally:
+            if self._temp_roots is not None:
+                await self._temp_roots.close()
             if self._op_timing:
                 total_time = sum(t for _, t in self._op_timing.values())
                 total_ops = sum(n for n, _ in self._op_timing.values())
@@ -153,6 +189,41 @@ class DaemonProxy:
                 )
 
     # ── Handshake ────────────────────────────────────────────────────
+
+    def honourable_features(self) -> frozenset[str]:
+        """The standard features that pynixd may name to a client.
+
+        **A proxy honours a feature by speaking its shape on both sides.**
+        `SUPPORTED_STANDARD_FEATURES` says which shapes this code can write
+        at all, and that is only half of the question. The other half is
+        whether the backend reads them: a client that names
+        `realisation-with-path-not-hash` and a backend that does not would
+        need pynixd to translate between the two shapes, and one direction of
+        that translation has no answer on the wire. `DrvOutput` of the old
+        shape carries the hash of the derivation, and the new shape carries
+        the path; going from the path to the hash means reading the
+        derivation and hashing it, for every realisation.
+
+        So this answers what **every** store that a build can go to offers,
+        and pynixd claims nothing that one of them would refuse. Step 4 of
+        issue #162.
+
+        **A substituter is left out.** `no_schedule` marks a store that the
+        scheduler never sends a build to, and a binary cache is not a peer of
+        the worker protocol at all, so its empty feature set would answer
+        "nothing" for every configuration that holds one. The loop below that
+        collects the feature matrix leaves them out for the same reason.
+
+        A store that has never connected reports an empty set, and that is
+        the conservative answer and not a wrong one: pynixd then names no
+        feature, and both sides keep the shape that every version reads.
+        """
+        honourable = set(wire.SUPPORTED_STANDARD_FEATURES)
+        for store in self.stores.values():
+            if store.no_schedule:
+                continue
+            honourable &= set(store.features)
+        return frozenset(honourable)
 
     async def handshake(self) -> None:
         """Server-side daemon protocol handshake."""
@@ -177,11 +248,25 @@ class DaemonProxy:
         )
 
         # Feature negotiation (1.38+) — before CPU/reserveSpace
-        if self.version >= wire.proto(1, 38):
+        if self.version >= wire.FEATURE_EXCHANGE_PROTOCOL:
             client_features = await self.r.read_string_set()
-            log.debug("client_features", client_features=client_features)
+            # The intersection, and not what the client named. A client that
+            # names `realisation-with-path-not-hash` gets the new codec only
+            # when pynixd names it back, which is `intersectFeatures` at
+            # `worker-protocol-connection.cc:148`. Issue #162.
+            honourable = self.honourable_features()
+            self.standard_features = wire.negotiate_features(client_features, honourable)
+            # `ClientConn.send` writes a log message straight to the client,
+            # so it needs the set of that client and not of a backend.
+            self.client.standard_features = self.standard_features
+            log.debug(
+                "client_features",
+                client_features=client_features,
+                honourable_features=sorted(honourable),
+                standard_features=sorted(self.standard_features),
+            )
 
-            our_features = get_extension_features()
+            our_features = get_extension_features() | set(honourable)
 
             # Only build-capable stores contribute scheduling capabilities.
             # Substituters are deliberately non-scheduleable; advertising
@@ -217,11 +302,23 @@ class DaemonProxy:
     # ── Op loop ──────────────────────────────────────────────────────
 
     async def op_loop(self) -> None:
-        """Read ops, dispatch, write responses."""
+        """Read ops, dispatch, write responses.
+
+        **An operation that no registry knows ends the connection.** Nothing
+        read the arguments of that operation, so the next `read_uint64` would
+        read the first argument as the next operation number. Every operation
+        after it is then nonsense, and the client learns nothing about it.
+
+        `performOp` of Nix throws `invalid operation` at `daemon.cc:1107`,
+        before `logger->startWork()`. `canSendStderr` is therefore false, so
+        `errorAllowed` at `daemon.cc:1218` is false and the handler re-throws.
+        The outer catch at `daemon.cc:1232` writes the error, flushes and
+        returns, which closes the connection. Issue #193.
+        """
         while True:
             try:
                 op_num = await self.r.read_uint64()
-            except (EOFError, asyncssh.misc.ConnectionLost):
+            except (EOFError,) + ssh_connection_lost():
                 break
 
             req_cls = WIRE_REGISTRY.get(op_num)
@@ -229,7 +326,7 @@ class DaemonProxy:
             if req_cls is None and handler_cls is None:
                 log.warning("unknown_op", op_num=op_num)
                 await self.send_error(f"Unsupported operation: {op_num}")
-                continue
+                break
 
             op_name = req_cls.name if req_cls else handler_cls.__name__ if handler_cls else f"op_{op_num}"
 
@@ -246,7 +343,7 @@ class DaemonProxy:
             except Exception as ex:
                 log.exception("handle_op_error", name=op_name)
                 await self.client.flush()
-                await self.send_error(repr(ex))
+                await self.send_error(_error_text(ex))
             finally:
                 elapsed = time.monotonic() - t0
                 count, acc = self._op_timing.get(op_num, (0, 0.0))
@@ -264,7 +361,7 @@ class DaemonProxy:
         if isinstance(request, BuildPathsRequest):
             return await self.goal_engine.build_paths(request, client=self.client)
         if isinstance(request, QueryMissingRequest):
-            return await self.goal_engine.query_missing(request)
+            return await self.goal_engine.query_missing(request, client=self.client)
 
         local_resp: WireResponse | None = None
         try:
@@ -280,7 +377,7 @@ class DaemonProxy:
 
         # Extension not supported by local store or returned not found — try other stores
         for store in self.stores.values():
-            if store.store_id == StoreId("local"):
+            if store.store_id == LOCAL_STORE_ID:
                 continue  # already tried above
             try:
                 # We don't forward client logs to remote stores for simple queries
@@ -332,13 +429,7 @@ class DaemonProxy:
 
     def store_for_output_path(self, path: str) -> DaemonStore | None:
         """Look up the DaemonStore that produced a given output path."""
-        store_id = self.ctx.output_locations.get(path)
-        if store_id is None:
-            return None
-        store = self.ctx._stores.get(store_id)
-        if not isinstance(store, DaemonStore):
-            return None
-        return store
+        return self.ctx.store_for_output_path(path)
 
     async def dispatch(self, op_num: int) -> WireResponse | None:
         """Route an operation to its request type's handle method."""
@@ -360,13 +451,32 @@ class DaemonProxy:
         # NEW: try serde wire registry for handler-less ops
         if wire_cls := WIRE_REGISTRY.get(op_num):
             req = await wire_cls.from_reader(
-                ReadContext(reader=self.r, version=self.version),
+                ReadContext(reader=self.r, version=self.version, features=self.standard_features),
             )
             return await self.execute(req)
 
         log.warning("unhandled_op", op_num=op_num)
         await self.send_error(f"Unhandled operation: {op_num}")
         return None
+
+    # ── Temporary roots ──────────────────────────────────────────────
+
+    async def add_temp_root(self, path: str) -> None:
+        """Hold `path` against the collector until this client goes away.
+
+        pynixd writes the root itself, in the `temproots` directory of the
+        store. It used to forward the operation to the upstream daemon, and
+        the root then belonged to a pooled connection rather than to the
+        client that asked for it. Issue #174, and `temp_roots.py` for how the
+        file works.
+        """
+        if self._temp_roots is None:
+            # The state directory of the store that pynixd serves, which is
+            # `<root>/nix/var/nix` for a chroot store and `NIX_STATE_DIR` for
+            # a relocated one. `StoreLayout` answers both. Issue #176.
+            layout = getattr(self.local_store, "layout", None) or StoreLayout.chroot(None)
+            self._temp_roots = TempRoots(layout.state_dir)
+        await self._temp_roots.add(path)
 
     # ── Helpers ───────────────────────────────────────────────────────
 

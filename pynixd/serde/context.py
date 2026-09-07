@@ -1,20 +1,23 @@
-"""Execution context for daemon operations."""
+"""pynixd-specific construction helpers for protocol codec contexts."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from nix_daemon_protocol.context import ReadContext as ProtocolReadContext, WriteContext as ProtocolWriteContext
+
+from ..exceptions import BackendError
+from .auth import Role
+
 if TYPE_CHECKING:
     from ..connection import ClientConn, Connection
     from ..proxy import DaemonProxy
-    from ..wire import NixReader, NixWriter
-    from .auth import Role
 
 
 @dataclass(frozen=True)
 class RequestContext:
-    """Context passed to operation handlers."""
+    """Daemon execution state passed to pynixd operation handlers."""
 
     proxy: DaemonProxy
     role: Role
@@ -22,19 +25,26 @@ class RequestContext:
     username: str
 
 
-@dataclass(frozen=True)
-class ReadContext:
-    """Bundles the arguments needed to deserialize a response from the wire."""
+class ReadContext(ProtocolReadContext):
+    """Protocol read context with pynixd connection convenience constructors.
 
-    reader: NixReader
-    version: int
-    client: ClientConn | None = None
-    buffer_logs: bool = True
-    raise_on_error: bool = True
+    **Each constructor takes the negotiated feature set of its own peer.**
+    A proxy has two of them, and they are not the same set: the client
+    handshake gives `proxy.standard_features` and each backend handshake
+    gives `conn.standard_features`. A field with `needs_features` reads the
+    set of the side it is going to or coming from, so a context built from
+    the wrong one puts the shape of one peer on the wire of the other.
+    Issue #162.
+    """
 
     @classmethod
     def from_request(cls, ctx: RequestContext) -> ReadContext:
-        return cls(reader=ctx.proxy.r, version=ctx.version)
+        return cls(
+            reader=ctx.proxy.r,
+            version=ctx.version,
+            error_factory=BackendError,
+            features=ctx.proxy.standard_features,
+        )
 
     @classmethod
     def from_conn(
@@ -49,27 +59,28 @@ class ReadContext:
         return cls(
             reader=conn.r,
             version=conn.version,
-            client=client,
+            log_sink=client,
             buffer_logs=buffer_logs,
             raise_on_error=raise_on_error,
+            error_factory=BackendError,
+            features=conn.standard_features,
         )
 
 
-@dataclass(frozen=True)
-class WriteContext:
-    """Bundles the arguments needed to serialize a request/response to the wire."""
+class WriteContext(ProtocolWriteContext):
+    """Protocol write context with pynixd connection convenience constructors.
 
-    writer: NixWriter
-    version: int
+    See `ReadContext` for why each constructor takes its own peer's set.
+    """
 
     @classmethod
     def from_request(cls, ctx: RequestContext) -> WriteContext:
-        return cls(writer=ctx.proxy.w, version=ctx.version)
+        return cls(writer=ctx.proxy.w, version=ctx.version, features=ctx.proxy.standard_features)
 
     @classmethod
     def from_conn(cls, conn: Connection) -> WriteContext:
-        return cls(writer=conn.w, version=conn.version)
+        return cls(writer=conn.w, version=conn.version, features=conn.standard_features)
 
     @classmethod
     def from_proxy(cls, proxy: DaemonProxy) -> WriteContext:
-        return cls(writer=proxy.w, version=proxy.version)
+        return cls(writer=proxy.w, version=proxy.version, features=proxy.standard_features)

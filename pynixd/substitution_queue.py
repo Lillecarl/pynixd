@@ -13,11 +13,11 @@ import structlog
 from cachetools import TTLCache
 
 from .exceptions import OpNotImplementedError
-from .serde import AddToStoreNarRequest, NarFromPathRequest, QueryPathInfoRequest
-from .serde import StorePath as SerdeStorePath
+from .serde import AddToStoreNarRequest, NarFromPathRequest, QueryPathInfoRequest, StorePath as SerdeStorePath
 from .serde.context import ReadContext, WriteContext
+from .serde.ids import LOCAL_STORE_ID
 from .serde.valid_path_info import ValidPathInfo
-from .store import DaemonStore, HTTPBinaryCacheStore
+from .store import DaemonStore, is_http_binary_cache
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -145,8 +145,8 @@ class SubstitutionQueue:
         if not to_probe:
             return SubstitutionAvailability.unavailable()
 
-        done = asyncio.Event()
-        lock = asyncio.Lock()
+        done = anyio.Event()
+        lock = anyio.Lock()
         first_positive: SubstitutionQueryResult | None = None
         healthy_pending = {store.store_id for store in to_probe if self.should_wait_for(store.store_id)}
 
@@ -216,7 +216,7 @@ class SubstitutionQueue:
         return (
             store
             for store_id, store in sorted(self.ctx.stores.items(), key=lambda item: str(item[0]))
-            if str(store_id) != "local" and store.no_schedule
+            if store_id != LOCAL_STORE_ID and store.no_schedule
         )
 
     async def _query_store(self, path: StorePath, store: Store) -> SubstitutionQueryResult:
@@ -245,9 +245,9 @@ class SubstitutionQueue:
         async def query_and_record(store: Store) -> None:
             self.record_query_result(path, await self._query_store(path, store))
 
-        async with asyncio.TaskGroup() as tg:
+        async with anyio.create_task_group() as tg:
             for store in healthy_stores:
-                tg.create_task(query_and_record(store))
+                tg.start_soon(query_and_record, store)
 
         for store in background_stores:
             self._track_probe_task(asyncio.create_task(query_and_record(store)))
@@ -275,7 +275,7 @@ class SubstitutionQueue:
             await conn.w.drain()
 
             framed = conn.w.framed()
-            if isinstance(candidate.store, HTTPBinaryCacheStore):
+            if is_http_binary_cache(candidate.store):
                 http_narinfo = candidate.http_narinfo
                 if http_narinfo is None:
                     http_narinfo = await candidate.store.get_narinfo(path)

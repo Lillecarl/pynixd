@@ -7,7 +7,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from .serde.ids import StoreId
+from .serde.ids import LOCAL_STORE_ID, StoreId
+from .store.daemon import DaemonStore
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -32,11 +33,37 @@ class PynixdContext:
     db: LocalStoreDB | None = None
     scheduler: Scheduler | None = None
     output_locations: dict[str, StoreId] = field(default_factory=dict)
+    """Where each output a backend built now lives.
+
+    A fleet build leaves its outputs on the backend that ran it, and pynixd
+    serves reads of those paths from there. Every part of pynixd that asks
+    "does this path exist" must consult this map as well as the local store,
+    or it reports a path that pynixd can serve as missing.
+    """
+
+    def store_for_output_path(self, path: str) -> DaemonStore | None:
+        """The backend that holds *path*, or `None` when no backend does.
+
+        `None` means only that this map does not know the path. The local
+        store may still hold it, and the caller asks the local store itself.
+
+        This lives on the context, and not on `DaemonProxy`, because both the
+        proxy and the goal engine have to ask the question. It was a method of
+        the proxy alone, so `EnsureDerivedPathGoal` could not reach it and
+        reported every backend-resident path as invalid -- issue #160.
+        """
+        store_id = self.output_locations.get(path)
+        if store_id is None:
+            return None
+        store = self._stores.get(store_id)
+        if not isinstance(store, DaemonStore):
+            return None
+        return store
 
     @property
     def local_store(self) -> LocalStore:
         """The primary local Nix daemon store for this context."""
-        return self._stores[StoreId("local")]  # type: ignore[return-value]
+        return self._stores[LOCAL_STORE_ID]  # type: ignore[return-value]
 
     @property
     def stores(self) -> Mapping[StoreId, Store]:

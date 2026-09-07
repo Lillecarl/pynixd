@@ -6,8 +6,7 @@ from pathlib import Path
 import pytest
 
 from pynixd import Server
-from pynixd.serde import IsValidPathRequest
-from pynixd.serde import StorePath as SerdeStorePath
+from pynixd.serde import IsValidPathRequest, StorePath as SerdeStorePath
 from pynixd.serde.ids import StoreId
 from pynixd.store import LocalSocketStore
 from tests.conftest import CLIENT_BIN, make_test_spec, run_subproc
@@ -50,7 +49,6 @@ async def pynixd_server(tmp_path: Path):
     | F.BUILD_PATHS
     | F.BUILD_PATHS_WITH_RESULTS
 )
-@pytest.mark.no_pynixd
 async def test_nix_build_via_unix(pynixd_server):
     """Verify that 'nix build' works when using pynixd via Unix socket."""
     server, socket_path, store_path = pynixd_server
@@ -91,7 +89,6 @@ async def test_nix_build_via_unix(pynixd_server):
             expr_path.unlink()  # noqa: ASYNC240 — test cleanup
 
 
-@pytest.mark.no_pynixd
 @pytest.mark.legacy_nix_commands
 async def test_nix_copy_via_unix(pynixd_server, tmp_path: Path):
     """Verify 'nix copy' works against pynixd via Unix socket."""

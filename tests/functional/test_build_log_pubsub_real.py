@@ -10,10 +10,11 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
+import anyio
 import pytest
 import structlog
 
-from tests.conftest import CLIENT_BIN, run_subproc, server_uri
+from tests.conftest import CLIENT_BIN, TEST_NIX, run_subproc, server_uri
 from tests.test_features import TestFeatures as F
 
 if TYPE_CHECKING:
@@ -24,8 +25,6 @@ if TYPE_CHECKING:
     from pynixd import Server
 
 log = structlog.get_logger(__name__)
-
-TEST_NIX = "tests/nix"
 
 
 async def _run_client_build(
@@ -65,7 +64,7 @@ async def _run_client2_delayed(
     attr: str,
 ) -> tuple[int, str, str, str]:
     """Wait 5s then run a nix build, so the first build is still in-flight."""
-    await asyncio.sleep(5)
+    await anyio.sleep(5)
     return await _run_client_build(client_store_path, builders_uri, nix_file, attr)
 
 

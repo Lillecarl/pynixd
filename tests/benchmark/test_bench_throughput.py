@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-from pathlib import Path
 from typing import TYPE_CHECKING
 
+import anyio
 import pytest
 import structlog
 
@@ -18,6 +18,7 @@ from tests.conftest import (
     CLIENT_BIN,
     NIX_BIN,
     STORE_PREFIX,
+    TEST_NIX,
     make_test_spec,
     rmtree_robust,
     run_subproc,
@@ -30,7 +31,7 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 # Common test configuration
-NIX_FILE = Path("tests/nix")
+NIX_FILE = TEST_NIX
 TARGET = "parallel"
 MAX_JOBS = 20
 TEST_ENV = {
@@ -101,7 +102,7 @@ async def test_throughput_daemon() -> None:
         for _ in range(100):
             if socket_path.exists():
                 break
-            await asyncio.sleep(0.05)
+            await anyio.sleep(0.05)
 
         for _ in range(50):
             try:
@@ -110,7 +111,7 @@ async def test_throughput_daemon() -> None:
                 await w.wait_closed()
                 break
             except (ConnectionRefusedError, ConnectionResetError):
-                await asyncio.sleep(0.1)
+                await anyio.sleep(0.1)
 
         remote_uri = f"unix://{socket_path}"
 

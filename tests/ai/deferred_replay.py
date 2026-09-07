@@ -169,8 +169,8 @@ async def main() -> None:
     deferred_drv_path = StorePath(stdout.strip())
     print(f"Deferred .drv path: {deferred_drv_path}")
 
-    ca_parsed = await read_drv_file(root_store.store_path, ca_drv_path)
-    deferred_parsed = await read_drv_file(root_store.store_path, deferred_drv_path)
+    ca_parsed = await read_drv_file(ca_drv_path)
+    deferred_parsed = await read_drv_file(deferred_drv_path)
     assert ca_parsed is not None
     assert deferred_parsed is not None
 

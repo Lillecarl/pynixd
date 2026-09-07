@@ -18,6 +18,7 @@ import structlog
 
 from tests.conftest import (
     CLIENT_BIN,
+    TEST_NIX,
     run_subproc,
     ssh_admin_uri,
     ssh_user_uri,
@@ -102,7 +103,7 @@ async def test_add_build_log_non_admin(pynixd_server: Server) -> None:
         "--eval-store",
         "auto",
         "--file",
-        "tests/nix",
+        str(TEST_NIX),
         "minimal.leaf",
         "--no-link",
     ]
@@ -130,7 +131,7 @@ async def test_add_signatures_via_store(
         "--store",
         uri,
         "--file",
-        "tests/nix",
+        str(TEST_NIX),
         "minimal.leaf",
         "--no-link",
         "--print-out-paths",

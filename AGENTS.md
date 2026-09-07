@@ -79,6 +79,85 @@ Builds are the only "complex" operations in `pynixd`. They are handled via a glo
 - Each build executes in a spawned task, surviving client disconnects.
 - Outputs are automatically pulled into the `LocalStore` upon successful completion.
 
+## 5b. Where pynixd and Nix disagree: the two markers
+
+**Matching the bytes of `nix-daemon` is a measure, and it is not the goal.**
+The parity run puts one client against a daemon and against pynixd, and a
+difference between the two recordings is how a divergence becomes visible. A
+difference is not, by itself, a fault to remove. Nix is not perfect: C++
+limits what its authors can do easily, and Python does not carry the same
+limits.
+
+**Every divergence gets a verdict, and "pynixd is right" is one of them.** A
+comment that reads as if Nix is the specification hides the difference between
+"pynixd does this because it is right" and "pynixd does this because the
+parity run compares the bytes". It also gives a later reader no place to start
+a correction.
+
+There are three verdicts, and two markers:
+
+| Verdict | Marker |
+| --- | --- |
+| Nix is wrong, and pynixd copies it | `NIX-DEFECT (#191):` |
+| Nix is wrong, and pynixd answers correctly | `NIX-DEFECT (#191):` |
+| Nix is right, and pynixd answers differently | `NIX-DEVIATION (#206):` |
+
+### `NIX-DEFECT (#191):`, for a defect of Nix
+
+Write the tag exactly, and give four parts:
+
+1. the mechanism in Nix, with the file and the line, in back quotes;
+2. what the mechanism gets wrong;
+3. what pynixd could do instead;
+4. why pynixd still copies it, or how pynixd already deviates.
+
+Report the defect on the fork, which is `Lillecarl/nix`, and name that report
+in part 4. Do not report it upstream.
+
+### `NIX-DEVIATION (#206):`, for a decision of pynixd
+
+Nix is right here, or neither answer is wrong, and pynixd answers differently
+on purpose. Write the tag exactly, and give four parts:
+
+1. the mechanism in Nix, with the file and the line, in back quotes;
+2. what pynixd does instead;
+3. why the difference is worth its cost;
+4. what a reader must measure to reverse the decision.
+
+### A divergence that makes pynixd better
+
+**Keep it.** Do not make pynixd worse to match a byte. pynixd already
+schedules, caches and removes duplicate work differently, and none of that
+reaches the client. An answer that is more complete than the answer of Nix is
+the same kind of decision, and it does reach the client.
+
+Four things make such a divergence complete:
+
+1. a measurement that states what each side answers, and why;
+2. a marker of one of the two kinds above;
+3. a pytest of this repository, which `### Mirror each divergence from the
+   functional suite` asks for;
+4. an entry of `EXEMPTIONS` in `wirelog/diff.py`, so that the parity run stops
+   reporting the difference.
+
+**Scope the exemption so that it cannot hide a difference that nobody
+explained.** `EXEMPTIONS` keys on the name of a field today, and a whole field
+is too wide when only some of its differences have a reason. An exemption on
+`response.will_build` covers the seven differences of issue #203, and it
+covers the eighth one as well, which has another cause. When a whole field is
+the only key available, that is a fault of the comparison, and it is not a
+reason to widen the exemption. Issue #202 holds that work.
+
+**Do not add a "Nix-correct mode" and a "correct-result mode".** A mode splits
+every behaviour in two, and the parity run can prove only one of them. A flag
+earns its place when one entry of a list has a measured cost, and the flag is
+then scoped to that entry.
+
+Issue #191 and issue #206 hold the two lists.
+`tests/meta/test_nix_defect_markers.py` finds every marker and reads the two
+parts that a machine can read: the tag names its tracking issue, and the
+paragraph names a file of Nix.
+
 ## 6. Execution Sanity & Recovery
 - **Halt on Ambiguity**: If a tool output indicates potential corruption (e.g., duplicate declarations in a `replace` output, unexpected truncations), or if you lose track of the file state relative to the VCS, **STOP immediately**. Do not attempt blind recovery (like `write_file` with partial content).
 - **Verify Before Rewrite**: Before using `write_file` to "fix" a large file, you MUST have read the *entire* file in the current turn to ensure no data loss.
@@ -110,6 +189,44 @@ Builds are the only "complex" operations in `pynixd`. They are handled via a glo
 - Keep tests simple and explicit. Avoid over-engineered abstractions.
 - Construct commands as plain lists so the exact invocation is visible at a glance.
 - Use `pytest.fixture(autouse=True)` for per-test cleanup (store directories, etc.).
+
+### Mirror each divergence from the functional suite
+
+The Nix functional suite finds each place where pynixd does not match Nix.
+That suite is slow, it needs a Linux builder, and it runs against a matrix of
+Nix versions. It does not run on each change.
+
+**A correction is not complete until a pytest of this repository asserts the
+same thing.** The pytest is what stops the divergence from coming back with no
+signal.
+
+Name the assertion that the test stands for. Give the file and the line of the
+functional suite, in the docstring of the test. A reader then finds the
+upstream assertion, and also the reason that the test exists.
+
+Copy the shape of these tests:
+
+| Test | Assertion of the suite |
+| --- | --- |
+| `tests/unit/test_build_log_replay.py` | `build.sh:167` |
+| `tests/unit/test_derived_path.py` | `build.sh:91` |
+| `tests/unit/test_build_paths_goals.py` | `build.sh:8` |
+| `tests/unit/test_keep_going_and_max_jobs.py` | `build.sh:247`, `build.sh:269` |
+| `tests/unit/test_dispatch_order.py` | `build.sh:167`, `build.sh:176` |
+| `tests/unit/test_ensure_child_logs.py` | `build.sh:167` |
+| `tests/parity/test_wire_parity.py` | `build.sh:91` |
+
+The functional suite proves the bytes of a run. A test of this kind proves the
+decision that makes those bytes, and it runs in one second.
+
+**A divergence that pynixd keeps needs a marker as well.** Section 5b gives
+the two, and the verdict picks one: `NIX-DEFECT (#191):` when Nix is wrong,
+and `NIX-DEVIATION (#206):` when Nix is not. Do not write `NIX-DEFECT` for a
+place where Nix is right, because the tag then states a defect that nobody
+found.
+
+The pytest says what pynixd does. The marker says why the two differ, and it
+is the register that a later reader reads to reverse the decision.
 
 ### Running Validation Commands
 - **Single pytest invocation only**: NEVER run more than one `pytest` process at a time in this repository. Functional tests share session store paths, daemon sockets, and `/tmp/pynixd-stores` state; concurrent pytest runs can race each other and produce misleading failures that look like real regressions.

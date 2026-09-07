@@ -20,8 +20,7 @@ async def test_new_serde_is_valid_path_roundtrip(tmp_path_factory: TempPathFacto
     Creates a local store connected to the system daemon and sends
     an IsValidPath request through the new serde types.
     """
-    from pynixd.serde import IsValidPathRequest, IsValidPathResponse
-    from pynixd.serde import StorePath as SerdeStorePath
+    from pynixd.serde import IsValidPathRequest, IsValidPathResponse, StorePath as SerdeStorePath
 
     store_path = Path(tmp_path_factory.mktemp("serde-wire"))
     store = LocalStore(
@@ -61,8 +60,7 @@ async def test_local_db_store_is_valid_path_serde() -> None:
     await store.start()
 
     try:
-        from pynixd.serde import IsValidPathRequest, IsValidPathResponse
-        from pynixd.serde import StorePath as SerdeStorePath
+        from pynixd.serde import IsValidPathRequest, IsValidPathResponse, StorePath as SerdeStorePath
 
         req = IsValidPathRequest(
             path=SerdeStorePath(path=str(StorePath("/nix/store/00000000000000000000000000000000-test")))
@@ -77,8 +75,7 @@ async def test_local_db_store_is_valid_path_serde() -> None:
 async def test_local_db_store_is_valid_path_serde_cache_hit() -> None:
     """LocalDBStore executor returns serde IsValidPathResponse."""
     from pynixd.config import LocalSocketStoreSpec
-    from pynixd.serde import IsValidPathRequest, IsValidPathResponse
-    from pynixd.serde import StorePath as SerdeStorePath
+    from pynixd.serde import IsValidPathRequest, IsValidPathResponse, StorePath as SerdeStorePath
     from pynixd.serde.ids import StoreId
     from pynixd.store.local_db import LocalDBStore
     from pynixd.store_path import StorePath

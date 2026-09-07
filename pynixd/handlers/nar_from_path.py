@@ -29,7 +29,7 @@ class NarFromPathHandler(Handler):
         """Decode NarFromPath request, query path info, stream unframed NAR bytes from daemon to client."""
         # 1. Read request from client (serde)
         req = await NarFromPathRequest.from_reader(
-            ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version),
+            ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version, features=ctx.proxy.standard_features),
         )
 
         # 2. Query path info to determine nar_size
@@ -58,7 +58,9 @@ class NarFromPathHandler(Handler):
 
             # 5. Write logs to client
             await ctx.proxy.client.flush()
-            await logs.to_writer(WriteContext(writer=ctx.proxy.w, version=ctx.version))
+            await logs.to_writer(
+                WriteContext(writer=ctx.proxy.w, version=ctx.version, features=ctx.proxy.standard_features)
+            )
 
             # 6. Stream unframed NAR bytes from daemon to client
             if nar_size > 0:

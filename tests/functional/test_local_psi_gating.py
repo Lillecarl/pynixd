@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
+import anyio
 import pytest
 import structlog
 
@@ -28,7 +29,7 @@ class MockMonitor(ResourceMonitor):
 
     async def run(self) -> None:
         while self.running:  # noqa: ASYNC110 — test mock
-            await asyncio.sleep(1)
+            await anyio.sleep(1)
 
 
 @pytest.mark.covers(F.SERVER_PSI_GATING | F.STORE_LOCAL)
@@ -101,7 +102,7 @@ async def test_gate_wait_timeout_success(tmp_path: Path) -> None:
         task = asyncio.create_task(acquire())
 
         # Wait a bit, then set the gate
-        await asyncio.sleep(0.5)
+        await anyio.sleep(0.5)
         store.gate.cpu_clear.set()
 
         result = await task

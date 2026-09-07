@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 
     from ..connection import Connection
     from ..monitor import ResourceGate
+    from ..serde import SetOptionsRequest
 
 log = structlog.get_logger(__name__)
 
@@ -40,8 +41,10 @@ class ConnectionPool:
         factory: Callable[[], Awaitable[Connection]],
         gate: ResourceGate,
         idle_ttl: float = 10.0,
+        max_lifetime: float = 300.0,
         max_connections: int = 64,
         on_connection_created: Callable[[Connection], None] | None = None,
+        on_pool_empty: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         """Configure pool with connection factory, memory gate, and concurrency limits."""
 
@@ -49,8 +52,29 @@ class ConnectionPool:
         self.factory = factory
         self.gate = gate
         self.idle_ttl = idle_ttl
-        self._slots = asyncio.Semaphore(max_connections)
+        self.max_lifetime = max_lifetime
+        """How long a connection may serve before the pool retires it.
+
+        `idle_ttl` retires a connection that nobody uses. This retires one
+        that everybody uses, and the reason is the temporary roots of the
+        daemon. A worker adds a root for each path that it builds or
+        substitutes, and it releases those roots when it exits. A pooled
+        connection keeps the worker alive, so without this rule a connection
+        in steady use holds every root it ever made, and the collector can
+        free nothing that passed through it.
+
+        This is a bound on how long that lasts, and not a promise that a root
+        goes away at the end of the client that made it. Issue #174.
+        """
+        self._slots = anyio.Semaphore(max_connections)
         self.on_connection_created = on_connection_created
+        self.on_pool_empty = on_pool_empty
+        """Called once the pool holds no connection at all, active or idle.
+
+        A store that owns a transport under the pool releases it here. An SSH
+        store holds one `asyncssh` connection for every channel it opens, and
+        nothing above the pool knows when the last one goes away.
+        """
 
         self.active_connections = 0
         self.idle_conns: list[tuple[Connection, float]] = []
@@ -83,7 +107,7 @@ class ConnectionPool:
             expired: list[tuple[Connection, float]] = []
             for item in self.idle_conns:
                 conn, returned_at = item
-                if now - returned_at >= self.idle_ttl:
+                if now - returned_at >= self.idle_ttl or self._too_old(conn, now):
                     expired.append(item)
 
             # Remove from tracking lists synchronously to prevent race conditions
@@ -105,16 +129,63 @@ class ConnectionPool:
                 with suppress(Exception):
                     await conn.close()
 
-    async def get_or_create_conn(self) -> Connection:
-        """Return a reusable idle connection, or create a new one."""
+            await self._notify_if_empty()
+
+    async def _notify_if_empty(self) -> None:
+        """Tell the owner when the last connection has gone.
+
+        Checked after the sweep closes what expired, which is the only place
+        the pool can reach zero without someone about to use it again.
+        """
+        if self.on_pool_empty is None:
+            return
+        if self.active_connections or self.idle_conns or self.all_conns:
+            return
+        log.debug("pool_empty", store_id=self.store_id)
+        try:
+            await self.on_pool_empty()
+        except Exception:
+            # The owner's teardown is not this sweep's business to fail on,
+            # and the sweep task has nobody to report to.
+            log.exception("pool_empty_callback_failed", store_id=self.store_id)
+
+    def _too_old(self, conn: Connection, now: float) -> bool:
+        """True when this connection has served long enough to retire."""
+        return self.max_lifetime > 0 and now - conn.opened_at >= self.max_lifetime
+
+    async def get_or_create_conn(self, options: SetOptionsRequest | None = None) -> Connection:
+        """Return a reusable idle connection, or create a new one.
+
+        **A connection carries the options of one client for its whole life.**
+        The daemon protocol has `SetOptions` and no operation that takes an
+        option away, so a second `SetOptions` on one connection adds to the
+        first set rather than replacing it. A client that built with
+        `--auto-optimise-store` therefore left that setting on, and the next
+        client got a store that optimises when it asked for none.
+        `main:optimise-store` reads exactly that. So an idle connection with
+        another set is of no use here, and this discards it. Issue #192.
+        """
 
         """Pop an idle connection or create a new one."""
         now = time.monotonic()
         while self.idle_conns:
             candidate, returned_at = self.idle_conns.pop()
-            if now - returned_at >= self.idle_ttl:
+            if now - returned_at >= self.idle_ttl or self._too_old(candidate, now):
                 log.debug(
                     "pool_discarding_expired",
+                    store_id=self.store_id,
+                    conn_id=candidate.id,
+                    age=f"{now - candidate.opened_at:.1f}s",
+                )
+                if candidate in self.all_conns:
+                    self.all_conns.remove(candidate)
+                with suppress(Exception):
+                    await candidate.close()
+                continue
+
+            if candidate.applied_options is not None and candidate.applied_options != options:
+                log.debug(
+                    "pool_discarding_other_options",
                     store_id=self.store_id,
                     conn_id=candidate.id,
                 )
@@ -161,6 +232,7 @@ class ConnectionPool:
     async def acquire(
         self,
         kind: str | None = None,
+        options: SetOptionsRequest | None = None,
     ) -> AsyncIterator[Connection]:
         """Acquire a connection from the shared pool.
 
@@ -212,7 +284,7 @@ class ConnectionPool:
             self.active_connections += 1
             conn: Connection | None = None
             try:
-                conn = await self.get_or_create_conn()
+                conn = await self.get_or_create_conn(options)
 
                 # Increment nesting count
                 counts = _nested_conns.get({}).copy()
@@ -229,13 +301,24 @@ class ConnectionPool:
                     _nested_conns.set(counts)
 
                     if conn is not None:
-                        if conn.dirty:
-                            log.warning(
-                                "store_discarding_dirty_connection",
-                                store_id=self.store_id,
-                                conn_id=conn.id,
-                                op_log=" -> ".join(conn.op_log[-10:]) or "(empty)",
-                            )
+                        now = time.monotonic()
+                        retired = self._too_old(conn, now)
+                        if conn.dirty or retired:
+                            if retired and not conn.dirty:
+                                log.debug(
+                                    "pool_retiring_old_connection",
+                                    store_id=self.store_id,
+                                    conn_id=conn.id,
+                                    age=f"{now - conn.opened_at:.1f}s",
+                                    max_lifetime=f"{self.max_lifetime:.1f}s",
+                                )
+                            else:
+                                log.warning(
+                                    "store_discarding_dirty_connection",
+                                    store_id=self.store_id,
+                                    conn_id=conn.id,
+                                    op_log=" -> ".join(conn.op_log[-10:]) or "(empty)",
+                                )
                             if conn in self.all_conns:
                                 self.all_conns.remove(conn)
                             with suppress(Exception):
@@ -255,6 +338,39 @@ class ConnectionPool:
     def transfer_conn(self) -> AbstractAsyncContextManager[Connection]:
         """Acquire a connection for transfer operations."""
         return self.acquire("transfer")
+
+    async def retire_idle(self) -> int:
+        """Close each connection that nobody uses now, and say how many.
+
+        `idle_ttl` does this after some seconds, and a garbage collection
+        cannot wait: a worker of the daemon holds a temporary root for each
+        path that it took, and it releases those roots when it exits. An idle
+        connection keeps a worker alive, so the collector reads a root that no
+        client asked for and frees nothing.
+
+        **This narrows the window, and it does not close it.** A connection
+        that is in flight stays, so its roots stay. Nothing stops another
+        client from taking a connection and adding a root between this call
+        and the moment the collector reads the file. And a client that reaches
+        the store directly, with no pynixd in the path, never calls this at
+        all: `multiple-outputs.sh:80` of Nix runs
+        `env -u NIX_REMOTE nix store delete --ignore-liveness`, and it fails
+        for that reason.
+
+        The lifetime of the connection is the mechanism, so the answer is the
+        one that issue #174 states: give each client session its own upstream
+        connection, and close it with the session. Then a root lives as long
+        as the client that made it, as in `nix-daemon`, and no window is left.
+        """
+        idle = self.idle_conns
+        self.idle_conns = []
+        for conn, _ in idle:
+            if conn in self.all_conns:
+                self.all_conns.remove(conn)
+            log.debug("pool_retiring_idle", store_id=self.store_id, conn_id=conn.id)
+            with suppress(Exception):
+                await conn.close()
+        return len(idle)
 
     async def close(self) -> None:
         """Close all connections and cancel the idle sweep task."""

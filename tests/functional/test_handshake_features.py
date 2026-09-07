@@ -67,6 +67,12 @@ async def test_handshake_feature_announcement(tmp_path: Path) -> None:
                 port=port_b,
                 username=server_b.username,
                 client_keys=[key],
+                # The builder is a server this test just started on the
+                # loopback interface, so there is no host key to pin and
+                # nothing in the path to substitute an output. Issue #165
+                # gives the field no default for exactly this reason: the
+                # choice belongs in the configuration and not in a default.
+                known_hosts=None,
                 nix_bin=str(NIX_BIN),
                 monitor=False,
                 probe=True,

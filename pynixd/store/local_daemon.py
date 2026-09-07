@@ -12,11 +12,14 @@ import os
 import shlex
 import signal
 import time
+from collections import deque
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import anyio
 import structlog
+
+from nix_daemon_protocol.store_dir import on_disk
 
 from ..config import LocalSocketStoreSpec, PynixdSettings
 from ..connection import Connection
@@ -30,6 +33,30 @@ if TYPE_CHECKING:
     from ..monitor import ResourceMonitor
 
 log = structlog.get_logger(__name__)
+
+# How many lines of daemon output to keep for a start-up error message. Enough
+# to carry a Nix error and the lines around it, and bounded because a daemon
+# that runs for a week must not grow a list for a week.
+_RECENT_OUTPUT_LINES = 50
+
+_DAEMON_START_TIMEOUT = 30.0
+"""Seconds to wait for a managed `nix-daemon` to bind and then accept.
+
+**One budget for both steps, and it is generous.** The two waits had 10 s and
+5 s, and the harder of the two had the shorter one: a socket file appears as
+soon as `bind` returns, and `accept` needs the daemon to have finished its own
+start-up. `main:multiple-outputs-substitute-failure` of the Nix functional
+suite failed on the 5 s one while the rest of the suite loaded the machine,
+and the test then reported nothing about its own subject. Issue #199.
+
+A daemon that starts in the ordinary way binds and listens in milliseconds, so
+a larger number costs nothing in the case that works. The loop leaves as soon
+as the process dies, so a daemon that fails to start is still reported at
+once, and not after the whole budget.
+"""
+
+_DAEMON_POLL_INTERVAL = 0.05
+"""Seconds between two checks. It is the granularity, and not the budget."""
 
 
 class LocalStore(DaemonStore):
@@ -50,20 +77,34 @@ class LocalStore(DaemonStore):
         """Configure local daemon paths, socket management, and monitor."""
         super().__init__(spec)
 
-        socket_path = spec.socket_path or Path("nix/var/nix/daemon-socket/pynixd-nix")
-        self.managed = self.store_path != Path("/")
-        if not self.managed and not socket_path.is_absolute():
-            self.socket_path = Path("/nix/var/nix/daemon-socket/socket")
-        elif not socket_path.is_absolute():
-            self.socket_path = self.store_path / socket_path
-        else:
+        socket_path = spec.socket_path or Path("pynixd-nix")
+        # A relocated store is always ours to start: `NIX_STORE_DIR` names a
+        # store that no daemon of the machine serves.
+        self.managed = self.layout.relocated or self.store_path != Path("/")
+        if socket_path.is_absolute():
             self.socket_path = socket_path
+        elif not self.managed:
+            self.socket_path = Path("/nix/var/nix/daemon-socket/socket")
+        else:
+            # A relative path is a name under the `daemon-socket` directory
+            # of the state of this store. The old default joined
+            # `nix/var/nix/daemon-socket/pynixd-nix` to the store root, which
+            # gives the same path for a chroot store and the wrong one for a
+            # relocated store.
+            self.socket_path = self.layout.socket_path(socket_path.name)
 
         self.nix_bin = spec.nix_bin
         self.monitor_enabled = spec.monitor
         self.daemon_proc: asyncio.subprocess.Process | None = None
         self.daemon_ready: anyio.Event | None = None
         self._daemon_log_task: asyncio.Task | None = None
+        # The last lines the daemon wrote, for the error paths of
+        # `ensure_daemon`. Those used to call `daemon_proc.stderr.read()`, but
+        # `_stream_daemon_output` holds a `readline()` on that same stream from
+        # the moment the daemon starts, so the read raised "read() called while
+        # another coroutine is already waiting for incoming data" and every
+        # startup failure reported that instead of its own cause.
+        self._recent_output: deque[str] = deque(maxlen=_RECENT_OUTPUT_LINES)
         self.nix_config = spec.nix_config
         self.extra_env = spec.extra_env or {}
         self.extra_args = spec.extra_args or []
@@ -108,18 +149,16 @@ class LocalStore(DaemonStore):
             log.info("removing_stale_socket", socket_path=str(self.socket_path))
             self.socket_path.unlink()
 
-        path = self.store_path or Path("/")
         socket_dir = self.socket_path.parent
         socket_dir.mkdir(parents=True, exist_ok=True)
 
         cmd = [
             self.nix_bin,
             "daemon",
-            "--store",
-            str(path),
+            *self.layout.daemon_arguments(),
             "--option",
             "build-dir",
-            str(path / "nix" / "var" / "nix" / "builds"),
+            str(self.layout.build_dir),
             "--log-format",
             "internal-json",
         ]
@@ -128,7 +167,10 @@ class LocalStore(DaemonStore):
         log.info(
             "spawning_managed_daemon",
             nix_bin=self.nix_bin,
-            store_path=str(path),
+            store_dir=str(self.layout.store_dir),
+            real_store_dir=str(self.layout.real_store_dir),
+            state_dir=str(self.layout.state_dir),
+            relocated=self.layout.relocated,
             socket_path=str(self.socket_path),
             builder_frontend="NIX_CONFIG" in self.extra_env,
             cmd=shlex.join(cmd),
@@ -136,9 +178,18 @@ class LocalStore(DaemonStore):
         env = os.environ.copy()
         env.update(self.extra_env)
         env["NIX_DAEMON_SOCKET_PATH"] = str(self.socket_path)
-        env["NIX_DATA_DIR"] = str(self.store_path / "share")
-        env["NIX_LOG_DIR"] = str(self.store_path / "var/log/nix")
-        env["NIX_STATE_DIR"] = str(self.store_path / "var/nix")
+        # A chroot store gets no name here, and Nix reads none. `--store
+        # <root>` gives the store a rootDir, and `local-fs-store.hh:54-70`
+        # then builds `<root>/nix/var/nix` and `<root>/nix/var/log/nix` from
+        # that root and ignores NIX_DATA_DIR, NIX_LOG_DIR and NIX_STATE_DIR.
+        # Setting the three was how issue #171 started, and the values were
+        # wrong as well: they said `<root>/var/nix`, without the `nix`
+        # element that Nix puts there.
+        #
+        # A relocated store is the other case. It has no root, so the two
+        # names below are the only way to say where its store and its state
+        # are. Issue #176.
+        env.update(self.layout.daemon_environment())
 
         self.daemon_proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -155,52 +206,63 @@ class LocalStore(DaemonStore):
                 name="daemon-log-forwarder",
             )
 
-        # Wait for socket file to appear
-        for _ in range(100):
-            if self.socket_path.exists():
-                break
+        # Wait for the socket file to appear.
+        deadline = time.monotonic() + _DAEMON_START_TIMEOUT
+        while not self.socket_path.exists():
             if self.daemon_proc.returncode is not None:
-                stderr_output = ""
-                if self.daemon_proc.stderr:
-                    stderr_output = (await self.daemon_proc.stderr.read()).decode(errors="replace")
+                stderr_output = self._recent_output_text()
                 raise RuntimeError(
                     f"Managed daemon exited early with code {self.daemon_proc.returncode} "
                     f"(pid={self.daemon_proc.pid}): {stderr_output!r}",
                 )
-            await anyio.sleep(0.1)
-        else:
-            raise RuntimeError(
-                f"Managed daemon did not create socket at {self.socket_path} within 10s (pid={self.daemon_proc.pid})",
-            )
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"Managed daemon did not create socket at {self.socket_path} "
+                    f"within {_DAEMON_START_TIMEOUT:g}s (pid={self.daemon_proc.pid})",
+                )
+            await anyio.sleep(_DAEMON_POLL_INTERVAL)
 
         daemon_ready = self.daemon_ready
         if daemon_ready is None:
             raise RuntimeError("daemon_ready event was not initialized")
 
-        # Socket file exists but daemon may not be listening yet — probe
-        for _attempt in range(100):
+        # The socket file is there, and the daemon may not be listening yet.
+        deadline = time.monotonic() + _DAEMON_START_TIMEOUT
+        while True:
             if self.daemon_proc.returncode is not None:
-                stderr_output = ""
-                if self.daemon_proc.stderr:
-                    stderr_output = (await self.daemon_proc.stderr.read()).decode(errors="replace")
+                stderr_output = self._recent_output_text()
                 raise RuntimeError(
                     f"Managed daemon exited with code {self.daemon_proc.returncode} "
                     f"(pid={self.daemon_proc.pid}): {stderr_output!r}",
                 )
             if await self._probe_socket():
                 log.info("daemon_socket_ready", socket_path=str(self.socket_path))
-                await anyio.sleep(0.1)
+                await anyio.sleep(_DAEMON_POLL_INTERVAL)
                 daemon_ready.set()
                 return
-            await anyio.sleep(0.05)
+            if time.monotonic() >= deadline:
+                break
+            await anyio.sleep(_DAEMON_POLL_INTERVAL)
 
-        stderr_output = ""
-        if self.daemon_proc.stderr:
-            stderr_output = (await self.daemon_proc.stderr.read()).decode(errors="replace")
+        stderr_output = self._recent_output_text()
         raise RuntimeError(
-            f"Managed daemon socket not accepting connections "
-            f"at {self.socket_path} within 5s (pid={self.daemon_proc.pid}): {stderr_output!r}",
+            f"Managed daemon socket not accepting connections at {self.socket_path} "
+            f"within {_DAEMON_START_TIMEOUT:g}s (pid={self.daemon_proc.pid}): {stderr_output!r}",
         )
+
+    def _recent_output_text(self) -> str:
+        """The last lines the daemon wrote, for a start-up error message.
+
+        Read from the buffer that `_stream_daemon_output` fills, and never from
+        the stream. That forwarder holds a `readline()` on stdout and on stderr
+        for as long as the daemon lives, so a second reader of either one gets
+        `RuntimeError: read() called while another coroutine is already waiting
+        for incoming data`. Each error path below used to do exactly that, so
+        the only failure they could report was their own.
+        """
+        if not self._recent_output:
+            return "(the daemon wrote nothing)"
+        return "\n".join(self._recent_output)
 
     async def _stream_daemon_output(self) -> None:
         """Forward daemon stdout/stderr to structlog indefinitely."""
@@ -215,6 +277,7 @@ class LocalStore(DaemonStore):
                 if not line:
                     break
                 decoded = line.decode(errors="replace").rstrip()
+                self._recent_output.append(f"{label}: {decoded}")
                 if decoded.startswith("@nix "):
                     try:
                         data = json.loads(decoded[5:])
@@ -288,8 +351,11 @@ class LocalStore(DaemonStore):
         """Fast-path: read .drv file directly from the filesystem."""
         from ..drv_parser import parse_drv
 
-        sp = StorePath(str(drv_store_path))
-        drv_file = self.store_path / "nix" / "store" / str(sp)
+        # `on_disk` and not `self.store_path / "nix" / "store" / ...`.
+        # `real_store_dir()` is where the files of the store are, and a chroot
+        # store puts them somewhere other than the directory a store path
+        # names. See `read_drv_file` in `drv_parser.py`.
+        drv_file = Path(on_disk(str(StorePath(str(drv_store_path)))))
         try:
             contents = drv_file.read_bytes()
         except (FileNotFoundError, OSError):

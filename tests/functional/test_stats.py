@@ -10,6 +10,7 @@ import sqlite3
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
+import anyio
 import pytest
 import structlog
 
@@ -31,12 +32,14 @@ from pynixd.serde import (
     QueryAllValidPathsResponse,
     QueryClosureWithInfoRequest,
     QueryClosureWithInfoResponse,
+    SetOptionsRequest,
     Time,
     UnkeyedValidPathInfo,
     ValidPathInfo,
 )
 from pynixd.serde.ids import BuildId, StoreId
 from pynixd.store import LocalDBStore
+from pynixd.store_layout import StoreLayout
 from pynixd.store_path import StorePath
 from tests.conftest import STORE_PREFIX, make_test_spec, rmtree_robust, serde_path
 from tests.test_features import TestFeatures as F
@@ -55,8 +58,14 @@ class StatsTestStore(LocalDBStore):
         self.build_delays: dict[str, float] = {}
 
     @asynccontextmanager
-    async def build_conn(self):  # type: ignore[override]
-        async with self.pool.acquire("build"):
+    async def build_conn(self, options: SetOptionsRequest | None = None):  # type: ignore[override]
+        # **The `options` parameter is not decoration.** Issue #192 gave a
+        # build the option set of the client that asked for it, and
+        # `Scheduler.execute_build` has passed it ever since. A stand-in
+        # without it made the build crash with a `TypeError` that the
+        # scheduler reported as "Internal scheduler error", so this test read
+        # an empty stats table and blamed the recording. Issue #289.
+        async with self.pool.acquire("build", options):
 
             class MockConn:
                 def __init__(self, store):
@@ -75,12 +84,13 @@ class StatsTestStore(LocalDBStore):
                     client=None,
                     suppress_last=False,
                     raise_on_error=False,
+                    options=None,
                 ):
 
                     if isinstance(request, BuildDerivationRequest):
                         pname = request.derivation.env.get("pname", "unknown")
                         delay = self.store.build_delays.get(pname, 0.1)
-                        await asyncio.sleep(delay)
+                        await anyio.sleep(delay)
                         return BuildDerivationResponse(
                             result=BuildResult(status=BuildResultStatus.BUILT),
                         )
@@ -145,9 +155,15 @@ class StatsTestStore(LocalDBStore):
 
 
 @pytest.mark.covers(F.BUILD_DERIVATION | F.QUERY_ALL_VALID_PATHS | F.QUERY_CLOSURE_WITH_INFO | F.STORE_LOCAL)
-@pytest.mark.xfail(reason="DB stats query returns no row")
 async def test_build_stats_recording(tmp_path: Path) -> None:
-    """Verify that build stats are recorded to the DB."""
+    """Verify that build stats are recorded to the DB.
+
+    This was `xfail`, with the reason "DB stats query returns no row". That
+    is the symptom. The cause was the order in `_collect_outputs`: the pull
+    of the outputs ran first, it raised `ConnectionRefusedError` against the
+    fake stores of this module, and the statistics of a build that had
+    already succeeded went with it.
+    """
     pynixd_local_path = STORE_PREFIX / "stats-local"
     pynixd_remote_path = STORE_PREFIX / "stats-remote"
     rmtree_robust(pynixd_local_path)
@@ -201,16 +217,30 @@ async def test_build_stats_recording(tmp_path: Path) -> None:
         )
         await future
 
-        # 2. Check the DB
+        # 2. Check the DB.
+        #
+        # **The future resolves before the row exists, and that is deliberate.**
+        # `Scheduler.execute_build` calls `queue.complete` as soon as the
+        # backend answers, and `_collect_outputs` runs after that and holds
+        # `_record_build_stats`. Issue #157 states the same order from the
+        # other side: the client is told the build succeeded before the pull
+        # runs. So the row lands a moment after `await future` returns, and a
+        # read at that instant found nothing and read as "the recording is
+        # broken". Issue #289.
         assert pynixd_local.db is not None
-        async with pynixd_local.db.execute(
-            "SELECT pname, duration_ms FROM DerivationStats WHERE pname = 'fast-pkg'",
-        ) as cursor:
-            row = await cursor.fetchone()
-            assert row is not None
-            assert row[0] == "fast-pkg"
-            # Duration should be around 50ms + some overhead
-            assert 50 <= row[1] <= 1000
+        row = None
+        with anyio.fail_after(10):
+            while row is None:
+                async with pynixd_local.db.execute(
+                    "SELECT pname, duration_ms FROM PynixdDerivationStats WHERE pname = 'fast-pkg'",
+                ) as cursor:
+                    row = await cursor.fetchone()
+                if row is None:
+                    await anyio.sleep(0.05)
+
+        assert row[0] == "fast-pkg"
+        # Duration should be around 50ms + some overhead
+        assert 50 <= row[1] <= 1000
 
 
 @pytest.mark.covers(F.BUILD_DERIVATION | F.GOAL_BUILD_QUEUE | F.GOAL_SCHEDULER | F.STORE_LOCAL)
@@ -267,7 +297,7 @@ async def test_scheduler_local_fasttrack(tmp_path: Path) -> None:
             pending = await scheduler.queue.get_pending()
             if any(b.is_building for b in pending):
                 break
-            await asyncio.sleep(0.1)
+            await anyio.sleep(0.1)
 
         # 2. Enqueue tiny-pkg
         # It should be fast-tracked to LOCAL because remote is full
@@ -288,7 +318,7 @@ async def test_scheduler_local_fasttrack(tmp_path: Path) -> None:
             if tiny_build and tiny_build.is_building:
                 log.info("tiny_build_started", build_id=id_tiny)
                 break
-            await asyncio.sleep(0.1)
+            await anyio.sleep(0.1)
 
         assert tiny_build is not None
         assert tiny_build.is_building
@@ -309,7 +339,7 @@ async def test_build_stats_hint_by_pname(tmp_path: Path) -> None:
     pynixd_local = LocalDBStore(
         make_test_spec(store_id="local", store_path=pynixd_local_path, no_probe=True),
     )
-    db = await LocalStoreDB.open(pynixd_local_path)
+    db = await LocalStoreDB.open(StoreLayout.chroot(pynixd_local_path))
     pynixd_local.db = db
 
     assert db.active
