@@ -168,11 +168,9 @@ seed_the_fetch_cache
 #
 # `--no-link` and `--print-out-paths`, and no output link. An output link is a
 # file in a directory that a restart wipes, and the store path is what the
-# next step needs. `FLAKE_COMPATISH_DISABLE_OVERRIDES=1` makes this evaluation
-# agree with a flake evaluation: it reads the lockfile rather than the local
-# checkout.
+# next step needs.
 say "building the runner for $NIX_VERSION from $SRC"
-if ! runner=$(FLAKE_COMPATISH_DISABLE_OVERRIDES=1 \
+if ! runner=$(
     nix build --file "$SRC" "nixFunctionalTests.$NIX_VERSION" \
     --no-link --print-out-paths 2>&1 | tail -1); then
     say "the runner did not build"

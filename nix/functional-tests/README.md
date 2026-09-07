@@ -179,9 +179,8 @@ store is shared, so one build serves both.
 SRC=$(nix eval --raw --impure --expr \
     '(import ./nix/source.nix { lib = (import <nixpkgs> {}).lib; })')
 
-# In the machine. FLAKE_COMPATISH_DISABLE_OVERRIDES makes this agree with a
-# flake evaluation, as every CI workflow does.
-vzrun env FLAKE_COMPATISH_DISABLE_OVERRIDES=1 \
+# In the machine.
+vzrun \
     nix build --file "$SRC" nixFunctionalTests.nix_2_34 --no-link --print-out-paths
 
 # `/scratch` of the machine is on a disk. `/` is a tmpfs, and the stores of the
