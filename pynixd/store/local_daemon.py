@@ -80,7 +80,13 @@ class LocalStore(DaemonStore):
         socket_path = spec.socket_path or Path("pynixd-nix")
         # A relocated store is always ours to start: `NIX_STORE_DIR` names a
         # store that no daemon of the machine serves.
-        self.managed = self.layout.relocated or self.store_path != Path("/")
+        #
+        # `spec.managed` overrides that, because the inference reads a store at
+        # `/` as the store of the machine and a container can hold its own.
+        # See `LocalSocketStoreSpec.managed`.
+        self.managed = (
+            spec.managed if spec.managed is not None else (self.layout.relocated or self.store_path != Path("/"))
+        )
         if socket_path.is_absolute():
             self.socket_path = socket_path
         elif not self.managed:

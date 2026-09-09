@@ -167,6 +167,24 @@ class LocalSocketStoreSpec(StoreSpecBase):
     all for a relocated one.
     """
 
+    managed: bool | None = None
+    """Whether pynixd runs the daemon itself, rather than using the machine's.
+
+    `None` derives it: a relocated store, or a store root that is not `/`, is
+    always ours to serve. That inference reads a store at `/` as the store of
+    the machine, whose database is protected and cannot safely be served by an
+    unprivileged private daemon.
+
+    Set `True` where that premise is false. A container can hold its own store
+    at `/`, with its own `db/db.sqlite` and root in its own namespace, and no
+    system daemon at all. Nothing about the store path says so, which is why
+    the inference cannot see it. `False` demands the system daemon.
+
+    nixkube's builder Pods are the case this exists for: each one mounts a
+    copy-on-write volume seeded from the node store, keeping the same store
+    prefix and the same path hashes, and runs no daemon.
+    """
+
     nix_config: NixConfig | None = None
     extra_env: dict[str, str] | None = None
     extra_args: list[str] | None = None
