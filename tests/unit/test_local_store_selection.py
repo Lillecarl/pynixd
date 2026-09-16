@@ -129,6 +129,7 @@ async def test_a_writable_store_root_is_resolved(tmp_path: Path) -> None:
     The correction above is about what happens when it cannot be made.
     """
     db_path = resolve_db_path(StoreLayout.chroot(tmp_path))
+    assert db_path is not None
     assert db_path == tmp_path / "nix" / "var" / "nix" / "db" / "db.sqlite"
     assert db_path.parent.is_dir()
 

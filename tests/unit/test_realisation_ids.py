@@ -120,6 +120,8 @@ class FakeLocalStore:
     async def execute(self, request: Any, **kwargs: Any) -> Any:
         del kwargs
         if isinstance(request, RegisterDrvOutputRequest):
+            if request.realisation is None:
+                raise AssertionError("RegisterDrvOutput carries a realisation in the 2.34 shape")
             self.registered.append(request.realisation)
             return IsValidPathResponse(valid=True)
         if isinstance(request, QueryRealisationRequest):
@@ -149,7 +151,7 @@ class FakeBuildGoal:
         """This fake needs no queue, so the build is on it at once."""
 
     async def result(self) -> GoalResult:
-        for realisation in self.response.built_outputs.values():
+        for realisation in _outputs(self.response).values():
             if realisation.out_path is not None:
                 self.store.valid.add(str(realisation.out_path))
         return GoalResult(result=self.response)
@@ -183,6 +185,13 @@ class FakeEngine:
 class _Ctx:
     def __init__(self, local_store: FakeLocalStore) -> None:
         self.local_store = local_store
+
+
+def _outputs(result: BuildResult) -> dict[str, Realisation]:
+    """`built_outputs` is optional on the wire, and every response here sets it."""
+    if result.built_outputs is None:
+        raise AssertionError("the response carries built outputs")
+    return result.built_outputs
 
 
 def _response(key: str, out_path: str) -> BuildResult:
@@ -223,9 +232,9 @@ async def test_the_answer_carries_the_id_of_the_original_derivation() -> None:
 
     _, result = await _run(_response(sent, TOP_OUT))
 
-    assert list(result.result.built_outputs) == [wanted]
-    assert str(result.result.built_outputs[wanted].out_path) == TOP_OUT
-    assert result.result.built_outputs[wanted].id.output_name == "out"
+    assert list(_outputs(result.result)) == [wanted]
+    assert str(_outputs(result.result)[wanted].out_path) == TOP_OUT
+    assert _outputs(result.result)[wanted].id.output_name == "out"
 
 
 @pytest.mark.anyio
@@ -252,12 +261,12 @@ async def test_a_signature_does_not_survive_the_new_id() -> None:
     `derivation-goal.cc:234` of Nix clears them and signs again.
     """
     response = _response(f"sha256:{_flattened_hash()}!out", TOP_OUT)
-    for realisation in response.built_outputs.values():
+    for realisation in _outputs(response).values():
         realisation.signatures = [Signature("key1:notarealsignature")]
 
     _, result = await _run(response)
 
-    assert [item.signatures for item in result.result.built_outputs.values()] == [[]]
+    assert [item.signatures for item in _outputs(result.result).values()] == [[]]
 
 
 @pytest.mark.anyio
@@ -269,7 +278,7 @@ async def test_an_id_that_already_agrees_stays_as_it_is() -> None:
 
     engine, result = await _run(_response(wanted, FLOAT_OUT), FLOAT_PATH)
 
-    assert list(result.result.built_outputs) == [wanted]
+    assert list(_outputs(result.result)) == [wanted]
     assert [str(item.id) for item in engine.local_store.registered] == [wanted]
 
 

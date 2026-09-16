@@ -39,7 +39,7 @@ def test_protocol_support_has_explicit_floor_and_ceiling() -> None:
     [
         (AddMultipleToStoreRequest(repair=0, dont_check_sigs=0), 32),
         (AddBuildLogRequest(path=StorePath(path="/nix/store/example-log")), 32),
-        (BuildPathsWithResultsRequest(derived_paths=set(), build_mode=0), 34),
+        (BuildPathsWithResultsRequest(derived_paths=[], build_mode=0), 34),
         (AddPermRootRequest(store_path="/nix/store/example-root", gc_root="/tmp/root"), 36),
     ],
 )

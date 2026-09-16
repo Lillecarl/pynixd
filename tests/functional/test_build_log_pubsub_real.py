@@ -107,8 +107,8 @@ async def test_build_log_pubsub_real_nix(
     log.info("starting_both_clients")
 
     result1, result2 = await asyncio.gather(
-        _run_client_build(store1, uri, TEST_NIX, "log_test"),
-        _run_client2_delayed(store2, uri, TEST_NIX, "log_test"),
+        _run_client_build(store1, uri, str(TEST_NIX), "log_test"),
+        _run_client2_delayed(store2, uri, str(TEST_NIX), "log_test"),
     )
 
     rc1, stdout1, stderr1, combined1 = result1

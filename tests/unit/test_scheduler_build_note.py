@@ -22,8 +22,8 @@ from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
 from pynixd.scheduler import Scheduler
 
 if TYPE_CHECKING:
+    from nix_daemon_protocol.logs import LogMessage
     from pynixd.build_queue import QueuedBuild
-    from pynixd.serde import LogMessage
     from pynixd.store import DaemonStore
 
 

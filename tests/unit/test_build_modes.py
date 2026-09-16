@@ -66,9 +66,9 @@ def _engine(store: RecordingStore) -> GoalEngine:
     return GoalEngine(ctx)
 
 
-def _derived_paths() -> set[SerdeDerivedPath]:
+def _derived_paths() -> list[SerdeDerivedPath]:
     one: Any = SerdeDerivedPath(value=f"{DRV}!out")
-    return cast("set[SerdeDerivedPath]", {one})
+    return cast("list[SerdeDerivedPath]", [one])
 
 
 @pytest.mark.anyio

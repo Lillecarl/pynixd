@@ -37,6 +37,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -224,4 +225,4 @@ def test_the_http_predicate_says_yes_for_a_real_cache_store() -> None:
     cache = HTTPBinaryCacheSpec(url="https://cache.example.org").to_store("cache")
 
     assert store.is_http_binary_cache(cache)
-    assert not store.is_http_binary_cache(object())
+    assert not store.is_http_binary_cache(cast("store.Store", object()))

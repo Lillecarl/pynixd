@@ -20,7 +20,7 @@ and only in a run that held both suites in one process.
 
 from __future__ import annotations
 
-import pynixd  # noqa: F401 -- the import is what registers each extension
+import pynixd.protocol  # noqa: F401 -- the import is what registers each extension
 from nix_daemon_protocol.operations import STANDARD_OPERATIONS
 from nix_daemon_protocol.wire_ops import WIRE_REGISTRY
 

@@ -54,7 +54,7 @@ def _info(*signatures: str) -> ValidPathInfo:
             references=set(),
             registration_time=0,
             nar_size=1,
-            ultimate=0,
+            ultimate=False,
             sigs={Signature(name=n, signature="x") for n in signatures},
             ca="",
         ),

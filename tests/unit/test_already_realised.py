@@ -31,6 +31,7 @@ from pynixd.goals.results import GoalResult, goal_success
 from pynixd.goals.substitute import SubstituteAttempt
 from pynixd.serde import (
     BuildMode,
+    BuildResult,
     IsValidPathResponse,
     QueryRealisationRequest,
     QueryRealisationResponse,
@@ -182,6 +183,13 @@ async def test_a_realised_output_starts_no_build() -> None:
     assert str(result.resolved_outputs["out"]) == FLOAT_OUT
 
 
+def _outputs(result: BuildResult) -> dict[str, Realisation]:
+    """`built_outputs` is optional on the wire, and every response here sets it."""
+    if result.built_outputs is None:
+        raise AssertionError("the response carries built outputs")
+    return result.built_outputs
+
+
 @pytest.mark.anyio
 async def test_the_answer_carries_the_realisation() -> None:
     """A client reads the output path out of it, at `BuiltPath::Built::toJSON`."""
@@ -190,8 +198,8 @@ async def test_the_answer_carries_the_realisation() -> None:
 
     result = await _run(engine)
 
-    assert list(result.result.built_outputs) == [wanted]
-    assert str(result.result.built_outputs[wanted].out_path) == FLOAT_OUT
+    assert list(_outputs(result.result)) == [wanted]
+    assert str(_outputs(result.result)[wanted].out_path) == FLOAT_OUT
 
 
 @pytest.mark.anyio

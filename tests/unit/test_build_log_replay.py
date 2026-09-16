@@ -39,7 +39,7 @@ class FakeClient:
 
 def _build() -> QueuedBuild:
     return QueuedBuild(
-        build_id=BuildId("build-1"),
+        build_id=BuildId(1),
         request=cast("BuildDerivationRequest", object()),
         future=asyncio.get_running_loop().create_future(),
     )

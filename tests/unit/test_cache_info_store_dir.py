@@ -31,9 +31,11 @@ def _server() -> PynixdHttpServer:
 
 async def test_cache_info_states_the_default_store_dir():
     response = await _server().handle_cache_info(None)  # pyright: ignore[reportArgumentType]
+    assert response.text is not None
     assert "StoreDir: /nix/store" in response.text
 
 
 async def test_cache_info_states_the_store_dir_in_use(other_store):
     response = await _server().handle_cache_info(None)  # pyright: ignore[reportArgumentType]
+    assert response.text is not None
     assert f"StoreDir: {OTHER}" in response.text

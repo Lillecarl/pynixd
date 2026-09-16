@@ -507,8 +507,12 @@ async def test_the_build_directory_of_the_client_is_exempt_in_add_indirect_root(
     8-byte length, and two pids of different width give two lengths, so the
     comparison reads the decoded field. Issue #202.
     """
-    control = await decode(await build_ops(workdir / "a.wire", [(AddIndirectRootRequest(path=RESULT_ONE), valid(1))]))
-    candidate = await decode(await build_ops(workdir / "b.wire", [(AddIndirectRootRequest(path=RESULT_TWO), valid(1))]))
+    control = await decode(
+        await build_ops(workdir / "a.wire", [(AddIndirectRootRequest(path=RESULT_ONE), valid(True))])
+    )
+    candidate = await decode(
+        await build_ops(workdir / "b.wire", [(AddIndirectRootRequest(path=RESULT_TWO), valid(True))])
+    )
     assert compare(control, candidate) == []
 
 
@@ -529,6 +533,6 @@ async def test_the_same_field_of_another_operation_is_a_finding(workdir):
 @pytest.mark.anyio
 async def test_add_temp_root_takes_the_same_exemption(workdir):
     """`AddTempRoot` sends the same shape, for the same path."""
-    control = await decode(await build_ops(workdir / "a.wire", [(AddTempRootRequest(path=RESULT_ONE), valid(1))]))
-    candidate = await decode(await build_ops(workdir / "b.wire", [(AddTempRootRequest(path=RESULT_TWO), valid(1))]))
+    control = await decode(await build_ops(workdir / "a.wire", [(AddTempRootRequest(path=RESULT_ONE), valid(True))]))
+    candidate = await decode(await build_ops(workdir / "b.wire", [(AddTempRootRequest(path=RESULT_TWO), valid(True))]))
     assert compare(control, candidate) == []
