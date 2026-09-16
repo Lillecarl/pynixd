@@ -58,7 +58,7 @@ Context dataclasses passed through the serialization/deserialization pipeline.
 ## Auth
 
 ```{eval-rst}
-.. automodule:: nix_daemon_protocol.auth
+.. automodule:: pynixd.serde.auth
    :members:
 ```
 

@@ -7,3 +7,18 @@
 umbrella
 daemon-protocol/index
 ```
+
+Working notes. Each one records what was tried and what the daemon actually
+does, which is why they are here rather than in a commit message.
+
+```{toctree}
+:maxdepth: 1
+:caption: Notes
+
+notes/deferred-resolution
+notes/nixos-instructions
+notes/querymissing
+notes/reentrancy
+notes/stores
+notes/trusted-users
+```
