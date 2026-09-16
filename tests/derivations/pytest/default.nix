@@ -57,8 +57,17 @@ pkgs.runCommand "pynixd-pytest"
       tests/unit/ \
       tests/functional/test_add_to_store_nar.py \
       tests/functional/test_collect_garbage.py \
-      tests/functional/test_persistence.py \
       tests/functional/test_scheduler_logic.py
+
+    # The protocol suite, as a second process rather than a third path above.
+    # `tests/unit` and this suite interfere: four of these tests pass alone
+    # and fail beside the pynixd suites. One process for both is how 57
+    # failures hid behind a green run of 684, and one of them was a shipped
+    # regression. Issue #33.
+    #
+    # It imports `nix_daemon_protocol` from the environment above, which is
+    # the built package, so this asserts what ships and not the tree.
+    pytest -p no:cacheprovider --timeout=120 --tb=short nix-daemon-protocol/tests
 
     echo "All tests passed" > $out
   ''

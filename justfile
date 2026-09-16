@@ -17,6 +17,15 @@ cheap: check fmt
 test:
     pytest tests/functional tests/unit
 
+# The protocol suite, in its own process.
+#
+# Not a third path on the line above. `tests/unit` and this suite interfere:
+# four of these tests pass alone and fail beside the pynixd suites. One
+# process for both is how 57 failures hid behind a green run of 684, and one
+# of them was a shipped regression. Issue #33.
+protocol-test:
+    pytest nix-daemon-protocol/tests
+
 # aitest: check
 #     #!/usr/bin/env bash
 #     logfile=$(mktemp)
@@ -25,5 +34,5 @@ test:
 #     echo "Logfile: $logfile"
 
 # Run all checks
-precommit: check fmt test
+precommit: check fmt test protocol-test
 
