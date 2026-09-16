@@ -10,9 +10,11 @@ Issue #20.
 from __future__ import annotations
 
 import time
+from typing import Any, cast
 
 import pytest
 
+from pynixd.connection import Connection
 from pynixd.store.pool import ConnectionPool
 
 
@@ -29,18 +31,24 @@ class FakeWriter:
         return None
 
 
-class FakeConnection:
-    """Enough of `Connection` for the rules of the pool."""
+class FakeConnection(Connection):
+    """Enough of `Connection` for the rules of the pool.
+
+    It inherits the real class so the pool takes it without a cast at each
+    call. `Connection.__init__` opens nothing -- it assigns fields -- so the
+    two casts here are the whole of the pretence: the pool reads `is_dirty`
+    and `close` off the pair, and nothing else of a reader or a writer.
+    """
 
     def __init__(self, conn_id: str, opened_at: float | None = None) -> None:
-        self.id = conn_id
-        self.dirty = False
-        self.op_log: list[str] = []
-        self.opened_at = time.monotonic() if opened_at is None else opened_at
-        self.applied_options = None
+        super().__init__(
+            cast("Any", FakeReader()),
+            cast("Any", FakeWriter()),
+            conn_id,
+        )
+        if opened_at is not None:
+            self.opened_at = opened_at
         self.closed = False
-        self.r = FakeReader()
-        self.w = FakeWriter()
 
     async def close(self) -> None:
         self.closed = True
@@ -55,7 +63,7 @@ class FakeGate:
 
 
 def make_pool(max_lifetime: float) -> ConnectionPool:
-    async def factory():
+    async def factory() -> Connection:
         return FakeConnection("new")
 
     return ConnectionPool(
