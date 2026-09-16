@@ -29,7 +29,10 @@ from typing import TYPE_CHECKING, Any, cast
 
 import anyio
 import pytest
-from nanopynix_testing.nix_environment import NixTestEnvironment
+
+# nanopynix is a sibling repository, and the runner of this suite puts it
+# on the path. A checkout of pynixd alone does not have it.
+from nanopynix_testing.nix_environment import NixTestEnvironment  # pyright: ignore[reportMissingImports]
 
 from nix_daemon_protocol.ids import StoreId
 from pynixd.goals.engine import GoalEngine

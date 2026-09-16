@@ -13,7 +13,9 @@ from pynixd.goals.engine import GoalEngine
 from pynixd.goals.query_missing import QueryMissingPlanGoal
 from pynixd.serde import (
     DerivedPath as SerdeDerivedPath,
+    DrvOutput as SerdeDrvOutput,
     IsValidPathResponse,
+    LogNext,
     QueryMissingRequest,
     QueryRealisationRequest,
     QueryRealisationResponse,
@@ -50,7 +52,9 @@ class FakeLocalStore:
             path = self.realisations.get(key.rpartition("!")[2])
             if path is None:
                 return QueryRealisationResponse(realisations=[])
-            return QueryRealisationResponse(realisations=[Realisation(id=key, out_path=StorePath(path=path))])
+            return QueryRealisationResponse(
+                realisations=[Realisation(id=SerdeDrvOutput(key), out_path=StorePath(path=path))],
+            )
         return IsValidPathResponse(valid=str(request.path) in self.valid_paths)
 
     async def read_derivation(self, drv_store_path: StorePath | str) -> Derivation | None:
@@ -604,6 +608,10 @@ async def test_a_dynamic_input_gets_a_warning_and_no_bucket() -> None:
 
     assert {str(path) for path in response.will_build} == {top}
     assert not response.unknown
-    assert [message.text for message in response.logs.messages] == [
+    # `LogNext` is the only message with a `text`, and the length below
+    # keeps the assertion exact: a message of another kind would not fall
+    # out of the list quietly.
+    assert len(response.logs.messages) == 1
+    assert [message.text for message in response.logs.messages if isinstance(message, LogNext)] == [
         f"warning: Ignoring dynamic derivation {producer}^out while querying missing paths; not yet implemented\n",
     ]

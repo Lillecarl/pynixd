@@ -31,9 +31,11 @@ import pytest
 from nix_daemon_protocol.signature import Signature
 from pynixd.serde import (
     AddSignaturesRequest,
+    ContentAddress,
     NARHash,
     SignPathInfoRequest,
     StorePath,
+    Time,
     UnkeyedValidPathInfo,
     ValidPathInfo,
 )
@@ -52,11 +54,11 @@ def _info(*signatures: str) -> ValidPathInfo:
             deriver=StorePath(path=""),
             nar_hash=NARHash("0" * 64),
             references=set(),
-            registration_time=0,
+            registration_time=Time(0),
             nar_size=1,
             ultimate=False,
             sigs={Signature(name=n, signature="x") for n in signatures},
-            ca="",
+            ca=ContentAddress(""),
         ),
     )
 
@@ -79,8 +81,15 @@ class RecordingStore(DaemonStore):
     async def create_conn(self) -> Any:
         raise AssertionError("no test here opens a connection")
 
-    async def call(self, request: Any, client: ClientConn | None = None, suppress_last: bool = False) -> Any:
-        del client, suppress_last
+    async def call(
+        self,
+        request: Any,
+        client: ClientConn | None = None,
+        suppress_last: bool = False,
+        raise_on_error: bool = False,
+        skip_probe: bool = False,
+    ) -> Any:
+        del client, suppress_last, raise_on_error, skip_probe
         self.sent.append(type(request).__name__)
         return None
 

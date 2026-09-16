@@ -24,6 +24,7 @@ See issue Lillecarl/nanopynix#164.
 from __future__ import annotations
 
 import contextlib
+from typing import cast
 
 import anyio
 import asyncssh
@@ -53,7 +54,9 @@ class RecordingSSHStore(SSHStore):
 
     async def ensure_ssh(self):  # type: ignore[override] -- the test replaces the transport
         self.connects += 1
-        self.conn = object()
+        # Nothing here opens a channel, and the tests read the field for
+        # `is None` alone. A bare object stands in for the transport.
+        self.conn = cast("asyncssh.SSHClientConnection", object())
         return self.conn
 
     async def close_ssh(self) -> None:

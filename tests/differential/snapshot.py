@@ -24,7 +24,9 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Collection, Iterable, Mapping
 
-    from nanopynix.protocols import AsyncStore
+    # nanopynix is a sibling repository, and the runner of this suite puts
+    # it on the path. A checkout of pynixd alone does not have it.
+    from nanopynix.protocols import AsyncStore  # pyright: ignore[reportMissingImports]
 
 # The two fields of `query_path_info` that a snapshot drops, and the reason for
 # each. Everything else states what the path *is*, and two engines that agree
