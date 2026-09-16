@@ -214,8 +214,17 @@ class Noise:
 # the two arms agree, one draw agreed with another.
 #
 # Measured, and not guessed: two runs of the same arm over the `ca` suite of
-# Nix 2.34. The daemon disagreed with itself on the first two, and pynixd on
-# all three.
+# Nix 2.34. The daemon disagreed with itself on the first three, and pynixd on
+# the first four. `main/nix-shell` and `main/structured-attrs` were measured
+# the same way afterwards, with `record-control` twice over those two tests.
+#
+# Four of these five hold an `-env` derivation, and one variable is why.
+# `NIX_BUILD_TOP` is `.../var/nix/builds/nix-<pid>-<random>`, so it is a new
+# string in every run. It reaches the output because a `-env` derivation is a
+# dump of the build environment, and the store path does not move with it: the
+# derivation is input-addressed, so the same derivation keeps the same name and
+# answers a new NAR hash. The lengths differ too, which is the `nar_size` delta
+# of a few bytes that comes with each one.
 #
 # This is not the exemption table. An exemption covers a difference somebody
 # explained and decided to keep, under a `NIX-DEFECT (#23)` or
@@ -229,11 +238,19 @@ NOISE: tuple[Noise, ...] = (
     ),
     Noise(
         test="ca/nix-shell",
-        reason="registers a `fixed-env` and a `shellDrv-env-dev` that hold an environment which moves",
+        reason="builds a `fixed-env` and a `shellDrv-env-dev`, which hold `NIX_BUILD_TOP`",
     ),
     Noise(
         test="ca/build",
         reason="registers one realisation twice in one run and once in the next",
+    ),
+    Noise(
+        test="main/nix-shell",
+        reason="builds a `fixed-env` and a `shellDrv-env-dev`, which hold `NIX_BUILD_TOP`",
+    ),
+    Noise(
+        test="main/structured-attrs",
+        reason="builds a `structured2-env-dev` and a `shellDrv-env-dev`, which hold `NIX_BUILD_TOP`",
     ),
 )
 

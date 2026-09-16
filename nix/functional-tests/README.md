@@ -323,29 +323,40 @@ for the same reason.
 reader that answered "the two agree" whatever it was given would pass every
 run and measure nothing.
 
-#### Three tests this comparison cannot answer
+#### Five tests this comparison cannot answer
 
 **Some tests do not build the same thing twice, and no engine is the reason.**
-`ca/duplicate-realisation-in-closure` builds a `current-time` derivation, and
-`ca/nix-shell` registers a `fixed-env` and a `shellDrv-env-dev` that hold an
-environment which moves. A second run of one arm disagrees with the first.
+A second run of one arm disagrees with the first.
 
-The floor was measured, not guessed. Two runs of the same arm, `ca` suite,
-Nix 2.34:
+The floor was measured, not guessed. Two runs of the same arm, Nix 2.34:
 
 | control against control | `ca/duplicate-realisation-in-closure`, `ca/nix-shell` |
 | --- | --- |
 | pynixd against pynixd | the two above, and `ca/build` |
+| control against control, `main` | `main/nix-shell`, `main/structured-attrs` |
 
-`ca/build` registers one realisation twice in one run and once in the next,
-so the row count moves. **A test in this list cannot be called "same"
-either**: when it agrees across the two arms, that is one draw agreeing with
-another.
+`ca/duplicate-realisation-in-closure` builds a `current-time` derivation, so
+each run makes another content address. `ca/build` registers one realisation
+twice in one run and once in the next, so the row count moves.
 
-`NOISE` in `store-state.py` holds the three, and the comparison counts them
-in neither column. It prints `NOISE` for each and writes its differences to
-the report anyway, with the reason beside the name: a difference nobody can
-see is how a real one goes unnoticed once somebody widens the list.
+**The other three are one cause.** Each builds an `-env` derivation, which is
+a dump of the build environment, and that environment holds `NIX_BUILD_TOP`:
+
+    .../var/nix/builds/nix-<pid>-<random>
+
+A new string in every run, so the output holds new bytes. The store path does
+not move with it, because the derivation is input-addressed: the same
+derivation keeps the same name and answers a new NAR hash. The strings are
+also of different lengths, which is the `nar_size` delta of a few bytes that
+comes with each one.
+
+`NOISE` in `store-state.py` holds the five, and the comparison counts them in
+neither column. It prints `NOISE` for each and writes its differences to the
+report anyway, with the reason beside the name: a difference nobody can see is
+how a real one goes unnoticed once somebody widens the list.
+
+**A test in this list cannot be called "same" either**: when it agrees across
+the two arms, that is one draw agreeing with another.
 
 So the summary of this mode reads `same`, `different`, `missing` and
 `noise`, and the first run read 17, 3, 0 and 3.
