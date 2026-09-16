@@ -88,7 +88,12 @@ package
 
   pynixd-docs = pkgs.python3Packages.callPackage ./nix/docs.nix { pynixd = library; };
 
-  shell = pkgs.callPackage ./nix/shell.nix { pynixd = package; };
+  shell = pkgs.callPackage ./nix/shell.nix {
+    pynixd = package;
+    # The library `tests/guest/run.py` drives the guests with, so the
+    # shell's pyright resolves it.
+    uml-runner = (import (sources.user-mode-nixos + "/lib.nix") { inherit pkgs; }).runner;
+  };
   nixosModule = import ./nix/nixos/default.nix;
 
   tests = {
