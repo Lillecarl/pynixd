@@ -321,7 +321,7 @@ def resolve_derivation(
     drv_name = _nix_drv_name(drv_path)
 
     rewrites: dict[str, str] = {}
-    new_input_srcs = {StorePath(path=str(path)) for path in drv.input_srcs}  # pyright: ignore[reportUnhashable]
+    new_input_srcs = {StorePath(path=str(path)) for path in drv.input_srcs}
 
     for input_drv_path, output_names in drv.input_drvs.items():
         for output_name in output_names:
@@ -491,7 +491,7 @@ def resolve_dynamic_derivation(
     drv_name = _nix_drv_name(drv_path)
 
     rewrites: dict[str, str] = {}
-    new_input_srcs = {StorePath(path=str(path)) for path in drv.input_srcs}  # pyright: ignore[reportUnhashable]
+    new_input_srcs = {StorePath(path=str(path)) for path in drv.input_srcs}
 
     # Handle regular input_drvs (same as resolve_derivation)
     for input_drv_path, output_names in drv.input_drvs.items():

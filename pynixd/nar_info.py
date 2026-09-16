@@ -53,11 +53,11 @@ class NarInfo:
             info=UnkeyedValidPathInfo(
                 deriver=StorePath(path=str(self.deriver)) if self.deriver else None,
                 nar_hash=NARHash(hash=self.nar_hash.removeprefix("sha256:")),
-                references={StorePath(path=str(ref)) for ref in self.references},  # pyright: ignore[reportUnhashable]
+                references={StorePath(path=str(ref)) for ref in self.references},
                 registration_time=Time(ts=0),
                 nar_size=self.nar_size,
                 ultimate=False,
-                sigs={Signature(**Signature.from_str(sig)) for sig in self.sigs},  # pyright: ignore[reportUnhashable]
+                sigs={Signature(**Signature.from_str(sig)) for sig in self.sigs},
                 ca=ContentAddress(value=self.ca),
             ),
         )

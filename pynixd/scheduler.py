@@ -598,7 +598,7 @@ class Scheduler:
         # 1. Filter inputs already present on the builder store
         input_srcs = build.request.derivation.input_srcs
         if input_srcs:
-            paths_to_check = {StorePath(path=str(p)) for p in input_srcs}  # pyright: ignore[reportUnhashable]
+            paths_to_check = {StorePath(path=str(p)) for p in input_srcs}
             try:
                 check = await store.execute(
                     QueryValidPathsRequest(
@@ -776,7 +776,7 @@ class Scheduler:
             try:
                 resp = await self.local_store.query_valid_paths(
                     QueryValidPathsRequest(
-                        paths={StorePath(path=str(path)) for path in paths},  # pyright: ignore[reportUnhashable]
+                        paths={StorePath(path=str(path)) for path in paths},
                         substitute=0,
                     ),
                 )

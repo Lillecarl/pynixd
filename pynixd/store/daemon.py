@@ -248,7 +248,7 @@ class DaemonStore(Store):
         request = AddToStoreRequest(
             path_name=name,
             cam=ContentAddress("text:sha256"),
-            references={StorePath(path=str(ref)) for ref in references},  # pyright: ignore[reportUnhashable]
+            references={StorePath(path=str(ref)) for ref in references},
             repair=0,
         )
         await self.probe()
@@ -808,10 +808,10 @@ class DaemonStore(Store):
         if "QueryClosureWithInfo" in self.features:
             return await self.call(request, client=client, suppress_last=suppress_last)
 
-        pending: set[StorePath] = set(request.paths)  # pyright: ignore[reportUnhashable]
+        pending: set[StorePath] = set(request.paths)
         all_infos: dict[StorePath, Any] = {}
         while pending:
-            to_fetch = {p for p in pending if p not in all_infos}  # pyright: ignore[reportUnhashable]
+            to_fetch = {p for p in pending if p not in all_infos}
             if not to_fetch:
                 break
             infos_resp = await self.query_path_infos(

@@ -1033,7 +1033,7 @@ async def to_basic_derivation(
     }
 
     # Start with the explicit input sources
-    input_srcs = {StorePath(path=str(path)) for path in parsed.input_srcs}  # pyright: ignore[reportUnhashable]
+    input_srcs = {StorePath(path=str(path)) for path in parsed.input_srcs}
 
     # Resolve inputDrvs: for each input drv, look up its output paths
     # and add them to input_srcs (this is what nix does before sending

@@ -38,7 +38,7 @@ async def stream_paths_store_to_store(
     Bypasses the normal handle() path, so we update dst knowledge manually.
     Only transfers paths that dst doesn't already have.
     """
-    paths_set = {StorePath(path=str(p)) for p in paths}  # pyright: ignore[reportUnhashable]
+    paths_set = {StorePath(path=str(p)) for p in paths}
     if not paths_set:
         return
     log.debug("stream_paths_start", src=src.store_id, dst=dst.store_id, count=len(paths_set))
@@ -70,7 +70,7 @@ async def stream_paths_store_to_store(
     # 2. Filter out paths already in destination
     from nix_daemon_protocol.query_valid_paths import QueryValidPathsRequest as SerdeQueryValidPathsRequest
 
-    closure_paths = {info.path for info in closure_resp.infos}  # pyright: ignore[reportUnhashable]
+    closure_paths = {info.path for info in closure_resp.infos}
     check = await dst.execute(SerdeQueryValidPathsRequest(paths=closure_paths, substitute=0))
     check_paths_set = {RealStorePath(str(p)) for p in check.paths}
     to_transfer: list[ValidPathInfo] = [
