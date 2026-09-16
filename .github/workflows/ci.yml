@@ -134,3 +134,15 @@ jobs:
       # green run of 684, and one of them was a shipped regression. Issue #33.
       - name: Protocol tests
         run: nix develop --impure --file shell.nix --command pytest nix-daemon-protocol/tests
+
+      # The differential suite: pynixd's goal engine against Nix's own, which
+      # nanopynix calls in process. It ran nowhere until the umbrella supplied
+      # nanopynix to the shell, and `tests/differential/conftest.py` skips the
+      # lot rather than failing where the oracle is absent -- so a green run
+      # here is not proof on its own that it ran. 16 tests, 47 s.
+      #
+      # Its own process, like the protocol suite. It builds in two separated
+      # chroot stores and reads both directly, which the session server of the
+      # other suites has no part in.
+      - name: Differential tests
+        run: nix develop --impure --file shell.nix --command pytest tests/differential

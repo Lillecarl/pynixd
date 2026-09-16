@@ -47,6 +47,7 @@ Pynixd will adversise 1.38 support even if local_store is 1.35 and translate whe
       nix build --file . checks.format checks.lint checks.types --no-link
       nix develop --impure --file shell.nix --command pytest tests/functional tests/unit
       nix develop --impure --file shell.nix --command pytest nix-daemon-protocol/tests
+      nix develop --impure --file shell.nix --command pytest tests/differential
 
   The `checks.*` derivations are gates: non-mutating, and each fails the
   build. `nix run --file . fix` is the rewriter — never a gate.
