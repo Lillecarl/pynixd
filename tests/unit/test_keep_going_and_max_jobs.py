@@ -29,6 +29,7 @@ from pynixd.serde import (
     BuildPathsWithResultsRequest,
     DerivedPath as SerdeDerivedPath,
     SetOptionsRequest,
+    Verbosity,
 )
 
 if TYPE_CHECKING:
@@ -45,11 +46,11 @@ def _options(*, max_build_jobs: int, keep_going: bool) -> SetOptionsRequest:
         keep_failed=False,
         keep_going=keep_going,
         try_fallback=False,
-        verbosity=0,
+        verbosity=Verbosity.ERROR,
         max_build_jobs=max_build_jobs,
         max_silent_time=0,
         obsolete_use_build_hook=True,
-        build_verbosity=0,
+        build_verbosity=Verbosity.ERROR,
         obsolete_log_type=0,
         obsolete_print_build_trace=0,
         build_cores=1,

@@ -34,6 +34,7 @@ from pynixd.serde import (
     BuildResultStatus,
     SetOptionsRequest,
     StorePath as SerdeStorePath,
+    Verbosity,
 )
 from pynixd.serde.auth import Role
 from pynixd.serde.context import WriteContext
@@ -52,11 +53,11 @@ def _options(hook: str) -> SetOptionsRequest:
         keep_failed=0,
         keep_going=0,
         try_fallback=0,
-        verbosity=0,
+        verbosity=Verbosity.ERROR,
         max_build_jobs=1,
         max_silent_time=0,
         obsolete_use_build_hook=0,
-        build_verbosity=0,
+        build_verbosity=Verbosity.ERROR,
         obsolete_log_type=0,
         obsolete_print_build_trace=0,
         build_cores=1,

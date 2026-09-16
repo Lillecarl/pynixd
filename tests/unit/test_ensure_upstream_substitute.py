@@ -24,6 +24,7 @@ from pynixd.serde import (
     IsValidPathRequest,
     IsValidPathResponse,
     SetOptionsRequest,
+    Verbosity,
 )
 from pynixd.store_path import StorePath
 
@@ -41,11 +42,11 @@ def _options(**overrides: str) -> SetOptionsRequest:
         keep_failed=False,
         keep_going=False,
         try_fallback=False,
-        verbosity=0,
+        verbosity=Verbosity.ERROR,
         max_build_jobs=1,
         max_silent_time=0,
         obsolete_use_build_hook=True,
-        build_verbosity=0,
+        build_verbosity=Verbosity.ERROR,
         obsolete_log_type=0,
         obsolete_print_build_trace=0,
         build_cores=1,
