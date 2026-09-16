@@ -1,7 +1,6 @@
 {
   # nixpkgs
   lib,
-  fetchFromGitHub,
   # building
   pythonBuilder,
   hatchling,
@@ -27,21 +26,6 @@
   uvloop,
   nix-daemon-protocol,
 }:
-let
-  overrides = {
-    asyncssh = asyncssh.overrideAttrs {
-      src = fetchFromGitHub {
-        # type = "github";
-        repo = "asyncssh";
-        owner = "ronf";
-        rev = "v2.23.1";
-        hash = "sha256-6x/Ww25G9MmVIdUJjpPgzNAza0Qx7VArQN6BgPHsIc4=";
-      };
-      doCheck = false;
-      doInstallCheck = false;
-    };
-  };
-in
 pythonBuilder (finalAttrs: {
   pname = "pynixd";
   version = "0.1.0";
@@ -70,7 +54,6 @@ pythonBuilder (finalAttrs: {
   build-system = [ hatchling ];
 
   dependencies = [
-    # overrides.asyncssh
     asyncssh
     structlog
     aiohttp
