@@ -37,15 +37,21 @@ class ScalarEnvelope(WireModel):
 
 
 async def test_wire_scalars_are_native_strings_on_the_generic_wire() -> None:
-    value = ScalarEnvelope(
-        path="/nix/store/0123456789abcdefghijklmnopqrstuv-output",
-        nar_hash="sha256:abc",
-        content_address="fixed:sha256:def",
-        derived_path="example.drv!out",
-        signature="cache:signature",
-        drv_output="sha256:drv!out",
-        time=1_700_000_000,
-        span=30,
+    # `model_validate`, and not the constructor: every value here is the wire
+    # string, and the string arm of `wire_scalar_schema` is what turns it into
+    # the scalar. A constructor call would declare the scalars and test the
+    # instance arm instead.
+    value = ScalarEnvelope.model_validate(
+        {
+            "path": "/nix/store/0123456789abcdefghijklmnopqrstuv-output",
+            "nar_hash": "sha256:abc",
+            "content_address": "fixed:sha256:def",
+            "derived_path": "example.drv!out",
+            "signature": "cache:signature",
+            "drv_output": "sha256:drv!out",
+            "time": 1_700_000_000,
+            "span": 30,
+        },
     )
     # **`StorePath` is deliberately not a `str`.** Nix's holds the base name
     # and the store directory belongs to the store (#4), so the test asks for

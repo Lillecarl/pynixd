@@ -72,7 +72,7 @@ def _example_value(annotation: Any, field_name: str) -> Any:
     # known by `from_wire`/`to_wire`, and `StorePath` no longer inherits the
     # base class.
     if is_wire_scalar(annotation):
-        return annotation(f"{field_name}-value")
+        return annotation.from_wire(f"{field_name}-value")
     if inspect.isclass(annotation) and issubclass(annotation, Enum):
         return next(iter(annotation))
     if inspect.isclass(annotation) and issubclass(annotation, WireModel):

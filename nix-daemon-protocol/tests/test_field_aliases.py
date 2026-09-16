@@ -12,6 +12,7 @@ cannot repeat this.
 
 from __future__ import annotations
 
+from nix_daemon_protocol.drv_output import DrvOutput
 from nix_daemon_protocol.realisation import Realisation
 from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.wire_message import WireModel
@@ -27,7 +28,7 @@ def test_the_base_takes_a_value_both_ways() -> None:
 
 
 def test_the_name_of_the_field_fills_the_field() -> None:
-    realisation = Realisation(id="sha256:00!out", out_path=StorePath(path=PATH))
+    realisation = Realisation(id=DrvOutput("sha256:00!out"), out_path=StorePath(path=PATH))
 
     assert realisation.out_path is not None
     assert realisation.out_path == StorePath(PATH)
@@ -42,7 +43,7 @@ def test_the_alias_fills_the_field() -> None:
 
 def test_the_wire_reads_the_alias_back() -> None:
     """The JSON keeps the alias, whichever way the value went in."""
-    realisation = Realisation(id="sha256:00!out", out_path=StorePath(path=PATH))
+    realisation = Realisation(id=DrvOutput("sha256:00!out"), out_path=StorePath(path=PATH))
 
     assert Realisation.from_json(realisation.to_json()) == realisation
     assert '"outPath"' in realisation.to_json()

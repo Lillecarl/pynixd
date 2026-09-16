@@ -14,6 +14,7 @@ from pynixd.serde import (
     BuildResult,
     BuildResultStatus,
     SetOptionsRequest,
+    TimeSpan,
     Verbosity,
 )
 from pynixd.store_path import StorePath
@@ -115,7 +116,7 @@ def _options(*, keep_going: bool) -> SetOptionsRequest:
         try_fallback=False,
         verbosity=Verbosity.ERROR,
         max_build_jobs=1,
-        max_silent_time=0,
+        max_silent_time=TimeSpan(0),
         obsolete_use_build_hook=True,
         build_verbosity=Verbosity.ERROR,
         obsolete_log_type=0,

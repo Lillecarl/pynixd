@@ -32,7 +32,7 @@ from pynixd.drv_parser import Derivation
 from pynixd.goals.ensure import EnsureDerivedPathGoal
 from pynixd.goals.results import GoalResult, goal_success
 from pynixd.goals.substitute import SubstituteAttempt
-from pynixd.serde import BuildMode, IsValidPathResponse, Realisation
+from pynixd.serde import BuildMode, DrvOutput as SerdeDrvOutput, IsValidPathResponse, Realisation
 from pynixd.store_path import DrvOutput, StorePath
 from pynixd.utils import nix32_encode
 
@@ -120,7 +120,7 @@ class FakeBuildGoal:
             update={
                 "built_outputs": {
                     f"sha256:abcd!{name}": Realisation(
-                        id=f"sha256:abcd!{name}",
+                        id=SerdeDrvOutput(f"sha256:abcd!{name}"),
                         out_path=StorePath(path=path),
                     )
                     for name, path in _OUT_PATH.items()

@@ -32,6 +32,7 @@ from pynixd.goals.substitute import SubstituteAttempt
 from pynixd.serde import (
     BuildMode,
     BuildResult,
+    DrvOutput as SerdeDrvOutput,
     IsValidPathResponse,
     QueryRealisationRequest,
     QueryRealisationResponse,
@@ -85,11 +86,12 @@ class FakeLocalStore:
         del kwargs
         if isinstance(request, QueryRealisationRequest):
             self.asked.append(str(request.drv_output))
-            if str(request.drv_output) != self.realisation_id:
+            wanted = self.realisation_id
+            if wanted is None or str(request.drv_output) != wanted:
                 return QueryRealisationResponse(realisations=[])
             return QueryRealisationResponse(
                 realisations=[
-                    Realisation(id=self.realisation_id, out_path=StorePath(path=FLOAT_OUT)),
+                    Realisation(id=SerdeDrvOutput(wanted), out_path=StorePath(path=FLOAT_OUT)),
                 ],
             )
         return IsValidPathResponse(valid=self.valid and str(request.path) == FLOAT_OUT)

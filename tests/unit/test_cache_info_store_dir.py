@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+from nix_daemon_protocol.ids import LOCAL_STORE_ID
 from nix_daemon_protocol.store_dir import reset_store_dir, set_store_dir
 from pynixd.config import LocalSocketStoreSpec
 from pynixd.http_server import PynixdHttpServer
@@ -25,7 +26,7 @@ def other_store():
 
 
 def _server() -> PynixdHttpServer:
-    spec = LocalSocketStoreSpec(store_id="local", monitor=False, use_db=False)
+    spec = LocalSocketStoreSpec(store_id=LOCAL_STORE_ID, monitor=False, use_db=False)
     return PynixdHttpServer(LocalStore(spec), enable_metrics=False)
 
 

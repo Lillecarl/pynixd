@@ -31,6 +31,7 @@ from pynixd.serde import (
     BuildMode,
     BuildResult,
     BuildResultStatus,
+    DrvOutput as SerdeDrvOutput,
     IsValidPathResponse,
     QueryRealisationRequest,
     QueryRealisationResponse,
@@ -196,7 +197,7 @@ def _outputs(result: BuildResult) -> dict[str, Realisation]:
 def _response(key: str, out_path: str) -> BuildResult:
     return BuildResult(
         status=BuildResultStatus.BUILT,
-        built_outputs={key: Realisation(id=key, out_path=StorePath(path=out_path))},
+        built_outputs={key: Realisation(id=SerdeDrvOutput(key), out_path=StorePath(path=out_path))},
     )
 
 
