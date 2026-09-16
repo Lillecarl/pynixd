@@ -24,7 +24,7 @@ in
   # whether or not the service was enabled. A module that does something when
   # it is disabled is a module that cannot be imported and left alone.
   config = lib.mkIf cfg.enable {
-    services.pynixd.settings = common.settingsDefaults;
+    services.pynixd.settings = common.settingsDefaultsFor cfg;
     environment.etc."pynixd/pynixd.json".source = configFile;
 
     systemd.services.pynixd = {
@@ -47,6 +47,10 @@ in
         NoNewPrivileges = true;
       };
     };
+
+    networking.firewall.allowedTCPPorts = lib.mkIf (
+      cfg.metrics.enable && cfg.metrics.openFirewall
+    ) [ cfg.metrics.port ];
 
     environment.systemPackages = [ cfg.package ];
   };

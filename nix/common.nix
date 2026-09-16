@@ -39,6 +39,57 @@ in
       # flake, states the package. That is better than a silent second build.
     };
 
+    # **pynixd already serves `/metrics`, and nothing could reach it.**
+    # `http_enable_metrics` is true by default in `config.py`, but the HTTP
+    # server starts only when `http_port` is set, and that defaults to null.
+    #
+    # This exists because the obvious way to turn it on is wrong. Setting
+    # `settings.http_port` alone also serves the binary cache on the same
+    # port -- `http_enable_cache` defaults to true -- and `http_host`
+    # defaults to `0.0.0.0`, so a person reaching for a metrics port publishes
+    # a cache to every interface. `http_metrics_no_auth` then leaves `/metrics`
+    # unauthenticated on it.
+    #
+    # So the safe combination is the easy one here, and the cache stays off
+    # unless somebody asks for it in `settings`.
+    metrics = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          Serve Prometheus metrics on `listenAddress:port`.
+
+          This starts pynixd's HTTP server with the binary cache endpoints
+          off. Set `settings.http_enable_cache` to serve both from one port.
+        '';
+      };
+
+      port = lib.mkOption {
+        type = lib.types.port;
+        default = 9099;
+        description = ''
+          The port for `/metrics`. Arbitrary: pynixd holds no entry in the
+          Prometheus port registry.
+        '';
+      };
+
+      listenAddress = lib.mkOption {
+        type = lib.types.str;
+        default = "127.0.0.1";
+        description = ''
+          The address to serve metrics on. Localhost, and not the `0.0.0.0`
+          that `http_host` defaults to: `/metrics` answers without
+          authentication, so publishing it is a decision and not a default.
+        '';
+      };
+
+      openFirewall = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Open `port` in the firewall for a scraper on another host.";
+      };
+    };
+
     settings = lib.mkOption {
       type = jsonFormat.type;
       default = { };
@@ -90,11 +141,26 @@ in
   # Keep the path short. `sun_path` holds 104 bytes on darwin and 108 on
   # Linux, and pynixd refuses a longer one at startup
   # (`Server._check_unix_socket_length`). This default is 25.
-  settingsDefaults = lib.mapAttrsRecursive (n: v: lib.mkDefault v) {
-    unix_path = "/run/pynixd/pynixd.sock";
-    ssh_port = null;
-    http_port = null;
-  };
+  # A function of the module's own configuration, because `metrics` above
+  # feeds it. One `mkDefault` layer either way: a second block of defaults
+  # for the metrics case would collide with this one rather than override it.
+  settingsDefaultsFor =
+    cfg:
+    lib.mapAttrsRecursive (n: v: lib.mkDefault v) (
+      {
+        unix_path = "/run/pynixd/pynixd.sock";
+        ssh_port = null;
+        http_port = null;
+      }
+      // lib.optionalAttrs cfg.metrics.enable {
+        http_port = cfg.metrics.port;
+        http_host = cfg.metrics.listenAddress;
+        http_enable_metrics = true;
+        # Off, and not merely absent. `config.py` defaults it to true, so a
+        # metrics port would otherwise publish a binary cache as well.
+        http_enable_cache = false;
+      }
+    );
 
   # The configuration file, as a derivation.
   #

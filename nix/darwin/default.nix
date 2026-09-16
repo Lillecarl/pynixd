@@ -27,7 +27,7 @@ in
   # One `mkIf`, for the reason the NixOS module states: a module that installs
   # a package while it is disabled cannot be imported and left alone.
   config = lib.mkIf cfg.enable {
-    services.pynixd.settings = common.settingsDefaults;
+    services.pynixd.settings = common.settingsDefaultsFor cfg;
     environment.etc."pynixd/pynixd.json".source = configFile;
 
     launchd.daemons.pynixd = {
