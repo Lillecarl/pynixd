@@ -323,6 +323,45 @@ for the same reason.
 reader that answered "the two agree" whatever it was given would pass every
 run and measure nothing.
 
+#### Three tests this comparison cannot answer
+
+**Some tests do not build the same thing twice, and no engine is the reason.**
+`ca/duplicate-realisation-in-closure` builds a `current-time` derivation, and
+`ca/nix-shell` registers a `fixed-env` and a `shellDrv-env-dev` that hold an
+environment which moves. A second run of one arm disagrees with the first.
+
+The floor was measured, not guessed. Two runs of the same arm, `ca` suite,
+Nix 2.34:
+
+| control against control | `ca/duplicate-realisation-in-closure`, `ca/nix-shell` |
+| --- | --- |
+| pynixd against pynixd | the two above, and `ca/build` |
+
+`ca/build` registers one realisation twice in one run and once in the next,
+so the row count moves. **A test in this list cannot be called "same"
+either**: when it agrees across the two arms, that is one draw agreeing with
+another.
+
+Subtract the three, and the first run of this mode read: 17 agree, 3 differ.
+
+#### What the first run found
+
+`ca/import-from-derivation` differs in the store, and `diff-streams` calls it
+identical. It is one of the four tests the wire comparison passed. That is
+the whole reason this half exists, and it showed on the first run: the two
+arms realise a derivation with a different hash, and no run-to-run difference
+explains it.
+
+`ca/build-with-garbage-path` and `ca/nix-run` are one finding, not two.
+pynixd registers realisations for the `dev` and `foo` outputs of a
+multi-output CA derivation, and the daemon leaves them unregistered. This is
+the store-side view of the `QueryDerivationOutputMap` difference that the
+wire comparison already reports, and issue #39 holds the verdict.
+
+**This comparison has no exemption table.** `wirelog/diff.py` carries
+`EXEMPTIONS` for the differences that have a reason, and nothing here does,
+so a difference with a verdict reports for ever. Issue #39.
+
 ### The same mode, without the suite
 
 `pynixd/tests/parity/test_wire_parity.py` runs one small workload the same
