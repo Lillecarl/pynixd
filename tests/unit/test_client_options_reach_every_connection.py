@@ -33,7 +33,7 @@ from pynixd.serde import (
     BuildResult,
     BuildResultStatus,
     SetOptionsRequest,
-    StorePath as SerdeStorePath,
+    StorePath,
     Verbosity,
 )
 from pynixd.serde.auth import Role
@@ -240,7 +240,7 @@ class FakeEngine:
 
 def _build_request() -> BuildDerivationRequest:
     return BuildDerivationRequest(
-        drv_path=SerdeStorePath(path="/nix/store/00000000000000000000000000000001-test.drv"),
+        drv_path=StorePath(path="/nix/store/00000000000000000000000000000001-test.drv"),
         derivation=BasicDerivation(platform="x86_64-linux", builder=""),
         build_mode=BuildMode.NORMAL,
     )

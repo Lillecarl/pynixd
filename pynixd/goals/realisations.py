@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from ..drv_hash import output_hashes
-from ..serde import DrvOutput, KeyedDrvOutput, QueryRealisationRequest, Realisation, StorePath as SerdeStorePath
+from ..serde import DrvOutput, KeyedDrvOutput, QueryRealisationRequest, Realisation, StorePath
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -83,7 +83,7 @@ async def realisations_of(
         response = await store.execute(
             QueryRealisationRequest(
                 drv_output=DrvOutput(key),
-                keyed_drv_output=KeyedDrvOutput(drv_path=SerdeStorePath(str(drv_path)), output_name=output_name),
+                keyed_drv_output=KeyedDrvOutput(drv_path=StorePath(str(drv_path)), output_name=output_name),
             ),
         )
         realisation = _the_realisation(response, DrvOutput(key))

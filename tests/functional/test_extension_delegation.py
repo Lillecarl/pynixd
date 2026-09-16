@@ -119,9 +119,7 @@ async def test_extension_delegation(tmp_path: Path) -> None:
             assert "QueryPathInfos" in store_a_b.features
 
             # Now try to execute QueryPathInfos on store_a_b
-            from pynixd.serde import StorePath as SerdeStorePath
-
-            req = QueryPathInfosRequest(paths={SerdeStorePath(path=str(path))})  # pyright: ignore[reportUnhashable]
+            req = QueryPathInfosRequest(paths={path})
             resp = await store_a_b.execute(req)
 
             assert any(str(info.path) == str(path) for info in resp.infos)

@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import structlog
 
-from pynixd.serde import IsValidPathRequest, StorePath as SerdeStorePath
+from pynixd.serde import IsValidPathRequest
 from pynixd.store import LocalSocketStore
 from pynixd.store.transfer import stream_paths_store_to_store
 from pynixd.store_path import StorePath
@@ -59,7 +59,7 @@ async def test_stream_nar() -> None:
     try:
         # 2. Stream the path from src to dst
         # Check if path exists in src
-        is_valid_src = await src_store.execute(IsValidPathRequest(path=SerdeStorePath(path=str(store_path))))
+        is_valid_src = await src_store.execute(IsValidPathRequest(path=StorePath(path=str(store_path))))
         assert is_valid_src.valid, f"Path {store_path} not valid in system store"
 
         # Use stream_paths_store_to_store which handles the NAR piping
@@ -67,7 +67,7 @@ async def test_stream_nar() -> None:
 
         # Verify it now exists in dst
         is_valid_dst_after = await dst_store.execute(
-            IsValidPathRequest(path=SerdeStorePath(path=str(store_path))),
+            IsValidPathRequest(path=StorePath(path=str(store_path))),
         )
         assert is_valid_dst_after.valid
     finally:

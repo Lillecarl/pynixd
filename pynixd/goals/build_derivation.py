@@ -12,7 +12,6 @@ from ..serde import (
     BuildDerivationRequest,
     BuildResultStatus,
     IsValidPathRequest,
-    StorePath as SerdeStorePath,
 )
 from ..store_path import StorePath
 from .goal import ExecutionGoal
@@ -211,5 +210,5 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
             await anyio.sleep(0.05)
 
     async def _is_valid_local_path(self, path: StorePath) -> bool:
-        response = await self.engine.ctx.local_store.execute(IsValidPathRequest(path=SerdeStorePath(path=str(path))))
+        response = await self.engine.ctx.local_store.execute(IsValidPathRequest(path=StorePath(path=str(path))))
         return bool(response.valid)

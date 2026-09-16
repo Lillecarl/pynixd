@@ -14,7 +14,6 @@ from pynixd.serde import (
     BuildResult,
     BuildResultStatus,
     SetOptionsRequest,
-    StorePath as SerdeStorePath,
     Verbosity,
 )
 from pynixd.store_path import StorePath
@@ -22,7 +21,7 @@ from pynixd.store_path import StorePath
 
 def _build_request(drv_path: StorePath, *, builder: str = "") -> BuildDerivationRequest:
     return BuildDerivationRequest(
-        drv_path=SerdeStorePath(path=str(drv_path)),
+        drv_path=StorePath(path=str(drv_path)),
         derivation=BasicDerivation(platform="x86_64-linux", builder=builder),
         build_mode=BuildMode.NORMAL,
     )

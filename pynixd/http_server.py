@@ -41,7 +41,6 @@ from .serde import (
     NarFromPathRequest,
     QueryPathFromHashPartRequest,
     QueryPathInfoRequest,
-    StorePath as SerdeStorePath,
 )
 from .serde.context import ReadContext, WriteContext
 from .store_path import StorePath
@@ -246,7 +245,7 @@ class PynixdHttpServer:
 
         try:
             async with self.store.transfer_conn() as conn:
-                await NarFromPathRequest(path=SerdeStorePath(path=str(path))).to_writer(WriteContext.from_conn(conn))
+                await NarFromPathRequest(path=StorePath(path=str(path))).to_writer(WriteContext.from_conn(conn))
                 await conn.w.drain()
                 await conn.r.drain_stderr()
                 remaining = vinfo.info.nar_size
@@ -480,7 +479,7 @@ class PynixdHttpServer:
 
     async def get_path_info(self, path: StorePath) -> SerdeValidPathInfo | None:
         """Get ValidPathInfo for a store path. Returns ValidPathInfo or None."""
-        serde_path = SerdeStorePath(path=str(path))
+        serde_path = StorePath(path=str(path))
         resp = await self.store.execute(QueryPathInfoRequest(path=serde_path))
         if resp.valid and resp.info:
             return SerdeValidPathInfo(path=serde_path, info=resp.info)

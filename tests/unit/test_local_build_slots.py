@@ -28,7 +28,7 @@ from pynixd.serde import (
     BuildResult,
     BuildResultStatus,
     SetOptionsRequest,
-    StorePath as SerdeStorePath,
+    StorePath,
     Verbosity,
 )
 
@@ -214,7 +214,7 @@ class _AssignScheduler:
 
 def _request(name: str) -> BuildDerivationRequest:
     return BuildDerivationRequest(
-        drv_path=SerdeStorePath(path=f"/nix/store/0000000000000000000000000000000{name}-{name}.drv"),
+        drv_path=StorePath(path=f"/nix/store/0000000000000000000000000000000{name}-{name}.drv"),
         derivation=BasicDerivation(platform="x86_64-linux", builder=""),
         build_mode=BuildMode.NORMAL,
     )

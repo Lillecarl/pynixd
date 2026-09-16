@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 import structlog
 
-from ..serde import BuildResultStatus, IsValidPathRequest, StorePath as SerdeStorePath
+from ..serde import BuildResultStatus, IsValidPathRequest
 from ..store_path import StorePath
 from .goal import ExecutionGoal
 from .results import GoalResult, goal_failure, goal_success
@@ -116,7 +116,7 @@ class SubstitutePathGoal(ExecutionGoal[SubstituteAttempt]):
         return SubstituteAttempt(found=True, result=result)
 
     async def _is_valid_local_path(self, path: StorePath) -> bool:
-        response = await self.engine.ctx.local_store.execute(IsValidPathRequest(path=SerdeStorePath(path=str(path))))
+        response = await self.engine.ctx.local_store.execute(IsValidPathRequest(path=StorePath(path=str(path))))
         return bool(response.valid)
 
 

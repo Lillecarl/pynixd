@@ -26,7 +26,7 @@ from . import metrics
 from .allocator import BuildAllocator, RankedStore, TelemetryStoreRanker
 from .build_queue import BuildQueue, QueuedBuild
 from .exceptions import BackendError, InfrastructureError, ResourceExhaustedError
-from .serde import LogNext, QueryValidPathsRequest, StorePath as SerdeStorePath
+from .serde import LogNext, QueryValidPathsRequest
 from .store import DaemonStore, LocalDBStore
 from .store.transfer import stream_paths_store_to_store
 from .store_path import StorePath
@@ -597,7 +597,7 @@ class Scheduler:
         # 1. Filter inputs already present on the builder store
         input_srcs = build.request.derivation.input_srcs
         if input_srcs:
-            paths_to_check = {SerdeStorePath(path=str(p)) for p in input_srcs}  # pyright: ignore[reportUnhashable]
+            paths_to_check = {StorePath(path=str(p)) for p in input_srcs}  # pyright: ignore[reportUnhashable]
             try:
                 check = await store.execute(
                     QueryValidPathsRequest(
@@ -775,7 +775,7 @@ class Scheduler:
             try:
                 resp = await self.local_store.query_valid_paths(
                     QueryValidPathsRequest(
-                        paths={SerdeStorePath(path=str(path)) for path in paths},  # pyright: ignore[reportUnhashable]
+                        paths={StorePath(path=str(path)) for path in paths},  # pyright: ignore[reportUnhashable]
                         substitute=0,
                     ),
                 )

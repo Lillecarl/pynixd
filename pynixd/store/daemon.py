@@ -28,7 +28,7 @@ from ..serde import (
     BuildResultStatus,
     ContentAddress,
     DerivationOutput,
-    StorePath as SerdeStorePath,
+    StorePath,
 )
 from ..serde.context import WriteContext
 from ..store_layout import StoreLayout
@@ -251,7 +251,7 @@ class DaemonStore(Store):
         request = AddToStoreRequest(
             path_name=name,
             cam=ContentAddress("text:sha256"),
-            references={SerdeStorePath(path=str(ref)) for ref in references},  # pyright: ignore[reportUnhashable]
+            references={StorePath(path=str(ref)) for ref in references},  # pyright: ignore[reportUnhashable]
             repair=0,
         )
         await self.probe()
@@ -575,7 +575,7 @@ class DaemonStore(Store):
     ) -> tuple[str, bool]:
         drv_hash = random_nix32_hash()
         out_path = f"{store_prefix()}{drv_hash}-{name}"
-        drv_path = SerdeStorePath(path=f"{store_prefix()}{drv_hash}-{name}.drv")
+        drv_path = StorePath(path=f"{store_prefix()}{drv_hash}-{name}.drv")
 
         env: dict[str, str] = {
             "builder": "/bin/sh",
@@ -811,8 +811,8 @@ class DaemonStore(Store):
         if "QueryClosureWithInfo" in self.features:
             return await self.call(request, client=client, suppress_last=suppress_last)
 
-        pending: set[SerdeStorePath] = set(request.paths)  # pyright: ignore[reportUnhashable]
-        all_infos: dict[SerdeStorePath, Any] = {}
+        pending: set[StorePath] = set(request.paths)  # pyright: ignore[reportUnhashable]
+        all_infos: dict[StorePath, Any] = {}
         while pending:
             to_fetch = {p for p in pending if p not in all_infos}  # pyright: ignore[reportUnhashable]
             if not to_fetch:
@@ -827,7 +827,7 @@ class DaemonStore(Store):
                 if p not in new_infos:
                     raise ValueError(f"Path {p} not found in store closure")
             all_infos.update(new_infos)
-            next_pending: set[SerdeStorePath] = set()
+            next_pending: set[StorePath] = set()
             for info in new_infos.values():
                 for ref in info.info.references:
                     if ref not in all_infos:
@@ -835,10 +835,10 @@ class DaemonStore(Store):
             pending = next_pending
 
         sorted_infos: list = []
-        visited: set[SerdeStorePath] = set()
-        visiting: set[SerdeStorePath] = set()
+        visited: set[StorePath] = set()
+        visiting: set[StorePath] = set()
 
-        def visit(p: SerdeStorePath) -> None:
+        def visit(p: StorePath) -> None:
             if p in visited or p in visiting:
                 return
             visiting.add(p)
@@ -861,7 +861,7 @@ class DaemonStore(Store):
 
         from pynixd.daemon_extensions.query_derivation_output_map_batch import DerivationOutputMapBatchResponse
 
-        from ..serde import StorePath as SerdeStorePath
+        from ..serde import StorePath
 
         if not request.drv_paths:
             return DerivationOutputMapBatchResponse(outputs={})
@@ -869,14 +869,14 @@ class DaemonStore(Store):
         if "QueryDerivationOutputMapBatch" in self.features:
             return await self.call(request, client=client, suppress_last=suppress_last)
 
-        outputs: dict[SerdeStorePath, dict[str, SerdeStorePath]] = {}
+        outputs: dict[StorePath, dict[str, StorePath]] = {}
         for drv_path in request.drv_paths:
             try:
                 parsed = await self.read_derivation(drv_path)
                 if parsed is not None:
-                    sp = SerdeStorePath(path=str(drv_path))
-                    outs: dict[str, SerdeStorePath | None] = dict(parsed.output_paths().items())  # type: ignore[dict-item]
-                    clean: dict[str, SerdeStorePath] = {k: v for k, v in outs.items() if v is not None}
+                    sp = StorePath(path=str(drv_path))
+                    outs: dict[str, StorePath | None] = dict(parsed.output_paths().items())  # type: ignore[dict-item]
+                    clean: dict[str, StorePath] = {k: v for k, v in outs.items() if v is not None}
                     outputs[sp] = clean
             except FileNotFoundError:
                 pass
@@ -941,9 +941,9 @@ class DaemonStore(Store):
 
         from ..drv_parser import parse_drv
         from ..nar import NarRegular, parse_nar
-        from ..serde import IsValidPathRequest, NarFromPathRequest, QueryPathInfoRequest, StorePath as SerdeStorePath
+        from ..serde import IsValidPathRequest, NarFromPathRequest, QueryPathInfoRequest, StorePath
 
-        sp = SerdeStorePath(path=str(drv_store_path))
+        sp = StorePath(path=str(drv_store_path))
 
         valid_resp = await self.execute(IsValidPathRequest(path=sp))
         if not valid_resp.valid:

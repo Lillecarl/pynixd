@@ -29,7 +29,7 @@ from pynixd.serde import (
     IsValidPathRequest,
     QueryAllValidPathsRequest,
     QueryValidPathsRequest,
-    StorePath as SerdeStorePath,
+    StorePath,
 )
 from pynixd.store.local_db import referenced_paths
 from pynixd.store_layout import StoreLayout
@@ -73,12 +73,12 @@ class TestReadingThePathsOfARequest:
     """`referenced_paths` reads the declared fields, not a list of operations."""
 
     def test_a_single_path_field(self) -> None:
-        request = IsValidPathRequest(path=SerdeStorePath(path=HELLO))
+        request = IsValidPathRequest(path=StorePath(path=HELLO))
         assert referenced_paths(request) == {HELLO}
 
     def test_a_set_of_paths(self) -> None:
         request = QueryValidPathsRequest(
-            paths={SerdeStorePath(path=HELLO), SerdeStorePath(path=LIBC)},
+            paths={StorePath(path=HELLO), StorePath(path=LIBC)},
         )
         assert referenced_paths(request) == {HELLO, LIBC}
 
@@ -87,7 +87,7 @@ class TestReadingThePathsOfARequest:
 
     def test_an_empty_path_is_not_a_reference(self) -> None:
         """The wire spells "no path" as the empty string, and that is not one."""
-        assert referenced_paths(IsValidPathRequest(path=SerdeStorePath(path=""))) == set()
+        assert referenced_paths(IsValidPathRequest(path=StorePath(path=""))) == set()
 
     def test_something_that_is_not_a_request(self) -> None:
         assert referenced_paths(object()) == set()

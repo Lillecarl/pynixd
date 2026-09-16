@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from pynixd.serde import BuildMode, BuildResult, BuildResultStatus, BuiltOutput, StorePath as SerdeStorePath
+from pynixd.serde import BuildMode, BuildResult, BuildResultStatus, BuiltOutput, StorePath
 from tests.test_features import TestFeatures as F
 
 # This repository holds two classes named `StorePath`. `pynixd.store_path`
@@ -23,9 +23,9 @@ from tests.test_features import TestFeatures as F
 # `pynixd`, so the wire class is the only class it can name, and the new type
 # is the correct type. This module therefore names the wire one as well.
 #
-# `tests/_conftest/helpers.py` uses the same `SerdeStorePath` spelling, and it
+# `tests/_conftest/helpers.py` uses the same `StorePath` spelling, and it
 # is the spelling to copy wherever the two meet.
-StorePath = SerdeStorePath
+StorePath = StorePath
 
 
 @pytest.mark.covers(F.BUILD_TYPES)

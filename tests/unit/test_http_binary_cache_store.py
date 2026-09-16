@@ -8,7 +8,7 @@ from aiohttp import web
 
 from nix_daemon_protocol.ids import StoreId
 from pynixd.config import HTTPBinaryCacheSpec
-from pynixd.serde import IsValidPathRequest, QueryPathInfoRequest, QueryValidPathsRequest, StorePath as SerdeStorePath
+from pynixd.serde import IsValidPathRequest, QueryPathInfoRequest, QueryValidPathsRequest
 from pynixd.store.http_binary_cache import HTTPBinaryCacheStore
 from pynixd.store_path import StorePath
 
@@ -81,10 +81,10 @@ async def test_http_binary_cache_queries_path_info() -> None:
         )
         await store.start()
         try:
-            valid = await store.execute(IsValidPathRequest(path=SerdeStorePath(path=_PATH)))
+            valid = await store.execute(IsValidPathRequest(path=StorePath(path=_PATH)))
             assert valid.valid
 
-            info = await store.execute(QueryPathInfoRequest(path=SerdeStorePath(path=_PATH)))
+            info = await store.execute(QueryPathInfoRequest(path=StorePath(path=_PATH)))
             assert info.valid
             assert info.info is not None
             assert info.info.nar_size == len(_NAR)
@@ -103,13 +103,13 @@ async def test_http_binary_cache_query_valid_paths() -> None:
             response = await store.execute(
                 QueryValidPathsRequest(
                     paths={
-                        SerdeStorePath(path=_PATH),  # pyright: ignore[reportUnhashable]
-                        SerdeStorePath(path=missing),  # pyright: ignore[reportUnhashable]
+                        StorePath(path=_PATH),  # pyright: ignore[reportUnhashable]
+                        StorePath(path=missing),  # pyright: ignore[reportUnhashable]
                     },
                     substitute=0,
                 )
             )
-            assert response.paths == {SerdeStorePath(path=_PATH)}  # pyright: ignore[reportUnhashable]
+            assert response.paths == {StorePath(path=_PATH)}  # pyright: ignore[reportUnhashable]
         finally:
             await store.close()
 
@@ -123,7 +123,7 @@ async def test_http_binary_cache_404_does_not_mark_store_unhealthy() -> None:
         await store.start()
         try:
             for _ in range(5):
-                valid = await store.execute(IsValidPathRequest(path=SerdeStorePath(path=missing)))
+                valid = await store.execute(IsValidPathRequest(path=StorePath(path=missing)))
                 assert not valid.valid
             assert store.is_healthy
         finally:

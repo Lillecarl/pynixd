@@ -28,7 +28,7 @@ from pynixd.goals.ensure import (
     _show_known_outputs,  # noqa: PLC2701 -- the exact bytes are the unit under test
 )
 from pynixd.goals.results import goal_failure, goal_success
-from pynixd.serde import BuildMode, BuildResultStatus, StorePath as SerdeStorePath
+from pynixd.serde import BuildMode, BuildResultStatus, StorePath
 from pynixd.store_path import DrvOutput
 
 if TYPE_CHECKING:
@@ -69,7 +69,7 @@ def _goal() -> EnsureDerivedPathGoal:
 async def _refusal(parsed: Derivation) -> str:
     answer = await _goal()._refuse_a_failed_input(  # noqa: SLF001 -- the message is the unit under test
         [goal_failure("the input failed", BuildResultStatus.PERMANENT_FAILURE)],
-        SerdeStorePath(TOP_DRV),
+        StorePath(TOP_DRV),
         parsed,
     )
     if answer is None:
@@ -129,7 +129,7 @@ def test_a_derivation_with_no_output_gets_no_section() -> None:
 async def test_an_input_that_succeeded_gives_no_refusal() -> None:
     answer = await _goal()._refuse_a_failed_input(  # noqa: SLF001 -- the message is the unit under test
         [goal_success()],
-        SerdeStorePath(TOP_DRV),
+        StorePath(TOP_DRV),
         _derivation(_output("out", OUT)),
     )
 

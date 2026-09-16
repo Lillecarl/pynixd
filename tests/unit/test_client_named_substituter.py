@@ -26,7 +26,7 @@ from pynixd.serde import (
     QuerySubstitutablePathInfosRequest,
     QuerySubstitutablePathInfosResponse,
     SetOptionsRequest,
-    StorePath as SerdeStorePath,
+    StorePath,
     SubstitutablePathInfo,
     Verbosity,
 )
@@ -115,7 +115,7 @@ def test_each_substituter_option_counts(name: str) -> None:
 async def test_the_plan_reads_the_substituter_of_the_client() -> None:
     """The plan puts the path in `willSubstitute`, with the two sizes."""
     store = FakeUpstream(
-        infos=[SubstitutablePathInfo(path=SerdeStorePath(path=PATH), download_size=11, nar_size=22)],
+        infos=[SubstitutablePathInfo(path=StorePath(path=PATH), download_size=11, nar_size=22)],
     )
 
     response = await _goal(store, _client(_options(substituters="file:///cache"))).result()
@@ -129,14 +129,14 @@ async def test_the_plan_reads_the_substituter_of_the_client() -> None:
 async def test_the_plan_asks_the_infos_operation_and_not_the_set_operation() -> None:
     """`QuerySubstitutablePaths` skips a cache whose `want-mass-query` is off."""
     store = FakeUpstream(
-        infos=[SubstitutablePathInfo(path=SerdeStorePath(path=PATH), download_size=1, nar_size=2)],
+        infos=[SubstitutablePathInfo(path=StorePath(path=PATH), download_size=1, nar_size=2)],
     )
 
     await _goal(store, _client(_options(substituters="file:///cache"))).result()
 
     asked = [req for req in store.requests if isinstance(req, QuerySubstitutablePathInfosRequest)]
     assert len(asked) == 1
-    assert asked[0].paths == {SerdeStorePath(path=PATH): ContentAddress("")}
+    assert asked[0].paths == {StorePath(path=PATH): ContentAddress("")}
 
 
 @pytest.mark.anyio
@@ -163,7 +163,7 @@ async def test_an_empty_answer_leaves_the_path_unknown() -> None:
 @pytest.mark.anyio
 async def test_an_answer_about_another_path_does_not_count() -> None:
     other = "/nix/store/11111111111111111111111111111111-other"
-    store = FakeUpstream(infos=[SubstitutablePathInfo(path=SerdeStorePath(path=other))])
+    store = FakeUpstream(infos=[SubstitutablePathInfo(path=StorePath(path=other))])
 
     response = await _goal(store, _client(_options(substituters="file:///cache"))).result()
 

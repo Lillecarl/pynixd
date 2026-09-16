@@ -12,7 +12,7 @@ from nix_daemon_protocol.nar_from_path import NarFromPathRequest
 from pynixd.daemon_extensions.query_closure_with_info import QueryClosureWithInfoRequest
 
 from .. import wire
-from ..serde import StorePath as SerdeStorePath
+from ..serde import StorePath
 from ..serde.context import ReadContext, WriteContext
 from ..store_path import StorePath as RealStorePath
 
@@ -38,7 +38,7 @@ async def stream_paths_store_to_store(
     Bypasses the normal handle() path, so we update dst knowledge manually.
     Only transfers paths that dst doesn't already have.
     """
-    paths_set = {SerdeStorePath(path=str(p)) for p in paths}  # pyright: ignore[reportUnhashable]
+    paths_set = {StorePath(path=str(p)) for p in paths}  # pyright: ignore[reportUnhashable]
     if not paths_set:
         return
     log.debug("stream_paths_start", src=src.store_id, dst=dst.store_id, count=len(paths_set))
@@ -145,7 +145,7 @@ async def _stream_paths_over_conns(
             fw.write(await info.bytes_wire())
 
             # Request NAR from source
-            sp = SerdeStorePath(path=str(path))
+            sp = StorePath(path=str(path))
             await NarFromPathRequest(path=sp).to_writer(WriteContext.from_conn(src_conn))
             await src_conn.w.drain()
 

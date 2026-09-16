@@ -6,7 +6,7 @@ from pynixd.serde import (
     BuildResult,
     OptMicroseconds,
     Realisation,
-    StorePath as SerdeStorePath,
+    StorePath,
     WireModel,
 )
 
@@ -20,7 +20,7 @@ async def test_wire_build_result_json_roundtrip():
         is_non_deterministic=0,
         start_time=1000000,
         stop_time=1000500,
-        built_outputs={"sha256:abc!out": Realisation(out_path=SerdeStorePath(path="/nix/store/xxx-foo"))},
+        built_outputs={"sha256:abc!out": Realisation(out_path=StorePath(path="/nix/store/xxx-foo"))},
     )
     br.cpu_user = OptMicroseconds(tag=1, value=50000)
     br.cpu_system = OptMicroseconds(tag=0, value=None)
@@ -41,7 +41,7 @@ async def test_wire_build_result_json_roundtrip():
     assert br2.status == 0
     assert br2.times_built == 1
     assert br2.start_time == 1000000
-    assert br2.built_outputs == {"sha256:abc!out": Realisation(out_path=SerdeStorePath(path="/nix/store/xxx-foo"))}
+    assert br2.built_outputs == {"sha256:abc!out": Realisation(out_path=StorePath(path="/nix/store/xxx-foo"))}
     assert br2.cpu_user.tag == 1
     assert br2.cpu_user.value == 50000
     assert br2.cpu_system.tag == 0
@@ -65,10 +65,10 @@ async def test_wire_store_path_json():
     This test asserted the whole path before, which no measurement of Nix
     supported.
     """
-    sp = SerdeStorePath(path="/nix/store/abc-test")
+    sp = StorePath(path="/nix/store/abc-test")
 
     class Req(WireModel):
-        path: SerdeStorePath
+        path: StorePath
 
     req = Req(path=sp)
 
@@ -78,7 +78,7 @@ async def test_wire_store_path_json():
     # Reading takes either form, because the constructor does.
     for data in ('{"path":"abc-test"}', '{"path":"/nix/store/abc-test"}'):
         back = Req.from_json(data)
-        assert isinstance(back.path, SerdeStorePath)
+        assert isinstance(back.path, StorePath)
         assert back.path == sp
         assert str(back.path) == "/nix/store/abc-test"
 

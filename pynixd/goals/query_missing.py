@@ -19,7 +19,6 @@ from ..serde import (
     QueryMissingRequest,
     QueryMissingResponse,
     QuerySubstitutablePathInfosRequest,
-    StorePath as SerdeStorePath,
 )
 from ..store_path import StorePath
 from ..substitution_queue import SubstitutionAvailability
@@ -40,15 +39,15 @@ log = structlog.get_logger(__name__)
 class QueryMissingPlan:
     """Accumulated classification of paths into build/substitute/unknown buckets."""
 
-    will_build: set[SerdeStorePath]
-    will_substitute: set[SerdeStorePath]
-    unknown: set[SerdeStorePath]
+    will_build: set[StorePath]
+    will_substitute: set[StorePath]
+    unknown: set[StorePath]
     download_size: int = 0
     nar_size: int = 0
 
     def add_substitute(self, path: StorePath, availability: SubstitutionAvailability) -> None:
         """Record that *path* can be substituted and accumulate its download size."""
-        self.will_substitute.add(SerdeStorePath(path=str(path)))
+        self.will_substitute.add(StorePath(path=str(path)))
         self.download_size += availability.download_size or 0
         self.nar_size += availability.nar_size or 0
 
@@ -178,7 +177,7 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
         and puts it in no bucket, so the answer holds nothing for one. The
         warning is the part that a reader sees, and pynixd wrote none.
         """
-        walk.plan.will_build.add(SerdeStorePath(path=str(drv_path)))
+        walk.plan.will_build.add(StorePath(path=str(drv_path)))
         if parsed is None:
             return
         for input_drv_path, output_names in parsed.input_drvs.items():
@@ -228,7 +227,7 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
 
         parsed = await self.engine.ctx.local_store.read_derivation(str(drv_path))
         if parsed is None:
-            walk.plan.unknown.add(SerdeStorePath(path=str(drv_path)))
+            walk.plan.unknown.add(StorePath(path=str(drv_path)))
             return
         if parsed.is_dynamic:
             self._must_build(drv_path, parsed, walk)
@@ -331,7 +330,7 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
             log.debug("upstream_plan_miss", derived_path=str(derived_path), reason=str(ex))
             return False
 
-        drv_path = SerdeStorePath(path=str(derived_path.base_store_path()))
+        drv_path = StorePath(path=str(derived_path.base_store_path()))
         if drv_path in response.will_build:
             return False
         walk.plan.will_substitute.update(response.will_substitute)
@@ -375,10 +374,10 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
 
     async def _classify_opaque_path(self, path: StorePath, plan: QueryMissingPlan) -> None:
         if not await self._classify_output_path(path, plan):
-            plan.unknown.add(SerdeStorePath(path=str(path)))
+            plan.unknown.add(StorePath(path=str(path)))
 
     async def _classify_output_path(self, path: StorePath, plan: QueryMissingPlan) -> bool:
-        response = await self.engine.ctx.local_store.execute(IsValidPathRequest(path=SerdeStorePath(path=str(path))))
+        response = await self.engine.ctx.local_store.execute(IsValidPathRequest(path=StorePath(path=str(path))))
         if response.valid:
             return True
         availability = await self._can_substitute(path)
@@ -417,7 +416,7 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
         """
         if not client_names_a_substituter(self.client):
             return SubstitutionAvailability.unavailable()
-        wire_path = SerdeStorePath(path=str(path))
+        wire_path = StorePath(path=str(path))
         response = await self.engine.ctx.local_store.execute(
             QuerySubstitutablePathInfosRequest(paths={wire_path: ContentAddress("")}),
             client=self.client,

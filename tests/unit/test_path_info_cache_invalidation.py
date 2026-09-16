@@ -33,7 +33,7 @@ from pynixd.serde import (
     AddSignaturesRequest,
     NARHash,
     SignPathInfoRequest,
-    StorePath as SerdeStorePath,
+    StorePath,
     UnkeyedValidPathInfo,
     ValidPathInfo,
 )
@@ -47,9 +47,9 @@ PATH = "/nix/store/00000000000000000000000000000001-thing"
 
 def _info(*signatures: str) -> ValidPathInfo:
     return ValidPathInfo(
-        path=SerdeStorePath(path=PATH),
+        path=StorePath(path=PATH),
         info=UnkeyedValidPathInfo(
-            deriver=SerdeStorePath(path=""),
+            deriver=StorePath(path=""),
             nar_hash=NARHash("0" * 64),
             references=set(),
             registration_time=0,
@@ -105,7 +105,7 @@ async def test_add_signatures_forgets_the_cached_info(store: RecordingStore) -> 
     """`nix store sign` reached the daemon and pynixd kept answering with the past."""
     store.add_path_info(_info("old"))
 
-    await store.add_signatures(AddSignaturesRequest(path=SerdeStorePath(path=PATH), sigs=set()))
+    await store.add_signatures(AddSignaturesRequest(path=StorePath(path=PATH), sigs=set()))
 
     assert store.sent == ["AddSignaturesRequest"], "it must still reach the daemon"
     assert store.get_path_info(PATH) is None

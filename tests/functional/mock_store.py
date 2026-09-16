@@ -29,7 +29,7 @@ from pynixd.serde import (
     QueryClosureWithInfoResponse,
     QueryValidPathsRequest,
     QueryValidPathsResponse,
-    StorePath as SerdeStorePath,
+    StorePath,
 )
 from pynixd.store.daemon import DaemonStore
 
@@ -206,13 +206,13 @@ class MockStore(DaemonStore):
             return QueryValidPathsResponse(paths=request.paths)
 
         if req_type in (QueryAllValidPathsRequest, SerdeQueryAllValidPathsRequest):
-            return SerdeQueryAllValidPathsResponse(paths={SerdeStorePath(path=str(p)) for p in self._mock_known_paths})  # pyright: ignore[reportUnhashable]
+            return SerdeQueryAllValidPathsResponse(paths={StorePath(path=str(p)) for p in self._mock_known_paths})  # pyright: ignore[reportUnhashable]
         if isinstance(request, QueryClosureWithInfoRequest):
             # Just return some dummy info for everything
 
             infos = [
                 ValidPathInfo(
-                    path=SerdeStorePath(path=str(p)),
+                    path=StorePath(path=str(p)),
                     info=UnkeyedValidPathInfo(
                         deriver=None,
                         nar_hash=NARHash(hash="0000000000000000000000000000000000000000000000000000000000000000"),

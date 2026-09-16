@@ -36,7 +36,6 @@ from pynixd.serde import (
     QueryRealisationRequest,
     QueryRealisationResponse,
     Realisation,
-    StorePath as SerdeStorePath,
 )
 from pynixd.store_path import StorePath
 
@@ -90,7 +89,7 @@ class FakeLocalStore:
                 return QueryRealisationResponse(realisations=[])
             return QueryRealisationResponse(
                 realisations=[
-                    Realisation(id=self.realisation_id, out_path=SerdeStorePath(path=FLOAT_OUT)),
+                    Realisation(id=self.realisation_id, out_path=StorePath(path=FLOAT_OUT)),
                 ],
             )
         return IsValidPathResponse(valid=self.valid and str(request.path) == FLOAT_OUT)

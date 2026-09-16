@@ -46,14 +46,14 @@ class NarInfo:
         from nix_daemon_protocol.valid_path_info import ValidPathInfo
         from nix_daemon_protocol.wire_time import Time
 
-        from .serde import StorePath as SerdeStorePath
+        from .serde import StorePath
 
         return ValidPathInfo(
-            path=SerdeStorePath(path=str(self.store_path)),
+            path=StorePath(path=str(self.store_path)),
             info=UnkeyedValidPathInfo(
-                deriver=SerdeStorePath(path=str(self.deriver)) if self.deriver else None,
+                deriver=StorePath(path=str(self.deriver)) if self.deriver else None,
                 nar_hash=NARHash(hash=self.nar_hash.removeprefix("sha256:")),
-                references={SerdeStorePath(path=str(ref)) for ref in self.references},  # pyright: ignore[reportUnhashable]
+                references={StorePath(path=str(ref)) for ref in self.references},  # pyright: ignore[reportUnhashable]
                 registration_time=Time(ts=0),
                 nar_size=self.nar_size,
                 ultimate=False,

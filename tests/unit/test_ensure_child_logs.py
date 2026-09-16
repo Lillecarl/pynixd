@@ -36,7 +36,6 @@ from pynixd.serde import (
     IsValidPathResponse,
     QueryRealisationRequest,
     QueryRealisationResponse,
-    StorePath as SerdeStorePath,
 )
 from pynixd.store_path import DrvOutput, StorePath
 
@@ -249,8 +248,8 @@ async def test_a_failed_resolved_build_says_the_short_sentence() -> None:
 
     answer = await goal._name_the_resolved_derivation(  # noqa: SLF001 -- the message is the unit under test
         failure,
-        SerdeStorePath(path=TOP_DRV),
-        SerdeStorePath(path=RESOLVED),
+        StorePath(path=TOP_DRV),
+        StorePath(path=RESOLVED),
     )
 
     assert str(answer.result.error_msg) == f"build of resolved derivation '{RESOLVED}' failed"
@@ -272,8 +271,8 @@ async def test_a_failed_build_of_the_derivation_itself_keeps_its_message() -> No
 
     answer = await goal._name_the_resolved_derivation(  # noqa: SLF001 -- the message is the unit under test
         failure,
-        SerdeStorePath(path=TOP_DRV),
-        SerdeStorePath(path=TOP_DRV),
+        StorePath(path=TOP_DRV),
+        StorePath(path=TOP_DRV),
     )
 
     assert str(answer.result.error_msg) == "Cannot build 'x'."

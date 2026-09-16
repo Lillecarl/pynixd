@@ -26,7 +26,6 @@ from ..serde import (
     LogNext,
     Realisation,
     RegisterDrvOutputRequest,
-    StorePath as SerdeStorePath,
     UnkeyedRealisation,
 )
 from ..store_path import StorePath
@@ -331,7 +330,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
 
     async def _ensure_opaque(self) -> GoalResult:
         store_path = StorePath(self.derived_path.drv_path)
-        path = SerdeStorePath(path=self.derived_path.drv_path)
+        path = StorePath(path=self.derived_path.drv_path)
         response = await self.engine.ctx.local_store.execute(IsValidPathRequest(path=path))
         if response.valid:
             return self._opaque_success(store_path)
@@ -412,7 +411,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         return nested_result
 
     async def _ensure_flat_derivation(self) -> GoalResult:
-        drv_path = SerdeStorePath(path=self.derived_path.drv_path)
+        drv_path = StorePath(path=self.derived_path.drv_path)
         parsed = await self.engine.ctx.local_store.read_derivation(str(drv_path))
         if parsed is None:
             return goal_failure(f"pynixd: derivation not found: {drv_path}", BuildResultStatus.UNKNOWN)
@@ -584,8 +583,8 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
     async def _name_the_resolved_derivation(
         self,
         result: GoalResult,
-        original: SerdeStorePath,
-        built: SerdeStorePath,
+        original: StorePath,
+        built: StorePath,
     ) -> GoalResult:
         """The failure of a resolved build names the resolved derivation.
 
@@ -650,7 +649,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         resolved_outputs: dict[str, StorePath] = {}
         for key, realisation in built.items():
             path = StorePath(str(realisation.out_path))
-            valid = await self.engine.ctx.local_store.execute(IsValidPathRequest(path=SerdeStorePath(path=str(path))))
+            valid = await self.engine.ctx.local_store.execute(IsValidPathRequest(path=StorePath(path=str(path))))
             if not valid.valid:
                 return None
             resolved_outputs[key.rpartition("!")[2]] = path
@@ -663,8 +662,8 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
 
     async def _try_realise_the_resolved_one(
         self,
-        build_drv_path: SerdeStorePath,
-        drv_path: SerdeStorePath,
+        build_drv_path: StorePath,
+        drv_path: StorePath,
         wanted: set[str],
     ) -> GoalResult | None:
         """The early cut-off: ask for the realisation of the resolved derivation.
@@ -741,7 +740,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         resolved_outputs: dict[str, StorePath] = {}
         for key, realisation in built.items():
             path = StorePath(str(realisation.out_path))
-            valid = await self.engine.ctx.local_store.execute(IsValidPathRequest(path=SerdeStorePath(path=str(path))))
+            valid = await self.engine.ctx.local_store.execute(IsValidPathRequest(path=StorePath(path=str(path))))
             if not valid.valid:
                 return None
             resolved_outputs[key.rpartition("!")[2]] = path
@@ -756,7 +755,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         self,
         parsed: Derivation,
         wanted: set[str],
-        drv_path: SerdeStorePath,
+        drv_path: StorePath,
     ) -> GoalResult | None:
         """Let the daemon behind pynixd substitute a content-addressed output.
 
@@ -902,7 +901,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             # the whole path.
             out_path = StorePath(str(realisation.out_path))
             valid = await self.engine.ctx.local_store.execute(
-                IsValidPathRequest(path=SerdeStorePath(path=str(out_path))),
+                IsValidPathRequest(path=StorePath(path=str(out_path))),
             )
             if not valid.valid:
                 continue
@@ -918,7 +917,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
                     RegisterDrvOutputRequest(
                         realisation=realisation,
                         keyed_drv_output=KeyedDrvOutput(
-                            drv_path=SerdeStorePath(path=str(self.derived_path.base_store_path())),
+                            drv_path=StorePath(path=str(self.derived_path.base_store_path())),
                             output_name=realisation.id.output_name,
                         ),
                         unkeyed_realisation=UnkeyedRealisation(
@@ -932,7 +931,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
                             # 'bb36hywi...-dependent-fixed-output'", and
                             # `ca:build-cache` read it. `out_path` above is
                             # the same value with the store directory on it.
-                            out_path=SerdeStorePath(path=str(out_path)),
+                            out_path=StorePath(path=str(out_path)),
                             signatures=set(realisation.signatures),
                         ),
                     ),
@@ -943,8 +942,8 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
     async def _path_of_what_it_builds(
         self,
         basic: BasicDerivation,
-        original: SerdeStorePath,
-    ) -> SerdeStorePath:
+        original: StorePath,
+    ) -> StorePath:
         """Put the resolved derivation in the store, and answer its path.
 
         **The daemon reads the derivation on the disk, and not the one that
@@ -977,7 +976,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         # `derivation-resolution-goal.cc:150`, and the plain logger of the
         # client prints the text of an activity with three points after it.
         await self._say(f"resolved derivation: '{original}' -> '{path}'...\n")
-        return SerdeStorePath(path=path)
+        return StorePath(path=path)
 
     async def _say(self, text: str) -> None:
         """Send one line to each client that watches this goal."""
@@ -986,7 +985,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         for client in watchers:
             await client.send(LogNext(text=text))
 
-    async def _refuse_an_impure_input(self, parsed: Derivation, drv_path: SerdeStorePath) -> GoalResult | None:
+    async def _refuse_an_impure_input(self, parsed: Derivation, drv_path: StorePath) -> GoalResult | None:
         """A pure derivation cannot depend on an impure one.
 
         `DerivationResolutionGoal::init` at `derivation-resolution-goal.cc:67`
@@ -1055,7 +1054,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
     async def _refuse_a_failed_input(
         self,
         child_results: list[GoalResult],
-        drv_path: SerdeStorePath,
+        drv_path: StorePath,
         parsed: Derivation,
     ) -> GoalResult | None:
         """Answer a failure when an input derivation did not build.
@@ -1187,7 +1186,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
                 needed.add(output_name)
                 continue
             response = await self.engine.ctx.local_store.execute(
-                IsValidPathRequest(path=SerdeStorePath(path=str(output_path))),
+                IsValidPathRequest(path=StorePath(path=str(output_path))),
             )
             if not response.valid:
                 needed.add(output_name)
@@ -1226,7 +1225,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         results: dict[str, GoalResult] = {}
         for output_name, path in selected.items():
             response = await self.engine.ctx.local_store.execute(
-                IsValidPathRequest(path=SerdeStorePath(path=str(path)))
+                IsValidPathRequest(path=StorePath(path=str(path)))
             )
             if response.valid:
                 results[output_name] = GoalResult(
@@ -1287,7 +1286,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             # bare `<hash>-<name>` is `StorePath::to_string`, which is what
             # `Realisation` carries in its JSON.
             key = f"sha256:{digest}!{output_name}"
-            built[key] = Realisation(id=key, out_path=SerdeStorePath(path=PurePath(str(path)).name))
+            built[key] = Realisation(id=key, out_path=StorePath(path=PurePath(str(path)).name))
         if not built:
             return result
 
@@ -1335,7 +1334,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         client = next((c for c in self._watchers if c.options is not None), None)
         if not client_names_a_substituter(client):
             return None
-        wire_path = SerdeStorePath(path=str(path))
+        wire_path = StorePath(path=str(path))
         try:
             await self.engine.ctx.local_store.execute(EnsurePathRequest(path=wire_path), client=client)
         except DaemonProtocolError as ex:

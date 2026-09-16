@@ -30,7 +30,7 @@ import structlog
 from nix_daemon_protocol.store_dir import store_dir as current_store_dir
 
 from ..drv_parser import ChildMapNode, _aterm_escape
-from ..serde import BasicDerivation, DerivationOutput, StorePath as SerdeStorePath
+from ..serde import BasicDerivation, DerivationOutput
 from ..store_path import StorePath
 from ..utils import nix32_encode
 
@@ -321,7 +321,7 @@ def resolve_derivation(
     drv_name = _nix_drv_name(drv_path)
 
     rewrites: dict[str, str] = {}
-    new_input_srcs = {SerdeStorePath(path=str(path)) for path in drv.input_srcs}  # pyright: ignore[reportUnhashable]
+    new_input_srcs = {StorePath(path=str(path)) for path in drv.input_srcs}  # pyright: ignore[reportUnhashable]
 
     for input_drv_path, output_names in drv.input_drvs.items():
         for output_name in output_names:
@@ -330,7 +330,7 @@ def resolve_derivation(
             if actual_path is None:
                 raise ValueError(f"No resolved path for {input_drv_path}!{output_name}")
             rewrites[placeholder] = str(actual_path)
-            new_input_srcs.add(SerdeStorePath(path=str(actual_path)))
+            new_input_srcs.add(StorePath(path=str(actual_path)))
 
     resolved = BasicDerivation(
         outputs={
@@ -373,7 +373,7 @@ def _resolve_dynamic_node(
     path_map: DynamicPathMap,
     parent_hash: bytes | None,
     rewrites: dict[str, str],
-    new_input_srcs: set[SerdeStorePath],
+    new_input_srcs: set[StorePath],
 ) -> None:
     """Recursively resolve placeholders for a ChildMapNode tree.
 
@@ -422,7 +422,7 @@ def _resolve_dynamic_node(
                     actual_path=str(actual_path),
                 )
                 rewrites[placeholder] = str(actual_path)
-                new_input_srcs.add(SerdeStorePath(path=str(actual_path)))
+                new_input_srcs.add(StorePath(path=str(actual_path)))
             else:
                 log.debug(
                     "resolve_dyn_no_path",
@@ -462,7 +462,7 @@ def _resolve_dynamic_node(
             )
             if actual_path is not None:
                 rewrites[placeholder] = str(actual_path)
-                new_input_srcs.add(SerdeStorePath(path=str(actual_path)))
+                new_input_srcs.add(StorePath(path=str(actual_path)))
 
 
 def resolve_dynamic_derivation(
@@ -491,7 +491,7 @@ def resolve_dynamic_derivation(
     drv_name = _nix_drv_name(drv_path)
 
     rewrites: dict[str, str] = {}
-    new_input_srcs = {SerdeStorePath(path=str(path)) for path in drv.input_srcs}  # pyright: ignore[reportUnhashable]
+    new_input_srcs = {StorePath(path=str(path)) for path in drv.input_srcs}  # pyright: ignore[reportUnhashable]
 
     # Handle regular input_drvs (same as resolve_derivation)
     for input_drv_path, output_names in drv.input_drvs.items():
@@ -501,7 +501,7 @@ def resolve_dynamic_derivation(
             if actual_path is None:
                 raise ValueError(f"No resolved path for {input_drv_path}!{output_name}")
             rewrites[placeholder] = str(actual_path)
-            new_input_srcs.add(SerdeStorePath(path=str(actual_path)))
+            new_input_srcs.add(StorePath(path=str(actual_path)))
 
     # Handle dynamic_input_drvs: recursive ChildMapNode
     for dyn_drv_path, node in drv.dynamic_input_drvs.items():

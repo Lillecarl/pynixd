@@ -22,7 +22,7 @@ from pynixd.serde import (
     DerivationOutput,
     IsValidPathResponse,
     SetOptionsRequest,
-    StorePath as SerdeStorePath,
+    StorePath,
 )
 from pynixd.wire import BytesWriter
 
@@ -86,7 +86,7 @@ class FakeEngine:
 
 def _request() -> BuildDerivationRequest:
     return BuildDerivationRequest(
-        drv_path=SerdeStorePath(path="/nix/store/00000000000000000000000000000001-test.drv"),
+        drv_path=StorePath(path="/nix/store/00000000000000000000000000000001-test.drv"),
         derivation=BasicDerivation(platform="x86_64-linux", builder=""),
         build_mode=BuildMode.NORMAL,
     )
@@ -133,7 +133,7 @@ class CountingStore:
 def _request_with_an_output() -> BuildDerivationRequest:
     """A derivation that declares an output path, so the wait has work to do."""
     return BuildDerivationRequest(
-        drv_path=SerdeStorePath(path="/nix/store/00000000000000000000000000000001-test.drv"),
+        drv_path=StorePath(path="/nix/store/00000000000000000000000000000001-test.drv"),
         derivation=BasicDerivation(
             platform="x86_64-linux",
             builder="",

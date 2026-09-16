@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from nix_daemon_protocol.store_dir import store_prefix
 
 from ..local_store_db import LocalStoreDB
-from ..serde import StorePath as SerdeStorePath
+from ..serde import StorePath
 from .local_daemon import LocalStore
 
 log = structlog.get_logger(__name__)
@@ -32,10 +32,10 @@ def referenced_paths(request: object) -> set[str]:
     found: set[str] = set()
     for name in type(request).model_fields:
         value = getattr(request, name, None)
-        if isinstance(value, SerdeStorePath):
+        if isinstance(value, StorePath):
             found.add(str(value))
         elif isinstance(value, (set, frozenset, list, tuple)):
-            found.update(str(item) for item in value if isinstance(item, SerdeStorePath))
+            found.update(str(item) for item in value if isinstance(item, StorePath))
     found.discard("")
     return found
 
@@ -149,7 +149,7 @@ class LocalDBStore(LocalStore):
         from nix_daemon_protocol.path_info import UnkeyedValidPathInfo as SerdeUnkeyedValidPathInfo
         from nix_daemon_protocol.signature import Signature
         from nix_daemon_protocol.wire_time import Time
-        from pynixd.serde import QueryPathInfoResponse, StorePath as SerdeStorePath
+        from pynixd.serde import QueryPathInfoResponse, StorePath
 
         from .queries import QUERY_PATH_INFO, QUERY_REFERENCES
 
@@ -170,9 +170,9 @@ class LocalDBStore(LocalStore):
                 sig_set.add(Signature(**Signature.from_str(s)))
 
         info = SerdeUnkeyedValidPathInfo(
-            deriver=SerdeStorePath(path=deriver or ""),
+            deriver=StorePath(path=deriver or ""),
             nar_hash=NARHash(hash=nar_hash),
-            references={SerdeStorePath(path=r) for r in refs},  # type: ignore[arg-type]
+            references={StorePath(path=r) for r in refs},  # type: ignore[arg-type]
             registration_time=Time(ts=reg_time),
             nar_size=nar_size or 0,
             ultimate=bool(ultimate),
@@ -184,13 +184,13 @@ class LocalDBStore(LocalStore):
     async def query_all_valid_paths(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """QueryAllValidPaths — fast-path via SQLite."""
 
-        from pynixd.serde import QueryAllValidPathsResponse, StorePath as SerdeStorePath
+        from pynixd.serde import QueryAllValidPathsResponse, StorePath
 
         from .queries import QUERY_ALL_VALID_PATHS
 
         async with self.db.execute(QUERY_ALL_VALID_PATHS) as cursor:
             rows = await cursor.fetchall()
-        paths: set = {SerdeStorePath(path=r[0]) for r in rows}  # type: ignore[arg-type]
+        paths: set = {StorePath(path=r[0]) for r in rows}  # type: ignore[arg-type]
         return QueryAllValidPathsResponse(paths=paths)
 
     async def query_valid_paths(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
@@ -198,7 +198,7 @@ class LocalDBStore(LocalStore):
 
         import json
 
-        from pynixd.serde import QueryValidPathsResponse, StorePath as SerdeStorePath
+        from pynixd.serde import QueryValidPathsResponse, StorePath
 
         from .queries import QUERY_VALID_PATHS
 
@@ -206,13 +206,13 @@ class LocalDBStore(LocalStore):
         async with self.db.execute(QUERY_VALID_PATHS, (paths_json,)) as cursor:
             rows = await cursor.fetchall()
 
-        paths: set = {SerdeStorePath(path=r[0]) for r in rows}  # type: ignore[arg-type]
+        paths: set = {StorePath(path=r[0]) for r in rows}  # type: ignore[arg-type]
         return QueryValidPathsResponse(paths=paths)
 
     async def query_path_from_hash_part(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """QueryPathFromHashPart — fast-path via SQLite."""
 
-        from pynixd.serde import QueryPathFromHashPartResponse, StorePath as SerdeStorePath
+        from pynixd.serde import QueryPathFromHashPartResponse, StorePath
 
         from .queries import QUERY_PATH_FROM_HASH_PART
 
@@ -221,7 +221,7 @@ class LocalDBStore(LocalStore):
         async with self.db.execute(QUERY_PATH_FROM_HASH_PART, (prefix, upper)) as cursor:
             row = await cursor.fetchone()
         if row:
-            return QueryPathFromHashPartResponse(value=SerdeStorePath(path=row[0]))
+            return QueryPathFromHashPartResponse(value=StorePath(path=row[0]))
 
         return None  # fall through
 
@@ -230,14 +230,14 @@ class LocalDBStore(LocalStore):
 
         import json
 
-        from pynixd.serde import QueryClosureResponse, StorePath as SerdeStorePath
+        from pynixd.serde import QueryClosureResponse, StorePath
 
         from .queries import QUERY_CLOSURE
 
         seeds_json = json.dumps([str(p) for p in request.paths])
         async with self.db.execute(QUERY_CLOSURE, (seeds_json,)) as cursor:
             rows = await cursor.fetchall()
-        paths: set = {SerdeStorePath(path=row[0]) for row in rows}  # type: ignore[arg-type]
+        paths: set = {StorePath(path=row[0]) for row in rows}  # type: ignore[arg-type]
         return QueryClosureResponse(paths=paths)
 
     async def query_closure_with_info(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
@@ -256,7 +256,7 @@ class LocalDBStore(LocalStore):
         from nix_daemon_protocol.signature import Signature
         from nix_daemon_protocol.valid_path_info import ValidPathInfo as SerdeValidPathInfo
         from nix_daemon_protocol.wire_time import Time
-        from pynixd.serde import QueryClosureWithInfoResponse, StorePath as SerdeStorePath
+        from pynixd.serde import QueryClosureWithInfoResponse, StorePath
 
         from .queries import QUERY_CLOSURE_WITH_INFO
 
@@ -266,14 +266,14 @@ class LocalDBStore(LocalStore):
 
         sorted_infos: list = []
         for path, deriver, nar_hash, reg_time, nar_size, ultimate, sigs, ca, refs_str in rows:
-            sp = SerdeStorePath(path=path)
-            references: set = {SerdeStorePath(path=r) for r in refs_str.split()} if refs_str else set()  # type: ignore[arg-type]
+            sp = StorePath(path=path)
+            references: set = {StorePath(path=r) for r in refs_str.split()} if refs_str else set()  # type: ignore[arg-type]
             sig_set: set = set()
             if sigs:
                 for s in sigs.split():
                     sig_set.add(Signature(**Signature.from_str(s)))
             uinfo = SerdeUnkeyedValidPathInfo(
-                deriver=SerdeStorePath(path=deriver or ""),
+                deriver=StorePath(path=deriver or ""),
                 nar_hash=NARHash(hash=nar_hash),
                 references=references,
                 registration_time=Time(ts=reg_time),
@@ -316,7 +316,7 @@ class LocalDBStore(LocalStore):
         from nix_daemon_protocol.signature import Signature
         from nix_daemon_protocol.valid_path_info import ValidPathInfo as SerdeValidPathInfo
         from nix_daemon_protocol.wire_time import Time
-        from pynixd.serde import QueryPathInfosResponse, StorePath as SerdeStorePath
+        from pynixd.serde import QueryPathInfosResponse, StorePath
 
         from .queries import QUERY_PATH_INFOS_BATCH, QUERY_REFERENCES_BATCH
 
@@ -328,19 +328,19 @@ class LocalDBStore(LocalStore):
 
         refs_map: dict = {}
         for referrer, reference in ref_rows:
-            refs_map.setdefault(SerdeStorePath(path=referrer), set()).add(  # type: ignore[arg-type]
-                SerdeStorePath(path=reference),
+            refs_map.setdefault(StorePath(path=referrer), set()).add(  # type: ignore[arg-type]
+                StorePath(path=reference),
             )
 
         infos: list = []
         for path, deriver, nar_hash, reg_time, nar_size, ultimate, sigs, ca in rows:
-            sp = SerdeStorePath(path=path)
+            sp = StorePath(path=path)
             sig_set: set = set()
             if sigs:
                 for s in sigs.split():
                     sig_set.add(Signature(**Signature.from_str(s)))
             uinfo = SerdeUnkeyedValidPathInfo(
-                deriver=SerdeStorePath(path=deriver or ""),
+                deriver=StorePath(path=deriver or ""),
                 nar_hash=NARHash(hash=nar_hash),
                 references=refs_map.get(sp, set()),
                 registration_time=Time(ts=reg_time),
@@ -366,7 +366,7 @@ class LocalDBStore(LocalStore):
         import json
 
         from pynixd.daemon_extensions.query_derivation_output_map_batch import DerivationOutputMapBatchResponse
-        from pynixd.serde import StorePath as SerdeStorePath
+        from pynixd.serde import StorePath
 
         from .queries import QUERY_DERIVATION_OUTPUT_MAP_BATCH
 
@@ -376,12 +376,12 @@ class LocalDBStore(LocalStore):
 
         result: dict = {}
         for drv_path, output_name, output_path in rows:
-            sp = SerdeStorePath(path=drv_path)
-            val: SerdeStorePath | None = SerdeStorePath(path=output_path) if output_path else None
+            sp = StorePath(path=drv_path)
+            val: StorePath | None = StorePath(path=output_path) if output_path else None
             result.setdefault(sp, {})[output_name] = val
 
         for drv_path in request.drv_paths:
-            sp = SerdeStorePath(path=str(drv_path))
+            sp = StorePath(path=str(drv_path))
             if sp in result:
                 continue
             try:

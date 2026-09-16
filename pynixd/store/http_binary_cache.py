@@ -30,7 +30,6 @@ from ..serde import (
     QueryPathInfoResponse,
     QueryValidPathsRequest,
     QueryValidPathsResponse,
-    StorePath as SerdeStorePath,
 )
 from ..store_path import StorePath
 from .base import Store
@@ -179,14 +178,14 @@ class HTTPBinaryCacheStore(Store):
         narinfo = await self.get_narinfo_by_hash_part(request.path)
         if narinfo is None:
             return None
-        return QueryPathFromHashPartResponse(value=SerdeStorePath(path=str(narinfo.path)))
+        return QueryPathFromHashPartResponse(value=StorePath(path=str(narinfo.path)))
 
     async def query_valid_paths(
         self, request: QueryValidPathsRequest, client: Any = None, suppress_last: bool = False
     ) -> QueryValidPathsResponse:
         """QueryValidPaths — check each path individually via .narinfo."""
 
-        valid: set[SerdeStorePath] = set()
+        valid: set[StorePath] = set()
         for path in sorted(request.paths, key=str):
             if await self.get_narinfo(StorePath(str(path))) is not None:
                 valid.add(path)

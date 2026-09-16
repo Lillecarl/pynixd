@@ -15,7 +15,7 @@ from nix_daemon_protocol.content_address import ContentAddress
 from nix_daemon_protocol.nar_hash import NARHash
 from nix_daemon_protocol.path_info import UnkeyedValidPathInfo
 from nix_daemon_protocol.wire_time import Time
-from pynixd.serde import StorePath as SerdeStorePath, ValidPathInfo
+from pynixd.serde import ValidPathInfo
 from pynixd.signing import SecretKey, fingerprint, get_default_signing_key, sign_path_info
 from pynixd.store_path import StorePath
 from tests.test_features import TestFeatures as F
@@ -167,8 +167,8 @@ class TestSignPathInfo:
     def test_sign_path_info_roundtrip(self):
 
         key = SecretKey._parse(f"test:{_SEED_32_B64}")
-        path = SerdeStorePath(path="/nix/store/abc123-foo")
-        references = {SerdeStorePath(path="/nix/store/ref1-dep")}  # pyright: ignore[reportUnhashable]
+        path = StorePath(path="/nix/store/abc123-foo")
+        references = {StorePath(path="/nix/store/ref1-dep")}  # pyright: ignore[reportUnhashable]
         info = ValidPathInfo(
             path=path,
             info=UnkeyedValidPathInfo(

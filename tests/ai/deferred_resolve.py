@@ -33,7 +33,6 @@ from pynixd.serde import (
     DerivationOutput,
     QueryDerivationOutputMapRequest as QdomRequest,
     RegisterDrvOutputRequest,
-    StorePath as SerdeStorePath,
 )
 from pynixd.store import LocalSocketStore
 from pynixd.store.transfer import stream_paths_store_to_store
@@ -247,7 +246,7 @@ def resolve_derivation(
 
     # Compute the placeholder for each input drv output
     rewrites: dict[str, str] = {}
-    new_input_srcs = {SerdeStorePath(path=str(path)) for path in drv.input_srcs}  # pyright: ignore[reportUnhashable]
+    new_input_srcs = {StorePath(path=str(path)) for path in drv.input_srcs}  # pyright: ignore[reportUnhashable]
 
     for input_drv_path, output_names in drv.input_drvs.items():
         input_drv_str = str(input_drv_path)
@@ -266,7 +265,7 @@ def resolve_derivation(
             if actual_path is None:
                 raise ValueError(f"No resolved path for {input_drv_path}!{output_name}")
             rewrites[placeholder] = str(actual_path)
-            new_input_srcs.add(SerdeStorePath(path=str(actual_path)))
+            new_input_srcs.add(StorePath(path=str(actual_path)))
 
     # Create a BasicDerivation (copy from Derivation)
     resolved = BasicDerivation(

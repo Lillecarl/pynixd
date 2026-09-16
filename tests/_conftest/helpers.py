@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from pynixd.nix_config import NixConfig
-from pynixd.serde import NarFromPathRequest, StorePath as SerdeStorePath
+from pynixd.serde import NarFromPathRequest, StorePath
 from pynixd.serde.context import WriteContext
 from tests._conftest.constants import DEFAULT_NIX_CONFIG, DEFAULT_SSH_OPTS
 
@@ -70,12 +70,12 @@ def rmtree_robust_glob(pattern: str) -> None:
         rmtree_robust(Path(path_str))
 
 
-def serde_path(path: object) -> SerdeStorePath:
+def serde_path(path: object) -> StorePath:
     """Convert domain/test path objects to the wire StorePath model."""
-    return SerdeStorePath(path=str(path))
+    return StorePath(path=str(path))
 
 
-def serde_path_set(paths: Iterable[object]) -> set[SerdeStorePath]:
+def serde_path_set(paths: Iterable[object]) -> set[StorePath]:
     """Convert a path iterable to the wire StorePath set used by request models."""
     return {serde_path(path) for path in paths}  # pyright: ignore[reportUnhashable]
 

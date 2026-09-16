@@ -20,7 +20,7 @@ import anyio
 import pytest
 
 from pynixd.drv_parser import Derivation, parse_drv, to_basic_derivation
-from pynixd.serde import OutputKind, StorePath as SerdeStorePath
+from pynixd.serde import OutputKind
 from pynixd.store_path import DrvOutput, StorePath
 from tests.conftest import NIX_BIN
 from tests.test_features import TestFeatures as F
@@ -492,7 +492,7 @@ class TestToBasicDerivation:
         out_name = parsed.input_drvs[drv][0]
         cache: OutputMap = {drv: {out_name: StorePath(f"/nix/store/realized-{out_name}")}}
         result = await to_basic_derivation(parsed, Path("/tmp/fake-store"), output_cache=cache)
-        assert SerdeStorePath(path=f"/nix/store/realized-{out_name}") in result.input_srcs
+        assert StorePath(path=f"/nix/store/realized-{out_name}") in result.input_srcs
 
     async def test_cache_missing_adds_drv(self, probes):
 
@@ -500,7 +500,7 @@ class TestToBasicDerivation:
         parsed = parse_drv(drv_content)
         result = await to_basic_derivation(parsed, Path("/tmp/fake-store"))
         for drv_path in parsed.input_drvs:
-            assert SerdeStorePath(path=str(drv_path)) in result.input_srcs
+            assert StorePath(path=str(drv_path)) in result.input_srcs
 
 
 @pytest.mark.covers(F.DRV_PARSE)

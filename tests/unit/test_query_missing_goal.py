@@ -18,7 +18,7 @@ from pynixd.serde import (
     QueryRealisationRequest,
     QueryRealisationResponse,
     Realisation,
-    StorePath as SerdeStorePath,
+    StorePath,
 )
 from pynixd.substitution_queue import SubstitutionAvailability
 
@@ -50,7 +50,7 @@ class FakeLocalStore:
             path = self.realisations.get(key.rpartition("!")[2])
             if path is None:
                 return QueryRealisationResponse(realisations=[])
-            return QueryRealisationResponse(realisations=[Realisation(id=key, out_path=SerdeStorePath(path=path))])
+            return QueryRealisationResponse(realisations=[Realisation(id=key, out_path=StorePath(path=path))])
         return IsValidPathResponse(valid=str(request.path) in self.valid_paths)
 
     async def read_derivation(self, drv_store_path: StorePath | str) -> Derivation | None:

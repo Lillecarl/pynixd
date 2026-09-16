@@ -16,7 +16,7 @@ from nix_daemon_protocol.ids import LOCAL_STORE_ID
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
 
 from .exceptions import OpNotImplementedError
-from .serde import AddToStoreNarRequest, NarFromPathRequest, QueryPathInfoRequest, StorePath as SerdeStorePath
+from .serde import AddToStoreNarRequest, NarFromPathRequest, QueryPathInfoRequest, StorePath
 from .serde.context import ReadContext, WriteContext
 from .store import DaemonStore, is_http_binary_cache
 
@@ -224,7 +224,7 @@ class SubstitutionQueue:
     async def _query_store(self, path: StorePath, store: Store) -> SubstitutionQueryResult:
         try:
             with anyio.fail_after(self.ctx.settings.substitution_query_timeout):
-                response = await store.execute(QueryPathInfoRequest(path=SerdeStorePath(path=str(path))))
+                response = await store.execute(QueryPathInfoRequest(path=StorePath(path=str(path))))
         except OpNotImplementedError:
             return SubstitutionQueryResult(store_id=store.store_id, path_info=None, query_succeeded=False)
         except TimeoutError:
@@ -237,7 +237,7 @@ class SubstitutionQueue:
         if not response.valid or response.info is None:
             return SubstitutionQueryResult(store_id=store.store_id, path_info=None, query_succeeded=True)
 
-        path_info = ValidPathInfo(path=SerdeStorePath(path=str(path)), info=response.info)
+        path_info = ValidPathInfo(path=StorePath(path=str(path)), info=response.info)
         return SubstitutionQueryResult(store_id=store.store_id, path_info=path_info, query_succeeded=True)
 
     async def _query_stores_for_selection(self, path: StorePath, stores: list[Store]) -> None:
@@ -300,7 +300,7 @@ class SubstitutionQueue:
         if not isinstance(candidate.store, DaemonStore):
             raise TypeError(f"store {candidate.store.store_id} cannot stream NARs")
         async with candidate.store.transfer_conn() as source_conn:
-            await NarFromPathRequest(path=SerdeStorePath(path=str(path))).to_writer(WriteContext.from_conn(source_conn))
+            await NarFromPathRequest(path=StorePath(path=str(path))).to_writer(WriteContext.from_conn(source_conn))
             await source_conn.w.drain()
             await source_conn.r.drain_stderr()
 

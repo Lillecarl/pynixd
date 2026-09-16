@@ -42,7 +42,7 @@ import anyio
 
 from nix_daemon_protocol.store_dir import on_disk
 
-from .serde import BasicDerivation, DerivationOutput, OutputKind, StorePath as SerdeStorePath
+from .serde import BasicDerivation, DerivationOutput, OutputKind
 from .store_path import DrvOutput, StorePath
 from .utils import compress_hash, nix32_encode
 
@@ -1033,7 +1033,7 @@ async def to_basic_derivation(
     }
 
     # Start with the explicit input sources
-    input_srcs = {SerdeStorePath(path=str(path)) for path in parsed.input_srcs}  # pyright: ignore[reportUnhashable]
+    input_srcs = {StorePath(path=str(path)) for path in parsed.input_srcs}  # pyright: ignore[reportUnhashable]
 
     # Resolve inputDrvs: for each input drv, look up its output paths
     # and add them to input_srcs (this is what nix does before sending
@@ -1044,7 +1044,7 @@ async def to_basic_derivation(
             for name in output_names:
                 p = cached.get(name)
                 if p:
-                    input_srcs.add(SerdeStorePath(path=str(p)))
+                    input_srcs.add(StorePath(path=str(p)))
             continue
 
         try:
@@ -1053,14 +1053,14 @@ async def to_basic_derivation(
             input_parsed = None
 
         if input_parsed is None:
-            input_srcs.add(SerdeStorePath(path=str(drv_path)))
+            input_srcs.add(StorePath(path=str(drv_path)))
             continue
 
         all_outputs = input_parsed.output_paths()
         for name in output_names:
             p = all_outputs.get(name)
             if p:
-                input_srcs.add(SerdeStorePath(path=str(p)))
+                input_srcs.add(StorePath(path=str(p)))
 
     return BasicDerivation(
         outputs=outputs,
