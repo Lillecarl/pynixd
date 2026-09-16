@@ -494,8 +494,8 @@ async def test_the_exemptions_are_not_part_of_each_report(workdir):
 
 # `nix build` writes its `result` link under a directory that carries the pid
 # of the client, so these two stand for two runs of one command. Issue Lillecarl/nanopynix#202.
-RESULT_ONE = StorePath("/tmp/nix-build-1606846-2001787725/result")
-RESULT_TWO = StorePath("/tmp/nix-build-1610114-3168049170/result")
+RESULT_ONE = "/tmp/nix-build-1606846-2001787725/result"
+RESULT_TWO = "/tmp/nix-build-1610114-3168049170/result"
 
 
 @pytest.mark.anyio
@@ -532,7 +532,20 @@ async def test_the_same_field_of_another_operation_is_a_finding(workdir):
 
 @pytest.mark.anyio
 async def test_add_temp_root_takes_the_same_exemption(workdir):
-    """`AddTempRoot` sends the same shape, for the same path."""
-    control = await decode(await build_ops(workdir / "a.wire", [(AddTempRootRequest(path=RESULT_ONE), valid(True))]))
-    candidate = await decode(await build_ops(workdir / "b.wire", [(AddTempRootRequest(path=RESULT_TWO), valid(True))]))
+    """`AddTempRoot` sends the same shape, and its exemption covers it.
+
+    **Store paths here, and not the `result` links above.**
+    `Store::addTempRoot(const StorePath &)`,
+    `src/libstore/include/nix/store/store-api.hh:816`, takes a store path,
+    where `addIndirectRoot` takes a file system path. The test passed a
+    `result` link to both while `StorePath` was a `str` subclass that
+    validated nothing.
+
+    The reason recorded on this exemption says the path is "under the build
+    directory that carries its own pid", which is the reason for
+    `AddIndirectRoot` and cannot be the reason for this one. What a parity
+    run really saw here is not measured, and the exemption is left alone.
+    """
+    control = await decode(await build_ops(workdir / "a.wire", [(AddTempRootRequest(path=PATH_A), valid(True))]))
+    candidate = await decode(await build_ops(workdir / "b.wire", [(AddTempRootRequest(path=PATH_B), valid(True))]))
     assert compare(control, candidate) == []

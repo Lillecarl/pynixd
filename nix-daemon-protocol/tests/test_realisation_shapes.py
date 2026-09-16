@@ -75,7 +75,7 @@ async def test_an_unkeyed_realisation_is_a_path_and_the_signatures() -> None:
 
     _, read = await _round_trip(value, UnkeyedRealisation)
 
-    assert read.out_path == OUT_PATH
+    assert read.out_path == StorePath(OUT_PATH)
     assert read.signatures == {"cache.example.org-1:abc"}
 
 
@@ -109,7 +109,7 @@ async def test_a_keyed_drv_output_names_a_derivation_and_not_a_hash() -> None:
 
     _, read = await _round_trip(value, KeyedDrvOutput)
 
-    assert read.drv_path == DRV_PATH
+    assert read.drv_path == StorePath(DRV_PATH)
     assert read.output_name == "out"
 
 
@@ -175,7 +175,7 @@ async def test_a_build_result_reads_back_the_shape_it_wrote() -> None:
 
     assert read.built_outputs is None
     assert read.built_outputs_by_name is not None
-    assert read.built_outputs_by_name["out"].out_path == OUT_PATH
+    assert read.built_outputs_by_name["out"].out_path == StorePath(OUT_PATH)
 
 
 @pytest.mark.anyio
@@ -199,7 +199,7 @@ async def test_a_query_realisation_answer_is_an_option_under_the_feature() -> No
 
     assert read.present == 1
     assert read.realisation is not None
-    assert read.realisation.out_path == OUT_PATH
+    assert read.realisation.out_path == StorePath(OUT_PATH)
     assert read.realisations == []
 
 
@@ -247,7 +247,7 @@ async def test_a_registered_realisation_is_the_id_and_then_the_body() -> None:
     assert read.keyed_drv_output is not None
     assert read.keyed_drv_output.output_name == "out"
     assert read.unkeyed_realisation is not None
-    assert read.unkeyed_realisation.out_path == OUT_PATH
+    assert read.unkeyed_realisation.out_path == StorePath(OUT_PATH)
 
 
 @pytest.mark.anyio

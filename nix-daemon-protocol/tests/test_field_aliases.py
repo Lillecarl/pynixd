@@ -30,14 +30,14 @@ def test_the_name_of_the_field_fills_the_field() -> None:
     realisation = Realisation(id="sha256:00!out", out_path=StorePath(path=PATH))
 
     assert realisation.out_path is not None
-    assert str(realisation.out_path) == PATH
+    assert realisation.out_path == StorePath(PATH)
 
 
 def test_the_alias_fills_the_field() -> None:
     realisation = Realisation.model_validate({"id": "sha256:00!out", "outPath": PATH})
 
     assert realisation.out_path is not None
-    assert str(realisation.out_path) == PATH
+    assert realisation.out_path == StorePath(PATH)
 
 
 def test_the_wire_reads_the_alias_back() -> None:

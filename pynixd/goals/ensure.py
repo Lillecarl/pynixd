@@ -1224,9 +1224,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
 
         results: dict[str, GoalResult] = {}
         for output_name, path in selected.items():
-            response = await self.engine.ctx.local_store.execute(
-                IsValidPathRequest(path=StorePath(path=str(path)))
-            )
+            response = await self.engine.ctx.local_store.execute(IsValidPathRequest(path=StorePath(path=str(path))))
             if response.valid:
                 results[output_name] = GoalResult(
                     result=goal_success().result,

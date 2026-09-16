@@ -73,7 +73,13 @@ def _find_reader(ann: type, version: int = 0, features: frozenset[str] = frozens
                 # The bytes do not move; only the Python value does. Issue Lillecarl/nanopynix#194.
                 async def _read_optional_scalar(r: Any) -> Any:
                     value = await inner(r)
-                    return None if value == "" else value
+                    # `not value` and not `value == ""`. A scalar that keeps
+                    # its own type does not compare equal to a string, so the
+                    # equality silently stopped matching and an absent
+                    # `deriver` came back as `StorePath("")` instead of
+                    # `None`. Every scalar is falsy when its wire string is
+                    # empty, so emptiness is the test.
+                    return value or None
 
                 return _read_optional_scalar
             return inner

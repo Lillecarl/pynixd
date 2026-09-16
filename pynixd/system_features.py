@@ -87,6 +87,7 @@ def effective_required_features(derivation: BasicDerivation) -> set[str]:
     """
     return derivation.required_system_features - PYNIXD_HANDLED_FEATURES
 
+
 # Platforms to probe when discovering store capabilities.
 # Each is a Nix system triple (machine-kernel).
 PROBE_SYSTEMS: frozenset[str] = frozenset(

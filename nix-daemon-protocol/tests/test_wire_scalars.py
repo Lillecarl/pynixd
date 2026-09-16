@@ -47,8 +47,14 @@ async def test_wire_scalars_are_native_strings_on_the_generic_wire() -> None:
         time=1_700_000_000,
         span=30,
     )
-    assert isinstance(value.path, str)
+    # **`StorePath` is deliberately not a `str`.** Nix's holds the base name
+    # and the store directory belongs to the store (#4), so the test asks for
+    # the wire string by name rather than by inheritance. Every other scalar
+    # here is still a `WireScalar`, and so still a `str`.
+    assert not isinstance(value.path, str)
+    assert value.path.to_wire() == "/nix/store/0123456789abcdefghijklmnopqrstuv-output"
     assert value.path.path == str(value.path)
+    assert isinstance(value.nar_hash, str)
     assert value.signature.name == "cache"
     assert value.signature.signature == "signature"
     assert value.drv_output.drv_hash == "sha256:drv"
@@ -61,7 +67,9 @@ async def test_wire_scalars_are_native_strings_on_the_generic_wire() -> None:
     decoded = await ScalarEnvelope.from_reader(ReadContext(reader=BytesReader(writer.bytes()), version=0))
     assert decoded == value
     assert decoded.model_dump() == {
-        "path": str(value.path),
+        # A `StorePath` dumps as the base name, which is what
+        # `adl_serializer<nix::StorePath>::to_json` of Nix writes.
+        "path": value.path.to_json_value(),
         "nar_hash": str(value.nar_hash),
         "content_address": str(value.content_address),
         "derived_path": str(value.derived_path),

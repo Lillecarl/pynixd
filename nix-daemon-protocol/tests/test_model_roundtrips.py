@@ -23,7 +23,7 @@ from nix_daemon_protocol.io import BytesReader, BytesWriter
 from nix_daemon_protocol.wire_integer import WireUInt64
 from nix_daemon_protocol.wire_message import WireModel
 from nix_daemon_protocol.wire_ops import WireRequest, WireResponse
-from nix_daemon_protocol.wire_scalar import WireScalar
+from nix_daemon_protocol.wire_scalar import WireScalar, is_wire_scalar
 from nix_daemon_protocol.wire_string import WireString
 
 
@@ -68,7 +68,10 @@ def _example_value(annotation: Any, field_name: str) -> Any:
         return b"wire-value"
     if inspect.isclass(annotation) and issubclass(annotation, WireUInt64):
         return annotation(1)
-    if inspect.isclass(annotation) and issubclass(annotation, WireScalar):
+    # `is_wire_scalar` and not `issubclass(..., WireScalar)`: a scalar is
+    # known by `from_wire`/`to_wire`, and `StorePath` no longer inherits the
+    # base class.
+    if is_wire_scalar(annotation):
         return annotation(f"{field_name}-value")
     if inspect.isclass(annotation) and issubclass(annotation, Enum):
         return next(iter(annotation))
