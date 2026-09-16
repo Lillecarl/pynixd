@@ -124,20 +124,31 @@ class TestFingerprint:
     def test_the_fingerprint_carries_the_base_32_digest(self):
         path = StorePath("/nix/store/abc123-foo")
 
-        fp = fingerprint(path, f"sha256:{_DIGEST_16}", 42, set())
+        fp = fingerprint(path, NARHash(f"sha256:{_DIGEST_16}"), 42, set())
 
         assert fp == f"1;/nix/store/abc123-foo;sha256:{_DIGEST_32};42;"
 
     def test_a_digest_with_no_name_of_an_algorithm_gets_one(self):
-        """`nix-daemon` sends the digest alone, and that is what pynixd holds."""
+        """`nix-daemon` sends the digest alone, and that is what pynixd holds.
+
+        `NARHash` is what makes the two agree: it takes off a name that a
+        source put in front, so the fingerprint sees one form only. The
+        stripping itself is asserted in
+        `nix-daemon-protocol/tests/test_wire_scalars.py`.
+        """
         path = StorePath("/nix/store/abc123-foo")
 
-        assert fingerprint(path, _DIGEST_16, 42, set()) == fingerprint(path, f"sha256:{_DIGEST_16}", 42, set())
+        assert fingerprint(path, NARHash(_DIGEST_16), 42, set()) == fingerprint(
+            path,
+            NARHash(f"sha256:{_DIGEST_16}"),
+            42,
+            set(),
+        )
 
     def test_a_digest_that_is_base_32_already_passes_through(self):
         path = StorePath("/nix/store/abc123-foo")
 
-        fp = fingerprint(path, f"sha256:{_DIGEST_32}", 42, set())
+        fp = fingerprint(path, NARHash(f"sha256:{_DIGEST_32}"), 42, set())
 
         assert fp == f"1;/nix/store/abc123-foo;sha256:{_DIGEST_32};42;"
 
@@ -148,18 +159,18 @@ class TestFingerprint:
             StorePath("/nix/store/aaa-baz"),
         }
 
-        fp = fingerprint(path, f"sha256:{_DIGEST_16}", 42, refs)
+        fp = fingerprint(path, NARHash(f"sha256:{_DIGEST_16}"), 42, refs)
 
         assert fp == (f"1;/nix/store/abc123-foo;sha256:{_DIGEST_32};42;/nix/store/aaa-baz,/nix/store/zzz-bar")
 
     def test_empty_hash(self):
         path = StorePath("/nix/store/abc123-foo")
-        fp = fingerprint(path, "", 0, set())
+        fp = fingerprint(path, NARHash(""), 0, set())
         assert fp == "1;/nix/store/abc123-foo;;0;"
 
     def test_large_nar_size(self):
         path = StorePath("/nix/store/abc123-foo")
-        fp = fingerprint(path, f"sha256:{_DIGEST_16}", 999999999999, set())
+        fp = fingerprint(path, NARHash(f"sha256:{_DIGEST_16}"), 999999999999, set())
         assert "999999999999" in fp
 
 

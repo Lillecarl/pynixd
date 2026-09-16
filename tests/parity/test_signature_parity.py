@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING
 import anyio
 import pytest
 
+from nix_daemon_protocol.nar_hash import NARHash
 from pynixd.signing import SecretKey, fingerprint
 
 if TYPE_CHECKING:
@@ -83,7 +84,7 @@ async def test_pynixd_signs_what_nix_signs(store: Path) -> None:
     wire_hash = (await _nix("hash", "convert", "--to", "base16", info["narHash"])).strip()
 
     key = SecretKey.from_string(await anyio.Path(secret).read_text())
-    ours = key.sign_fingerprint(fingerprint(path, wire_hash, info["narSize"], info["references"]))
+    ours = key.sign_fingerprint(fingerprint(path, NARHash(wire_hash), info["narSize"], info["references"]))
 
     assert ours in info["signatures"], (
         f"Nix signed {info['signatures']} and pynixd signed {ours}. "

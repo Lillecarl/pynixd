@@ -20,7 +20,7 @@ from .utils import nix32_encode
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from nix_daemon_protocol.aliases import NARHash
+    from nix_daemon_protocol.nar_hash import NARHash
     from nix_daemon_protocol.valid_path_info import ValidPathInfo
 
 
@@ -94,7 +94,7 @@ class SecretKey:
         return f"{self.name}:{b64encode(self.public_key_bytes).decode()}"
 
 
-def nar_hash_for_a_fingerprint(nar_hash: object) -> str:
+def nar_hash_for_a_fingerprint(nar_hash: NARHash) -> str:
     """The NAR hash as a fingerprint of Nix writes it.
 
     `ValidPathInfo::fingerprint` at `path-info.cc:48` writes
@@ -106,22 +106,27 @@ def nar_hash_for_a_fingerprint(nar_hash: object) -> str:
     fingerprint over the base-16 digest is a different string, so a verifier
     of Nix reads the signature as false.
 
+    **The name is always `sha256`, so this writes it rather than reading
+    one.** The read side of the protocol fixes the algorithm:
+    `Hash::parseAny(readString(conn.from), HashAlgorithm::SHA256)`,
+    `src/libstore/worker-protocol.cc:424` of Nix. `NARHash` holds the digest
+    alone and takes off a name that a source put in front, so no value that
+    reaches here carries one. This used to parse for a name anyway, and the
+    only callers that could reach that branch were its own tests.
+
     A value that is already in the base-32 form passes through, and so does an
     empty one: a path with no NAR hash has no fingerprint to sign, and the
     caller decides what to do about that.
     """
-    text = str(nar_hash)
-    if not text:
+    digest = str(nar_hash)
+    if not digest:
         return ""
-    algorithm, separator, digest = text.partition(":")
-    if not separator:
-        algorithm, digest = "sha256", text
     try:
         raw = bytes.fromhex(digest)
     except ValueError:
         # Not base 16, so it is the base-32 form already.
-        return f"{algorithm}:{digest}"
-    return f"{algorithm}:{nix32_encode(raw)}"
+        return f"sha256:{digest}"
+    return f"sha256:{nix32_encode(raw)}"
 
 
 def fingerprint(
