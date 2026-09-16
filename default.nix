@@ -104,5 +104,13 @@ package
       pynixd-lib = library;
       src = lib.cleanSource ./.;
     };
+
+    # The same suites in a guest, where cleanup is a poweroff rather than
+    # a promise. See tests/guest/run.py.
+    guest = pkgs.callPackage ./tests/derivations/guest {
+      pynixd-lib = library;
+      src = lib.cleanSource ./.;
+      inherit (sources) user-mode-nixos;
+    };
   };
 }
