@@ -20,8 +20,10 @@ PATH = "abcdefghijklmnopqrstuvwxyz012345-thing"
 
 
 def test_the_base_takes_a_value_both_ways() -> None:
-    assert WireModel.model_config["validate_by_name"] is True
-    assert WireModel.model_config["validate_by_alias"] is True
+    # `.get`, because `ConfigDict` marks every key NotRequired. Reading one
+    # that is absent is the failure this test is for, and `None is True` is it.
+    assert WireModel.model_config.get("validate_by_name") is True
+    assert WireModel.model_config.get("validate_by_alias") is True
 
 
 def test_the_name_of_the_field_fills_the_field() -> None:
