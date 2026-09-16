@@ -1,7 +1,7 @@
 """A Nix store path: one class, holding the base name.
 
 **Nix holds the base name and nothing else.**
-`src/libstore/include/nix/store/path.hh`:
+`src/libstore/include/nix/store/path.hh`::
 
     class StorePath
     {
