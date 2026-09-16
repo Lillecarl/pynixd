@@ -11,6 +11,8 @@ arbitrary/custom feature strings (not in this module) are fully supported.
 
 from __future__ import annotations
 
+from nix_daemon_protocol.basic_derivation import BasicDerivation
+
 
 class SystemFeature:
     """Known Nix system feature string constants.
@@ -68,6 +70,22 @@ PYNIXD_HANDLED_FEATURES: frozenset[str] = frozenset(
         SystemFeature.DYNAMIC_DERIVATIONS,
     },
 )
+
+
+def effective_required_features(derivation: BasicDerivation) -> set[str]:
+    """What a backend still has to advertise for this derivation.
+
+    **A function of pynixd and not a property of the wire model.** The set it
+    subtracts is pynixd's own rule about what pynixd handles before a backend
+    sees the build, and `nix_daemon_protocol` describes the wire rather than
+    this daemon's policy.
+
+    It was a `property` written onto `BasicDerivation` at import time by
+    `pynixd/serde/_derivation_compat.py`. No type checker can see an
+    attribute attached that way, so every call site read as an error, and the
+    module had to stay imported for reasons nothing in it stated.
+    """
+    return derivation.required_system_features - PYNIXD_HANDLED_FEATURES
 
 # Platforms to probe when discovering store capabilities.
 # Each is a Nix system triple (machine-kernel).

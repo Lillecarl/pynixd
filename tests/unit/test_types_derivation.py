@@ -12,6 +12,7 @@ import pytest
 
 from pynixd.serde import BasicDerivation, DerivationOutput, OutputKind
 from pynixd.store_path import StorePath
+from pynixd.system_features import effective_required_features
 from tests.test_features import TestFeatures as F
 
 
@@ -204,7 +205,7 @@ class TestBasicDerivation:
     def test_effective_required_features(self):
 
         drv = BasicDerivation(env={"requiredSystemFeatures": "kvm ca-derivations"}, platform="", builder="")
-        effective = drv.effective_required_features
+        effective = effective_required_features(drv)
         # Not stripped: a backend that cannot serve CA must stay excluded.
         assert "ca-derivations" in effective
         assert effective == {"kvm", "ca-derivations"}

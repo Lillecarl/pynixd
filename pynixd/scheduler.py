@@ -31,6 +31,7 @@ from .store import DaemonStore, LocalDBStore
 from .store.transfer import stream_paths_store_to_store
 from .store_path import StorePath
 from .substitution_queue import SubstitutionQueue
+from .system_features import effective_required_features
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -320,7 +321,7 @@ class Scheduler:
         assigned_this_pass: dict[StoreId, int] = {}
 
         for build in schedulable:
-            build_features = build.request.derivation.effective_required_features
+            build_features = effective_required_features(build.request.derivation)
 
             # Check if another pass already assigned this build
             if build.is_building:

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from .system_features import PYNIXD_HANDLED_FEATURES
+from .system_features import PYNIXD_HANDLED_FEATURES, effective_required_features
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
@@ -151,7 +151,7 @@ class BuildAllocator:
         override_in_flight: Mapping[StoreId, int] | None = None,
     ) -> RankedStores:
         """Rank stores for a build using the injected ranker."""
-        build_features = build.request.derivation.effective_required_features
+        build_features = effective_required_features(build.request.derivation)
         candidates = []
 
         for store_id, store in self.stores.items():

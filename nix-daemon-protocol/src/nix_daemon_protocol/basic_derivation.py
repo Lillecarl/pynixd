@@ -60,3 +60,12 @@ class BasicDerivation(WireModel):
     @property
     def has_text_hashed(self) -> bool:
         return any(output.is_text_hashed for output in self.outputs.values())
+
+    def output_paths(self) -> dict[str, StorePath]:
+        """Each output name, and the store path it names.
+
+        `DerivationOutput.path` is the wire string. An output with no path
+        yet -- deferred, or floating content-addressed -- gives the empty
+        `StorePath`, which is falsy, so a caller can drop it.
+        """
+        return {name: StorePath(output.path) for name, output in self.outputs.items()}
