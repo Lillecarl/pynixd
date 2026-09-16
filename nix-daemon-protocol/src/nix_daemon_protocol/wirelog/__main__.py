@@ -19,6 +19,7 @@ from pathlib import Path
 
 import anyio
 
+from ..store_dir import store_dir
 from .decode import decode
 from .diff import compare, exemptions, report
 from .recorder import Recorder
@@ -75,7 +76,7 @@ async def _run_record(args: argparse.Namespace) -> int:
                 backend.send_signal(signal.SIGTERM)
             return 1
 
-        recorder = Recorder(listen=listen, connect=connect, out_dir=out)
+        recorder = Recorder(listen=listen, connect=connect, out_dir=out, store_dir=store_dir())
         group.start_soon(recorder.serve)
         await recorder.wait_started()
         print(f"wirelog: recording {listen} -> {connect} into {out}", file=sys.stderr, flush=True)

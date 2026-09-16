@@ -30,7 +30,7 @@ from nix_daemon_protocol.query_path_info import QueryPathInfoRequest
 from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.wirelog import Direction, compare, decode, exemptions, report
 from nix_daemon_protocol.wirelog.diff import EXEMPTIONS, _first_difference, _window
-from nix_daemon_protocol.wirelog.framing import MAGIC, encode_chunk
+from nix_daemon_protocol.wirelog.framing import encode_chunk, encode_header
 
 VERSION = proto(1, 38)
 PATH_A = StorePath("/nix/store/00000000000000000000000000000000-a")
@@ -47,8 +47,8 @@ def workdir():
 class Tape:
     """Build a recording, one write of one side at a time."""
 
-    def __init__(self) -> None:
-        self.raw = bytearray(MAGIC)
+    def __init__(self, store_dir: str = "/nix/store") -> None:
+        self.raw = bytearray(encode_header(store_dir))
         self.clock = 0
 
     def add(self, direction: Direction, data: bytes) -> None:

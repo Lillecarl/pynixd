@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING
 
 import anyio
 
-from .framing import MAGIC, Direction, encode_chunk
+from .framing import Direction, encode_chunk, encode_header
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -38,11 +38,18 @@ READ_SIZE = 65536
 class Recorder:
     """A Unix socket that copies to another one, and writes what it copies."""
 
-    def __init__(self, listen: Path, connect: Path, out_dir: Path) -> None:
-        """Take the socket to serve, the socket to reach, and where to write."""
+    def __init__(self, listen: Path, connect: Path, out_dir: Path, store_dir: str) -> None:
+        """Take the socket to serve, the socket to reach, and where to write.
+
+        *store_dir* is the directory that the paths on this connection begin
+        with, and it goes in the header of every recording. Passed in, not
+        read: this module decodes nothing and imports nothing of the protocol,
+        and the store directory is the caller's to know.
+        """
         self.listen = listen
         self.connect = connect
         self.out_dir = out_dir
+        self.store_dir = store_dir
         self.connections = 0
         self._started = anyio.Event()
 
@@ -67,7 +74,7 @@ class Recorder:
         path = self.out_dir / f"conn-{index:04d}.wire"
 
         async with await anyio.open_file(path, "wb") as handle:
-            await handle.write(MAGIC)
+            await handle.write(encode_header(self.store_dir))
             start = time.monotonic_ns()
             lock = anyio.Lock()
 

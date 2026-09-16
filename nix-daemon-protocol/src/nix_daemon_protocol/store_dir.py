@@ -28,11 +28,22 @@ directory gets an error and not a translation.
 
 **So one process cannot proxy two stores whose store directories differ, and
 this is on purpose.** Nix keeps the live value on `StoreDirConfig`, one per
-store, and moving it there would fix this. Carl, 2026-09-16: not worth doing.
-A different store directory means `NIX_STORE_DIR`, which bootstraps
-everything from source, and nobody does it. The case people do use is a
-chroot store, which keeps `/nix/store` in the path and moves only the files --
-that is `real_store_dir` above, and it already works.
+store, and moving it there would fix this. Carl, 2026-09-16: not worth doing
+for the proxy. A different store directory means `NIX_STORE_DIR`, which
+bootstraps everything from source, and nobody does it for a store they serve.
+The case people do use is a chroot store, which keeps `/nix/store` in the path
+and moves only the files -- that is `real_store_dir` above, and it already
+works.
+
+**A reader of a recording is not the proxy, and it does need this.** Nix's own
+functional suite gives every test its own `NIX_STORE_DIR`, so the paths in a
+recording of that suite belong to a store that this process does not serve and
+never will. Asking this module instead of the recording refuses every path and
+reports every test as a difference -- issue #37, and it is what stopped the
+differential run of #39 from saying anything. `reading_store_dir` below is for
+that reader: it is scoped, so nothing it does reaches the values a served
+store set. Carl, 2026-09-16, reversing the line above for this case: "the
+recorder is the truth".
 
 `pynixd/config.py` takes a per-store `store_dir` and `pynixd/instance.py`
 writes it into the global here. With two stores the last writer wins and
@@ -44,7 +55,12 @@ decodes a store path and must not import `pynixd`.
 
 from __future__ import annotations
 
+import contextlib
 import os
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 DEFAULT_STORE_DIR = "/nix/store"
 
@@ -106,6 +122,32 @@ def reset_store_dir() -> None:
     global _store_dir, _real_store_dir
     _store_dir = None
     _real_store_dir = None
+
+
+@contextlib.contextmanager
+def reading_store_dir(path: str | os.PathLike[str] | None) -> Iterator[None]:
+    """Read paths of the store at *path* for the length of this block.
+
+    For a reader of something another store wrote -- a recording, a database,
+    a dump. `None` changes nothing, which is what a recording with no store
+    directory in it asks for.
+
+    Both values move together: a recording names the directory that is in its
+    paths, and says nothing about where those files were on the machine that
+    made it, so leaving `real_store_dir` behind would point it at a store that
+    has nothing to do with the recording.
+    """
+    global _store_dir, _real_store_dir
+    if path is None:
+        yield
+        return
+    previous = (_store_dir, _real_store_dir)
+    _store_dir = _absolute(path, "store directory")
+    _real_store_dir = None
+    try:
+        yield
+    finally:
+        _store_dir, _real_store_dir = previous
 
 
 def in_store_dir(path: str) -> bool:

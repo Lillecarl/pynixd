@@ -16,7 +16,12 @@ import anyio
 import pytest
 
 from nix_daemon_protocol.wirelog import Direction, Recorder, one_direction, read_chunks
-from nix_daemon_protocol.wirelog.framing import HEADER, MAGIC, encode_chunk
+from nix_daemon_protocol.wirelog.framing import HEADER, encode_chunk, encode_header
+
+STORE_DIR = "/nix/store"
+"""What the recorder writes into the header of each recording here. The
+recorder never reads it -- the caller passes it -- so any absolute path
+would do, and this is the one a reader expects."""
 
 RECORDER_SOURCE = Path(Recorder.__module__.replace(".", "/")).name
 
@@ -52,7 +57,7 @@ async def record_exchange(root: Path, sends: list[bytes]) -> list[Path]:
     upstream = root / "up.sock"
     front = root / "front.sock"
     out = root / "rec"
-    recorder = Recorder(listen=front, connect=upstream, out_dir=out)
+    recorder = Recorder(listen=front, connect=upstream, out_dir=out, store_dir=STORE_DIR)
     ready = anyio.Event()
 
     async with anyio.create_task_group() as group:
@@ -116,7 +121,7 @@ async def test_each_connection_gets_its_own_file(short_path):
     upstream = short_path / "up.sock"
     front = short_path / "front.sock"
     out = short_path / "rec"
-    recorder = Recorder(listen=front, connect=upstream, out_dir=out)
+    recorder = Recorder(listen=front, connect=upstream, out_dir=out, store_dir=STORE_DIR)
     ready = anyio.Event()
 
     async with anyio.create_task_group() as group:
@@ -146,7 +151,11 @@ async def test_each_connection_gets_its_own_file(short_path):
 
 def test_a_recording_that_a_killed_run_cut_short_still_reads(short_path):
     """The watchdog of the harness kills a run, and the file then ends anywhere."""
-    whole = MAGIC + encode_chunk(Direction.CLIENT, 1, b"kept") + encode_chunk(Direction.SERVER, 2, b"lost")
+    whole = (
+        encode_header(STORE_DIR)
+        + encode_chunk(Direction.CLIENT, 1, b"kept")
+        + encode_chunk(Direction.SERVER, 2, b"lost")
+    )
     cut = whole[: -len(b"lost") - HEADER.size // 2]
     path = short_path / "cut.wire"
     path.write_bytes(cut)

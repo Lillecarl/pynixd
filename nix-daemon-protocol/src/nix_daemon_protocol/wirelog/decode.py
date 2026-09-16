@@ -46,9 +46,10 @@ from ..constants import STDERR_LAST, WORKER_MAGIC_1, WORKER_MAGIC_2, proto
 from ..context import ReadContext
 from ..io import BytesReader, BytesWriter
 from ..logs import LogError, LogNext, read_stream
+from ..store_dir import reading_store_dir
 from ..wire_message import WireModel
 from ..wire_ops import WIRE_REGISTRY, WireResponse
-from .framing import Chunk, Direction, read_chunks
+from .framing import Chunk, Direction, read_recording
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -302,8 +303,19 @@ def _server_window(chunks: list[Chunk], after: int, before: int | None) -> bytes
 
 
 async def decode(path: Path) -> Session:
-    """Read one recording into a handshake and a list of operations."""
-    chunks = read_chunks(path)
+    """Read one recording into a handshake and a list of operations.
+
+    The store directory comes out of the recording, because the paths on the
+    wire do. A recording of Nix's functional suite names that test's own
+    store, and reading it against this process's store refuses every path.
+    Issue #37.
+    """
+    recording = read_recording(path)
+    with reading_store_dir(recording.store_dir):
+        return await _decode(recording.chunks, path)
+
+
+async def _decode(chunks: list[Chunk], path: Path) -> Session:
     session = Session(source=path)
 
     client_bytes = bytearray()
