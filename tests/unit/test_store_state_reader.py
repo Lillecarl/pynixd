@@ -271,3 +271,65 @@ class TestComparison:
         other["paths"]["ccc-out"]["references"] = []
         lines = store_state._compare_one(store, other)
         assert any("references" in line for line in lines)
+
+
+class TestNoise:
+    """A test that disagrees with itself measures nothing, either way.
+
+    `NOISE` names three, each measured by running one arm twice. Such a test
+    cannot be called "different", and it cannot be called "same" either: when
+    the two arms agree, one draw agreed with another.
+    """
+
+    @pytest.fixture
+    def pair(self, tmp_path: Path, snapshot: dict) -> tuple[Path, Path]:
+        """Two snapshots that disagree, under a name `NOISE` covers."""
+        noisy = store_state.NOISE[0].test
+        control = {noisy: snapshot["ca/build"]}
+        candidate = copy.deepcopy(control)
+        candidate[noisy]["paths"]["ccc-out"]["nar_size"] = 999
+
+        left = tmp_path / "control.json"
+        right = tmp_path / "candidate.json"
+        left.write_text(json.dumps(control))
+        right.write_text(json.dumps(candidate))
+        return left, right
+
+    def test_a_noisy_test_is_not_counted_as_a_difference(self, pair, capsys):
+        left, right = pair
+        code = store_state._compare(left, right)
+        out = capsys.readouterr().out
+
+        assert "NOISE     " in out
+        assert "DIFFERENT " not in out
+        assert "different: 0" in out
+        assert "noise:     1" in out
+        # Not a failure either: the run says nothing about this test.
+        assert code == 0
+
+    def test_a_noisy_test_still_reaches_the_report(self, pair):
+        """Counted out of the answer, and not hidden from the reader.
+
+        A difference that nobody can see is how a real one goes unnoticed once
+        somebody widens this list.
+        """
+        left, right = pair
+        store_state._compare(left, right)
+
+        report = (right.parent / "store-report.txt").read_text()
+        assert store_state.NOISE[0].test in report
+        assert store_state.NOISE[0].reason in report
+        assert "nar_size" in report
+
+    def test_a_test_outside_the_list_is_still_a_difference(self, tmp_path, snapshot):
+        """The list names three tests, and covers no other."""
+        control = {"ca/not-noisy": snapshot["ca/build"]}
+        candidate = copy.deepcopy(control)
+        candidate["ca/not-noisy"]["paths"]["ccc-out"]["nar_size"] = 999
+
+        left = tmp_path / "a.json"
+        right = tmp_path / "b.json"
+        left.write_text(json.dumps(control))
+        right.write_text(json.dumps(candidate))
+
+        assert store_state._compare(left, right) == 1

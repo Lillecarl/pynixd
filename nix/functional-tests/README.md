@@ -342,15 +342,35 @@ so the row count moves. **A test in this list cannot be called "same"
 either**: when it agrees across the two arms, that is one draw agreeing with
 another.
 
-Subtract the three, and the first run of this mode read: 17 agree, 3 differ.
+`NOISE` in `store-state.py` holds the three, and the comparison counts them
+in neither column. It prints `NOISE` for each and writes its differences to
+the report anyway, with the reason beside the name: a difference nobody can
+see is how a real one goes unnoticed once somebody widens the list.
+
+So the summary of this mode reads `same`, `different`, `missing` and
+`noise`, and the first run read 17, 3, 0 and 3.
+
+**`NOISE` is not an exemption table.** An exemption covers a difference
+somebody explained and decided to keep, under one of the two verdicts of
+`CLAUDE.md` section 5b. This covers a test that measures nothing, which
+needs no verdict. There is still no exemption table here -- see below.
 
 #### What the first run found
 
 `ca/import-from-derivation` differs in the store, and `diff-streams` calls it
 identical. It is one of the four tests the wire comparison passed. That is
-the whole reason this half exists, and it showed on the first run: the two
-arms realise a derivation with a different hash, and no run-to-run difference
-explains it.
+the whole reason this half exists, and it showed on the first run.
+
+Half of it is fixed. pynixd registered the corrected realisation id only when
+the derivation "needed" one, and an input-addressed output never does, so the
+id the client reads never reached the store. Issue #40, and the store
+comparison no longer reports the missing key.
+
+What remains is an *extra* key: pynixd resolves this derivation where Nix
+does not, and the upstream daemon registers a realisation for what it was
+asked to build. The control store proves Nix never resolved it -- two
+`DerivationOutputs` rows, and no resolved derivation. That needs a verdict
+rather than a fix, and the verdict needs the table below.
 
 `ca/build-with-garbage-path` and `ca/nix-run` are one finding, not two.
 pynixd registers realisations for the `dev` and `foo` outputs of a

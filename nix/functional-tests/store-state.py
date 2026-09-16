@@ -28,6 +28,7 @@ clock, and the second names the key of the store that signed.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import sqlite3
 import sys
@@ -199,6 +200,46 @@ def _differences(control: dict[str, object], candidate: dict[str, object], kind:
     return lines
 
 
+@dataclasses.dataclass(frozen=True)
+class Noise:
+    """A test that does not build the same thing twice, and the reason."""
+
+    test: str
+    reason: str
+
+
+# **These tests disagree with themselves, so they cannot answer this
+# question.** Two runs of one arm differ, and no engine is why. A test here
+# cannot be called "different", and it cannot be called "same" either: when
+# the two arms agree, one draw agreed with another.
+#
+# Measured, and not guessed: two runs of the same arm over the `ca` suite of
+# Nix 2.34. The daemon disagreed with itself on the first two, and pynixd on
+# all three.
+#
+# This is not the exemption table. An exemption covers a difference somebody
+# explained and decided to keep, under a `NIX-DEFECT (#23)` or
+# `NIX-DEVIATION (#27)` verdict, and there is no such table here yet -- issue
+# #39. This covers a test that measures nothing, which is a different thing
+# and needs no verdict.
+NOISE: tuple[Noise, ...] = (
+    Noise(
+        test="ca/duplicate-realisation-in-closure",
+        reason="builds a `current-time` derivation, so each run makes another content address",
+    ),
+    Noise(
+        test="ca/nix-shell",
+        reason="registers a `fixed-env` and a `shellDrv-env-dev` that hold an environment which moves",
+    ),
+    Noise(
+        test="ca/build",
+        reason="registers one realisation twice in one run and once in the next",
+    ),
+)
+
+_NOISE_BY_TEST = {item.test: item for item in NOISE}
+
+
 def _compare_one(control: dict[str, object], candidate: dict[str, object]) -> list[str]:
     """Everything two runs of one test do not agree on."""
     lines: list[str] = []
@@ -220,6 +261,7 @@ def _compare(control_path: Path, candidate_path: Path) -> int:
     same = 0
     different = 0
     missing = 0
+    noise = 0
     report: list[str] = []
 
     for key in sorted(control):
@@ -228,6 +270,16 @@ def _compare(control_path: Path, candidate_path: Path) -> int:
             missing += 1
             continue
         lines = _compare_one(control[key], candidate[key])
+        if key in _NOISE_BY_TEST:
+            # Reported either way, so that a reader sees the test and knows it
+            # was read. It counts as neither side of the question.
+            noise += 1
+            print(f"NOISE     {key}")
+            if lines:
+                report.append(f"=== {key} (noise: {_NOISE_BY_TEST[key].reason}) ===")
+                report.extend(lines)
+                report.append("")
+            continue
         if lines:
             different += 1
             print(f"DIFFERENT {key}")
@@ -247,6 +299,7 @@ def _compare(control_path: Path, candidate_path: Path) -> int:
     print(f"same:      {same}")
     print(f"different: {different}")
     print(f"missing:   {missing}")
+    print(f"noise:     {noise}  (tests that disagree with themselves; see NOISE in store-state.py)")
     print(f"the differences are at {out}")
     return 1 if different or missing else 0
 
