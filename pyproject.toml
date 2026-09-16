@@ -64,6 +64,30 @@ pynixd = "pynixd.__main__:main"
 [tool.hatch.build.targets.wheel]
 packages = ["pynixd"]
 
+# Here and not in a `pytest.ini`. One used to sit beside this file, and
+# `pytest.ini` wins over `pyproject.toml` whatever either says, so a setting
+# added here would have been read by nobody.
+[tool.pytest.ini_options]
+addopts = "--tb=short"
+log_cli = false
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+anyio_mode = "auto"
+markers = [
+    "nixbuild: tests that require eu.nixbuild.net access",
+    "nixbuildnet: tests that require nixbuild.net access",
+    "store: tests using --store (pynixd as eval store)",
+    "builders: tests using --builders (pynixd as remote builder)",
+    "dag: tests building multi-layer DAG derivations",
+    "slow: tests that are slow and should be excluded by default",
+    "bench: benchmark tests that measure performance",
+    "benchmark: dedicated performance measurement tests",
+    "ca_derivations: tests requiring CA/dynamic derivation support",
+    "legacy_nix_commands: tests using nix-store, nix-instantiate, etc.",
+    "differential: builds one derivation through both goal systems and compares the stores",
+]
+
 [tool.pyright]
 extraPaths = ["nix-daemon-protocol/src"]
 pythonVersion = "3.13"
