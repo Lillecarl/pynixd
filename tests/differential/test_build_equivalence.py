@@ -30,10 +30,6 @@ from typing import TYPE_CHECKING, Any, cast
 import anyio
 import pytest
 
-# nanopynix is a sibling repository, and the runner of this suite puts it
-# on the path. A checkout of pynixd alone does not have it.
-from nanopynix_testing.nix_environment import NixTestEnvironment  # pyright: ignore[reportMissingImports]
-
 from nix_daemon_protocol.ids import StoreId
 from pynixd.goals.engine import GoalEngine
 from pynixd.goals.results import result_succeeded
@@ -49,6 +45,23 @@ from tests._conftest.config import make_test_spec
 from tests.differential.conftest import DifferentialRoots
 from tests.differential.corpus import CA_CORPUS, CORPUS, Case
 from tests.differential.snapshot import StoreSnapshot, compare, delta, take_snapshot
+
+# nanopynix is a sibling repository, and the runner of this suite puts it on
+# the path. A checkout of pynixd alone does not have it.
+#
+# `importorskip`, and not a plain import. The conftest of this directory skips
+# every test here when nanopynix is absent, and it never got the chance: pytest
+# imports a module to collect it, so the absent package ended the run with a
+# collection error before any gate spoke. The name here is `nanopynix_testing`,
+# which is the module this file needs. The conftest looks for `nanopynix`, and
+# the two can be installed apart.
+#
+# Last among the imports, so that one `noqa` covers the rule rather than six.
+pytest.importorskip("nanopynix_testing", reason="nanopynix is the oracle of this suite and is not installed")
+
+from nanopynix_testing.nix_environment import (  # noqa: E402  # pyright: ignore[reportMissingImports]
+    NixTestEnvironment,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Collection
