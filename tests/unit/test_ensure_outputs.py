@@ -21,6 +21,7 @@ output reads one output.
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import PurePath
 from typing import TYPE_CHECKING, Any, cast
 
@@ -259,8 +260,13 @@ async def test_an_already_valid_output_still_names_its_path() -> None:
     assert engine.build_goals == [], "an already-valid output needs no build"
     built = result.result.built_outputs or {}
     assert {item.id.output_name for item in built.values()} == {"out"}
-    # `StorePath::to_string` of Nix, which is what a `Realisation` carries.
-    assert {str(item.out_path) for item in built.values()} == {PurePath(_OUT_PATH["out"]).name}
+    # **Assert the JSON, because that is what a `Realisation` ships.**
+    # `adl_serializer<nix::StorePath>::to_json`, `src/libstore/path.cc:95` of
+    # Nix, writes `to_string()`, which is the base name. `str()` is
+    # `printStorePath` and gives the whole path; the two are different on
+    # purpose (#4), so reading `str()` here tested the wrong codec.
+    carried = {json.loads(item.to_json())["outPath"] for item in built.values()}
+    assert carried == {PurePath(_OUT_PATH["out"]).name}
 
 
 @pytest.mark.anyio

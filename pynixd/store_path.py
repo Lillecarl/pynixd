@@ -1,142 +1,17 @@
-"""
-StorePath: a self-owned class for Nix store paths (no longer a str subclass).
-DrvOutput: a class for Nix derivation output identifiers.
+"""`DrvOutput`, and the one `StorePath` re-exported under its old name.
+
+`StorePath` used to be defined here, and `nix_daemon_protocol.store_path` had
+a second, different one. The two were not `==`, did not hash alike, and a
+dict keyed by one never answered the other (#3). This class moved to
+`nix_daemon_protocol.store_path`, which is where it has to live: the protocol
+package decodes a store path and must not import `pynixd`.
+
+The name stays here because most of pynixd imports it from here.
 """
 
 from __future__ import annotations
 
-import json as _json
-from pathlib import Path
-from typing import Any
-
-from nix_daemon_protocol.store_dir import store_dir, store_prefix
-
-_original_default = _json.JSONEncoder.default
-
-
-class StorePath:
-    """A Nix store path.
-
-    Stores the bare path (hash-name) internally — the store directory is
-    stripped on construction and re-added by ``__str__``. Nix keeps a store
-    path the same way: ``StorePath`` in C++ holds the base name, and
-    ``Store::printStorePath`` puts the directory in front of it.
-
-    Provides helpers for basename, derivation checking, etc.
-    Can store optional 'extrainfo' for debugging (e.g. why this path is required).
-    """
-
-    __slots__ = ("_path", "extrainfo")
-
-    def __init__(self, path: str | StorePath, extrainfo: Any = None) -> None:
-        if isinstance(path, StorePath):
-            self._path = path._path
-            self.extrainfo = extrainfo or path.extrainfo
-        else:
-            self._path = self._strip_prefix(path)
-            self.extrainfo = extrainfo
-
-    @staticmethod
-    def _strip_prefix(path: str) -> str:
-        """Remove the store directory, and refuse a path of another store.
-
-        The refusal is the point. This method kept an absolute path of another
-        store whole, and ``__str__`` then put the store directory in front of
-        it a second time. The result named no file, and nothing reported the
-        mistake. Issue Lillecarl/nanopynix#173 holds the measurement.
-        """
-        prefix = store_prefix()
-        if path.startswith(prefix):
-            return path[len(prefix) :]
-        if path.startswith("/"):
-            raise ValueError(
-                f"{path!r} is not a path of the store at {store_dir()!r}",
-            )
-        return path
-
-    # ── Core accessors ─────────────────────────────────────────────
-
-    def base(self) -> str:
-        """The bare path (hash-name), without the store directory."""
-        return self._path
-
-    @property
-    def name(self) -> str:
-        """The full basename (hash-name) of the store path."""
-        return Path(self._path).name
-
-    def hash_part(self) -> str:
-        """The 32-character hash part of the store path."""
-        return self.name.split("-", 1)[0]
-
-    def base_name(self) -> str:
-        """The human-readable name part (after the hash)."""
-        parts = self.name.split("-", 1)
-        return parts[1] if len(parts) > 1 else ""
-
-    def is_derivation(self) -> bool:
-        """Return True if this is a .drv path."""
-        return self._path.endswith(".drv")
-
-    def to_path(self) -> Path:
-        """Convert to a pathlib.Path (the whole path, with the directory)."""
-        return Path(str(self))
-
-    def with_store_prefix(self) -> StorePath:
-        """Return self — ``__str__`` already puts the store directory first."""
-        return self
-
-    # ── str-adjacent helpers ───────────────────────────────────────
-
-    def endswith(self, suffix: str) -> bool:
-        """Check whether the bare path ends with *suffix*."""
-        return self._path.endswith(suffix)
-
-    def startswith(self, prefix: str) -> bool:
-        """Check whether the bare path starts with *prefix*."""
-        return self._path.startswith(prefix)
-
-    # ── Dunder methods ─────────────────────────────────────────────
-
-    def __str__(self) -> str:
-        """The whole path: ``<store directory>/{bare}`` (or ``""`` when empty)."""
-        if not self._path:
-            return ""
-        return store_prefix() + self._path
-
-    def __repr__(self) -> str:
-        inner = repr(self._path)
-        if self.extrainfo:
-            return f"StorePath({inner}, info={self.extrainfo!r})"
-        return f"StorePath({inner})"
-
-    def __eq__(self, other: object) -> bool:
-        if isinstance(other, StorePath):
-            return self._path == other._path
-        return NotImplemented
-
-    def __hash__(self) -> int:
-        return hash(self._path)
-
-    def __bool__(self) -> bool:
-        return bool(self._path)
-
-    def __len__(self) -> int:
-        return len(self._path)
-
-    def __lt__(self, other: object) -> bool:
-        if isinstance(other, StorePath):
-            return self._path < other._path
-        return NotImplemented
-
-    def __le__(self, other: object) -> bool:
-        if isinstance(other, StorePath):
-            return self._path <= other._path
-        return NotImplemented
-
-    def __json__(self) -> str:
-        """JSON serialization — returns the full store path."""
-        return str(self)
+from nix_daemon_protocol.store_path import StorePath as StorePath
 
 
 class DrvOutput:

@@ -48,7 +48,23 @@ async def test_wire_build_result_json_roundtrip():
 
 
 async def test_wire_store_path_json():
-    """SerdeStorePath serdes as plain string in JSON."""
+    """A store path travels as the base name in JSON, and whole on the wire.
+
+    `adl_serializer<nix::StorePath>::to_json`, `src/libstore/path.cc:95` of
+    Nix, writes `storePath.to_string()`, which is the base name, and
+    `from_json` builds one straight back from it. That is what a
+    `Realisation` carries, and `Realisation` is the only model here that
+    serializes itself as JSON on the wire.
+
+    **Nix has a second JSON form, and it is chosen by the codec rather than
+    by the value.** `ValidPathInfo::toJSON`, `src/libstore/path-info.cc:197`,
+    writes `store->printStorePath(ref)` under `PathInfoJsonFormat::V1` and
+    the base name otherwise. So a surface that needs the whole path asks for
+    it; the default matches Nix's default. Issue #4.
+
+    This test asserted the whole path before, which no measurement of Nix
+    supported.
+    """
     sp = SerdeStorePath(path="/nix/store/abc-test")
 
     class Req(WireModel):
@@ -56,15 +72,15 @@ async def test_wire_store_path_json():
 
     req = Req(path=sp)
 
-    data = req.to_json()
-    # SerdeStorePath serializes as plain string
-    assert data == '{"path":"/nix/store/abc-test"}'
+    assert req.to_json() == '{"path":"abc-test"}'
+    assert sp.to_wire() == "/nix/store/abc-test"
 
-    # from_json back to Req
-    req2 = Req.from_json(data)
-    assert isinstance(req2.path, SerdeStorePath)  # pyright: ignore[reportAttributeAccessIssue]
-    assert str(req2.path) == "/nix/store/abc-test"  # pyright: ignore[reportAttributeAccessIssue]
-    assert req2.path == sp  # pyright: ignore[reportAttributeAccessIssue]
+    # Reading takes either form, because the constructor does.
+    for data in ('{"path":"abc-test"}', '{"path":"/nix/store/abc-test"}'):
+        back = Req.from_json(data)
+        assert isinstance(back.path, SerdeStorePath)
+        assert back.path == sp
+        assert str(back.path) == "/nix/store/abc-test"
 
 
 async def test_wire_build_result_json_null_conditional():
