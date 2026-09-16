@@ -11,7 +11,7 @@ Issue Lillecarl/nanopynix#207, and issue Lillecarl/nanopynix#196 holds the asser
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 import anyio
 import pytest
@@ -108,14 +108,18 @@ def test_a_request_with_no_goal_has_an_order_and_releases_it() -> None:
 
 
 class _Child(Goal[str]):
-    """A child goal that answers at once, and says what it can reach."""
-
-    def __init__(self, engine: GoalEngine, *, may_reach_a_root_goal: bool) -> None:
-        super().__init__(engine)
-        self.may_reach_a_root_goal = may_reach_a_root_goal
+    """A child goal that answers at once."""
 
     async def _run(self) -> str:
         return "done"
+
+
+class _ChildThatReachesARootGoal(_Child):
+    may_reach_a_root_goal: ClassVar[bool] = True
+
+
+class _ChildThatReachesNoRootGoal(_Child):
+    may_reach_a_root_goal: ClassVar[bool] = False
 
 
 class _NeverEndingEnsureGoal(EnsureDerivedPathGoal):
@@ -123,6 +127,7 @@ class _NeverEndingEnsureGoal(EnsureDerivedPathGoal):
 
     async def _run(self) -> GoalResult:
         await anyio.sleep_forever()
+        raise AssertionError("sleep_forever does not return")
 
     def stop_for_the_test(self) -> None:
         """End the task, so the loop does not close with it still there."""
@@ -131,7 +136,7 @@ class _NeverEndingEnsureGoal(EnsureDerivedPathGoal):
             task.cancel()
 
 
-def _ensure_goal(cls: type[EnsureDerivedPathGoal] = EnsureDerivedPathGoal) -> EnsureDerivedPathGoal:
+def _ensure_goal[G: EnsureDerivedPathGoal = EnsureDerivedPathGoal](cls: type[G] = EnsureDerivedPathGoal) -> G:
     """A root goal with no engine behind it, for the turn alone."""
     return cls(
         engine=cast("GoalEngine", cast("Any", object())),
@@ -147,7 +152,7 @@ async def test_a_wait_for_a_root_goal_gives_up_the_place() -> None:
     goal = _ensure_goal()
     goal.take_a_turn(order.turn(0))
 
-    await goal.run_child(_Child(goal.engine, may_reach_a_root_goal=True))
+    await goal.run_child(_ChildThatReachesARootGoal(goal.engine))
 
     with anyio.fail_after(1):
         await order.turn(1).wait()
@@ -159,7 +164,7 @@ async def test_a_wait_for_a_build_keeps_the_place() -> None:
     goal = _ensure_goal()
     goal.take_a_turn(order.turn(0))
 
-    await goal.run_child(_Child(goal.engine, may_reach_a_root_goal=False))
+    await goal.run_child(_ChildThatReachesNoRootGoal(goal.engine))
 
     with pytest.raises(TimeoutError):
         with anyio.fail_after(0.05):
