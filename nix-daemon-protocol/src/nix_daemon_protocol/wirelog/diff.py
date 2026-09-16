@@ -396,7 +396,13 @@ def compare(control: Session, candidate: Session) -> list[Difference]:
     # for each of those says the same thing many times.
     run: list[tuple[Operation, str]] = []
     for one, two in _pairs(control.operations, candidate.operations):
-        alone = (one, "daemon") if two is None else (two, "pynixd") if one is None else None
+        # `_pairs` never yields two Nones, but the conditional expression did
+        # not say so, so `one` stayed optional in the "daemon" arm.
+        alone: tuple[Operation, str] | None = None
+        if one is not None and two is None:
+            alone = (one, "daemon")
+        elif one is None and two is not None:
+            alone = (two, "pynixd")
         if alone is not None:
             if run and run[0][1] != alone[1]:
                 found.append(_one_sided(run))

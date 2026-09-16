@@ -72,6 +72,21 @@ class Store(ABC):
         return {}
 
     @property
+    def features(self) -> AbstractSet[str]:
+        """The worker-protocol features this store advertises.
+
+        Empty here, and `DaemonStore` overrides it with what the handshake
+        returned. A store that speaks no worker protocol -- an HTTP binary
+        cache -- advertises nothing, and that is the honest answer rather
+        than a missing attribute.
+
+        `DaemonProxy.honourable_features` intersects these and would answer
+        "nothing" for a store with an empty set. That store is kept out by
+        `no_schedule`, not by the absence of this property.
+        """
+        return frozenset()
+
+    @property
     def is_healthy(self) -> bool:
         return True
 

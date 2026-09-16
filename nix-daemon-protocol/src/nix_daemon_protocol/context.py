@@ -12,12 +12,24 @@ if TYPE_CHECKING:
 
     from .io import NixReader, NixWriter
     from .logging import ProtocolLogger
+    from .logs import LogMessage
 
 
 class LogSink(Protocol):
-    """Optional real-time receiver for decoded daemon log records."""
+    """Optional real-time receiver for decoded daemon log records.
 
-    async def send(self, message: object, /) -> None: ...
+    **`LogMessage` and not `object`.** A parameter is contravariant, so a
+    sink declared to take `object` can only be satisfied by something that
+    accepts anything. `ClientConn.send` takes a `WireModel`, which is
+    narrower, so it did not satisfy this and every construction of a
+    `ReadContext` from a client read as a type error.
+
+    `LogMessage` is what is actually passed: `read_stream` yields one and
+    `logs.py:198` is the only caller. A `WireModel` is wider than that, so
+    `ClientConn` satisfies it.
+    """
+
+    async def send(self, message: LogMessage, /) -> None: ...
 
 
 _NO_FEATURES: Final[frozenset[str]] = frozenset()

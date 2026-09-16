@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path, PurePath
+from pathlib import Path
 from typing import TYPE_CHECKING, TypeVar
 
 import structlog
@@ -1286,7 +1286,14 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             # bare `<hash>-<name>` is `StorePath::to_string`, which is what
             # `Realisation` carries in its JSON.
             key = f"sha256:{digest}!{output_name}"
-            built[key] = Realisation(id=key, out_path=StorePath(path=PurePath(str(path)).name))
+            # `DrvOutput(key)` and not `key`: the field is a `DrvOutput`, and
+            # it parses the two halves that `to_string` joined.
+            #
+            # `StorePath(path)` and not the base name taken by hand. A
+            # `StorePath` holds the base name already, and its pydantic
+            # serializer writes that, so the `PurePath(...).name` here made
+            # the value the class makes anyway.
+            built[key] = Realisation(id=DrvOutput(key), out_path=StorePath(path))
         if not built:
             return result
 

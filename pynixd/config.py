@@ -112,10 +112,27 @@ class StoreSpecBase(BaseModel):
     gc_max_age: int | None = None
     no_schedule: bool = False
     probe: bool | None = None
+    store_path: Path = Path("/")
+    """The root of a chroot store, which `nix daemon --store` takes.
+
+    `/` is the store of the machine. Three specs declared this with the same
+    default, and `store/daemon.py` read it with `getattr` because the base
+    did not have it.
+    """
     settings: PynixdSettings | None = None
     reconnect: bool = True
     reconnect_min_delay: float = 1.0
     reconnect_max_delay: float = 300.0
+
+    def layout(self) -> StoreLayout:
+        """The three directories of the store that this spec names.
+
+        A store that is not relocated has the layout of the chroot that
+        `store_path` names, and `/` is the store of the machine.
+        `LocalSocketStoreSpec` overrides this, because only a local store can
+        put its store directory and its state directory in two places.
+        """
+        return StoreLayout.chroot(self.store_path)
 
     def _effective_feature_matrix(self) -> dict[str, set[str]] | None:
         if self.feature_matrix is not None:
@@ -135,11 +152,6 @@ class LocalSocketStoreSpec(StoreSpecBase):
     """
 
     type: Literal["local-socket"] = "local-socket"
-    store_path: Path = Path("/")
-    """The root of a chroot store, which `nix daemon --store` takes.
-
-    Leave `store_dir` unset to use this. `/` is the store of the machine.
-    """
 
     store_dir: Path | None = None
     """The directory in a store path, for a relocated store.
@@ -230,7 +242,6 @@ class ExternalUnixStoreSpec(StoreSpecBase):
     """
 
     type: Literal["external-unix"] = "external-unix"
-    store_path: Path = Path("/")
     socket_path: Path = Path("/nix/var/nix/daemon-socket/socket")
     monitor: bool = False
     scheduleable: bool = False
@@ -306,7 +317,6 @@ class SSHSubprocessStoreSpec(StoreSpecBase):
     host: str
     port: int = 22
     username: str | None = None
-    store_path: Path = Path("/")
     known_hosts: str | None
     """The file that names the host key of this builder, or `null` for none.
 

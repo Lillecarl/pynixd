@@ -7,7 +7,6 @@ import contextlib
 import functools
 import time
 from enum import IntEnum
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import anyio
@@ -83,10 +82,8 @@ class DaemonStore(Store):
     def __init__(self, spec: StoreSpecBase) -> None:
         """Initialize daemon store with pool, probing state, circuit breaker, and reconnect loop."""
         super().__init__(spec)
-        self.store_path = getattr(spec, "store_path", Path("/"))
-        self.layout: StoreLayout = (
-            spec.layout() if hasattr(spec, "layout") else StoreLayout.chroot(getattr(spec, "store_path", None))
-        )
+        self.store_path = spec.store_path
+        self.layout: StoreLayout = spec.layout()
         """The three directories of this store. Issue Lillecarl/nanopynix#176.
 
         A store that is not local has no layout of its own, so it takes the
