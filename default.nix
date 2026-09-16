@@ -93,6 +93,43 @@ let
       touch "$out"
     '';
 
+  /*
+    Nix's own functional suite, against a plain daemon and against pynixd.
+
+    One program per Nix version, and not one program: the scripts come out of
+    a Nix's own source, so the client, the scripts and the control daemon have
+    to be the same version.  `nix/functional-tests/README.md` gives the
+    commands; `streams` is the mode that records both runs and compares the
+    wire.
+
+    Below the floor the suite does not describe a daemon this proxy claims to
+    serve.  See the protocol matrix in CLAUDE.md.
+  */
+  supportedNixFloor = "2.34";
+
+  nixFunctionalTests =
+    let
+      named = lib.filterAttrs (name: _: lib.hasPrefix "nix_2_" name) pkgs.nixVersions;
+      # `tryEval`, because a removed version is still an attribute and reading
+      # its `version` throws: `error: nix_2_10 has been removed`.  Asking the
+      # floor without this filter fails the whole evaluation of this file.
+      supported = lib.filterAttrs (
+        _: nix:
+        let
+          version = builtins.tryEval (lib.versions.majorMinor nix.version);
+        in
+        version.success && lib.versionAtLeast version.value supportedNixFloor
+      ) named;
+    in
+    lib.mapAttrs (
+      version: nix:
+      pkgs.callPackage ./nix/functional-tests/package.nix {
+        inherit nix version;
+        pynixd = package;
+        wirelogPython = pyinstance;
+      }
+    ) supported;
+
   checks = {
     format = mkCheck "format" [ pkgs.ruff ] "ruff format --check .";
     lint = mkCheck "lint" [ pkgs.ruff ] "ruff check .";
@@ -111,6 +148,7 @@ package
     specifictest
     fix
     checks
+    nixFunctionalTests
     pkgs
     ;
 

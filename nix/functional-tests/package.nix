@@ -31,6 +31,12 @@
   nix,
   # The daemon proxy under test.
   pynixd,
+  # A python that has `nix_daemon_protocol` importable. The recorder of the
+  # `streams` mode is a module of that package and has no entry point of its
+  # own, so the mode needs an interpreter that can reach it. Passed in rather
+  # than taken from `pynixd`: this tree builds the application with
+  # `buildPythonApplication`, which exposes no `venv`.
+  wirelogPython,
   # The attribute name of the Nix version, such as "nix_2_34". It names the
   # work directory, so two versions do not share one.
   version,
@@ -61,10 +67,7 @@ let
       ./compare.py
     ];
   };
-  # The interpreter of the pynixd application, which has
-  # `nix_daemon_protocol` in it. The recorder of the `streams` mode is a
-  # module of that package, and it has no entry point of its own.
-  wirelogPython = "${pynixd.venv}/bin/python";
+  wirelogInterpreter = "${wirelogPython}/bin/python";
   runtimeInputs = [
     coreutils
     findutils
@@ -116,7 +119,7 @@ writeShellApplication {
     NIX_PKG=${lib.escapeShellArg nix}
     NIX_SRC=${lib.escapeShellArg nix.src}
     PYNIXD_BIN=${lib.escapeShellArg (lib.getExe' pynixd "pynixd")}
-    WIRELOG_PYTHON=${lib.escapeShellArg wirelogPython}
+    WIRELOG_PYTHON=${lib.escapeShellArg wirelogInterpreter}
     SCRIPTS=${lib.escapeShellArg scripts}
 
     # **The runner takes no directory from the caller.** The header of this
