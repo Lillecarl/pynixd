@@ -755,41 +755,6 @@ class Scheduler:
             error_pct=f"{(duration - expected) / expected * 100:.1f}" if expected else None,
         )
 
-    async def _wait_for_local_paths(
-        self,
-        paths: StorePathSet,
-        delay: float = 2.0,
-    ) -> StorePathSet:
-        """Wait briefly for the frontend daemon's own output import."""
-        if not paths:
-            return set()
-        if not isinstance(self.local_store, LocalDBStore):
-            log.debug(
-                "skip_wait_for_local_paths_without_db",
-                count=len(paths),
-                store_id=self.local_store.store_id,
-            )
-            return set()
-
-        deadline = time.monotonic() + delay
-        while True:
-            try:
-                resp = await self.local_store.query_valid_paths(
-                    QueryValidPathsRequest(
-                        paths={StorePath(path=str(path)) for path in paths},
-                        substitute=0,
-                    ),
-                )
-                valid = {StorePath(str(path)) for path in resp.paths}
-                if valid >= paths or time.monotonic() >= deadline:
-                    return valid
-            except (BackendError, OSError, ConnectionError):
-                if time.monotonic() >= deadline:
-                    return set()
-                log.exception("wait_for_local_paths_failed", count=len(paths))
-
-            await anyio.sleep(0.05)
-
     async def _pull_outputs(
         self,
         store: DaemonStore,
