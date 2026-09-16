@@ -65,5 +65,6 @@ pynixd = "pynixd.__main__:main"
 packages = ["pynixd"]
 
 [tool.pyright]
+extraPaths = ["nix-daemon-protocol/src"]
 pythonVersion = "3.13"
 exclude = ["**/result*"]
