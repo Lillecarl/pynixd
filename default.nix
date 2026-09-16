@@ -90,8 +90,7 @@ package
 
   shell = pkgs.callPackage ./nix/shell.nix {
     pynixd = package;
-    # The library `tests/guest/run.py` drives the guests with, so the
-    # shell's pyright resolves it.
+    # What `tests/guest/run.py` imports, so the shell's pyright resolves it.
     uml-runner = (import (sources.user-mode-nixos + "/lib.nix") { inherit pkgs; }).runner;
   };
   nixosModule = import ./nix/nixos/default.nix;
@@ -106,7 +105,7 @@ package
     };
 
     # The same suites in a guest, where cleanup is a poweroff rather than
-    # a promise. See tests/guest/run.py.
+    # a promise.
     guest = pkgs.callPackage ./tests/derivations/guest {
       pynixd-lib = library;
       src = lib.cleanSource ./.;
