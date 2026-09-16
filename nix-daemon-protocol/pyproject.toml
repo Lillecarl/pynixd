@@ -32,6 +32,20 @@ benchmark = ["pyinstrument"]
 [tool.hatch.build.targets.wheel]
 packages = ["src/nix_daemon_protocol"]
 
+# This subproject needs a pytest configuration of its own. Without one pytest
+# walks up and takes pynixd's, which puts the suite under pynixd's rootdir and
+# pynixd's markers, and `anyio_mode` from that file is what lets an async test
+# run at all.
+#
+# Here rather than in a `pytest.ini` beside it: this file is nearer to the
+# suite than pynixd's, so it answers the walk-up the same way, and a
+# `pytest.ini` would silently win over everything written here.
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+anyio_mode = "auto"
+
 [tool.ruff]
 target-version = "py313"
 line-length = 120
