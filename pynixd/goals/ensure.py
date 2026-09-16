@@ -903,7 +903,18 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         # daemon with `ca-derivations` off answers none -- so it cannot put
         # pynixd back in front of the `RegisterDrvOutput` refusal that
         # `needs_realisations` was written to avoid.
-        if changed or parsed.needs_realisations:
+        #
+        # **Except for an impure derivation, which `changed` does not cover.**
+        # `needs_realisations` answers False for one of those on purpose, and
+        # `changed` can be true beside it. Nix guards the registration with
+        # `if (!drv->type().isImpure())` at `derivation-goal.cc:226`, because
+        # every build of an impure derivation makes a new output and one id
+        # cannot hold two. The daemon answers "Trying to register a realisation
+        # of '...', but we already have another one locally", the pool
+        # discards the connection as dirty, and the temporary roots it held
+        # stay in the file. `main:impure-derivations` of the functional suite
+        # is where the store comparison saw pynixd registering two of them.
+        if not parsed.is_impure and (changed or parsed.needs_realisations):
             await self._register_realisations(answer.values())
         if changed:
             result.result = result.result.model_copy(update={"built_outputs": answer})

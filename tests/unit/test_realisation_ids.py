@@ -74,6 +74,18 @@ DEFER_TEXT = (
 )
 DEFER_OUT = "/nix/store/88888888888888888888888888888888-drv-hash-defer"
 
+# An impure output: `("out","","r:sha256","impure")`, which is what Nix writes
+# for one. Every build of it makes a new output, so one realisation id cannot
+# hold two, and Nix registers none.
+IMPURE_PATH = "/nix/store/00000000000000000000000000000005-drv-hash-impure.drv"
+IMPURE_TEXT = (
+    'Derive([("out","","r:sha256","impure")],'
+    f'[("{BASE_PATH}",["out"])],[],'
+    '"x86_64-linux","/bin/sh",["-c","echo hi > $out"],'
+    '[("builder","/bin/sh"),("name","drv-hash-impure"),("out",""),("system","x86_64-linux")])'
+)
+IMPURE_OUT = "/nix/store/66666666666666666666666666666666-drv-hash-impure"
+
 
 async def _read_drv(drv_path: str) -> Derivation | None:
     if drv_path == BASE_PATH:
@@ -84,6 +96,8 @@ async def _read_drv(drv_path: str) -> Derivation | None:
         return parse_drv(FLOAT_TEXT)
     if drv_path == DEFER_PATH:
         return parse_drv(DEFER_TEXT)
+    if drv_path == IMPURE_PATH:
+        return parse_drv(IMPURE_TEXT)
     return None
 
 
@@ -332,6 +346,33 @@ async def test_an_input_addressed_output_registers_the_corrected_id() -> None:
     engine, _ = await _run(_response(f"sha256:{_flattened_hash()}!out", TOP_OUT))
 
     assert [str(item.id) for item in engine.local_store.registered] == [wanted]
+
+
+@pytest.mark.anyio
+async def test_an_impure_derivation_registers_no_realisation() -> None:
+    """Every build of an impure derivation makes a new output.
+
+    One realisation id cannot hold two, so Nix guards the registration with
+    `if (!drv->type().isImpure())` at `derivation-goal.cc:226`. The daemon
+    answers "Trying to register a realisation of '...', but we already have
+    another one locally", the pool discards the connection as dirty, and the
+    temporary roots it held stay in the file.
+
+    `needs_realisations` is False here, and it was the whole guard until issue
+    #40 added `changed` beside it. `changed` does not cover this case: the
+    daemon answers a realisation for an impure derivation like any other, so
+    the guard has to name impurity itself.
+
+    `main:impure-derivations` of the functional suite is where the store
+    comparison saw pynixd register two of them.
+    """
+    parsed = parse_drv(IMPURE_TEXT)
+    assert parsed.is_impure is True
+    assert parsed.needs_realisations is False
+
+    engine, _ = await _run(_response(f"sha256:{'33' * 32}!out", IMPURE_OUT), IMPURE_PATH)
+
+    assert engine.local_store.registered == []
 
 
 @pytest.mark.anyio
