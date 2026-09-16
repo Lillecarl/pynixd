@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import importlib
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeGuard
 
 if TYPE_CHECKING:
     from .base import (
@@ -84,8 +84,15 @@ def __getattr__(name: str) -> object:
     return value
 
 
-def is_http_binary_cache(store: Store) -> bool:
+def is_http_binary_cache(store: Store) -> TypeGuard[HTTPBinaryCacheStore]:
     """Whether *store* is an `HTTPBinaryCacheStore`, and never load one to ask.
+
+    A `TypeGuard` and not a `bool`, so a caller past the check may reach the
+    methods only this store has. With `bool` a checker keeps the argument at
+    `Store`, and `substitution_queue` calling `get_narinfo` and `stream_nar`
+    inside the guarded branch read as errors. The class is imported under
+    TYPE_CHECKING already, so the annotation loads nothing at runtime, which
+    is the whole point of the function.
 
     `False` when nothing imported `http_binary_cache`, because an instance of
     a class cannot exist before the class does. `HTTPBinaryCacheSpec.to_store`
