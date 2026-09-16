@@ -18,9 +18,11 @@ import nacl.signing
 from .utils import nix32_encode
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
     from pathlib import Path
 
     from nix_daemon_protocol.nar_hash import NARHash
+    from nix_daemon_protocol.store_path import StorePath
     from nix_daemon_protocol.valid_path_info import ValidPathInfo
 
 
@@ -130,10 +132,10 @@ def nar_hash_for_a_fingerprint(nar_hash: NARHash) -> str:
 
 
 def fingerprint(
-    store_path: object,
+    store_path: StorePath | str,
     nar_hash: NARHash,
     nar_size: int,
-    references: object,
+    references: Iterable[StorePath | str],
 ) -> str:
     """Build the Nix fingerprint string that gets signed.
 
@@ -141,8 +143,13 @@ def fingerprint(
 
     `ValidPathInfo::fingerprint` at `path-info.cc:48` of Nix. The references
     are the store paths, sorted, and separated by a comma.
+
+    **A path reaches here in either form.** `sign_path_info` passes the
+    `StorePath` of a `ValidPathInfo`, `DaemonStore._sign` passes the printed
+    string, and `tests/parity` passes what `nix store add-file` wrote. Both
+    forms print the whole path, which is what the fingerprint carries.
     """
-    refs = ",".join(sorted(str(r) for r in references))  # type: ignore[attr-defined]
+    refs = ",".join(sorted(str(r) for r in references))
     return f"1;{store_path};{nar_hash_for_a_fingerprint(nar_hash)};{nar_size};{refs}"
 
 
