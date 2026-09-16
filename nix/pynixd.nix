@@ -44,10 +44,18 @@ pythonBuilder (finalAttrs: {
   # nothing changed.
   # impurity = builtins.currentTime or "";
 
+  # `lib.hasSuffix` takes the suffix first, and these two read the other way
+  # round until 2026-09-17. `hasSuffix name "nix"` asks whether the string
+  # "nix" ends with the name of the file, which is true for a file called
+  # exactly `nix` and for nothing else. So every `.nix` and every `.md` file
+  # was in `src`, and an edit to one of them rebuilt this package and
+  # everything downstream of it. Measured on the commit that removed the dead
+  # asyncssh override: the derivation hash moved for an edit that changed no
+  # input of the build.
   src = lib.cleanSourceWith {
     filter =
       name: type:
-      lib.cleanSourceFilter name type && !lib.hasSuffix name "nix" && !lib.hasSuffix name ".md";
+      lib.cleanSourceFilter name type && !lib.hasSuffix ".nix" name && !lib.hasSuffix ".md" name;
     src = ../.;
   };
 
