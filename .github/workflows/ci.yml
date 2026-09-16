@@ -47,9 +47,7 @@ jobs:
           fetch-depth: 100
       - id: resolve
         name: Resolve the umbrella revision
-        run: |
-          rev=$(ci/walkback.sh https://github.com/nixidae/nixidae pynixd)
-          echo "rev=$rev" >> "$GITHUB_OUTPUT"
+        run: ci/walkback.sh https://github.com/nixidae/nixidae pynixd | sed 's/^/rev=/' >> "$GITHUB_OUTPUT"
 
   docs-build:
     if: github.ref == 'refs/heads/develop'
