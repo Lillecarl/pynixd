@@ -14,7 +14,13 @@ type StorePathSet = set[StorePath]
 """Set of store paths — the protocol ``Set<StorePath>``."""
 
 type NARHash = str
-"""Base16-encoded SHA256 NAR hash without algorithm prefix."""
+"""Base16-encoded SHA256 NAR hash without algorithm prefix.
 
-type ContentAddress = str
-"""Content-addressed store path identifier in ``method:hash`` format."""
+**This shadows `nar_hash.NARHash`, which is the real class, and it is not
+a simple mistake to correct.** `NARHash` strips a known algorithm prefix
+when it is built, so no value of that class can carry `sha256:`. Its one
+consumer, `pynixd.signing.fingerprint`, has a branch for a prefixed
+string that six tests exercise and no caller can reach once the parameter
+names the class. Removing that branch is a change to the signing path,
+and the comment above it records the bug it was written for. pynixd#3.
+"""
