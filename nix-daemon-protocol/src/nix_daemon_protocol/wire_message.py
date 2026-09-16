@@ -15,7 +15,7 @@ import types
 from collections.abc import Callable, Iterable  # noqa: TC003
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Any, ClassVar, get_args, get_origin, get_type_hints
+from typing import Any, ClassVar, Self, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel, ConfigDict
 from pydantic import Field as PydanticField
@@ -472,7 +472,7 @@ class WireModel(BaseModel):
         return self.model_dump_json(**kwargs)
 
     @classmethod
-    def from_json(cls, json_data: str | bytes, **kwargs) -> WireModel:
+    def from_json(cls, json_data: str | bytes, **kwargs) -> Self:
         """Deserialize from JSON string.
 
         Uses Pydantic's ``model_validate_json``.

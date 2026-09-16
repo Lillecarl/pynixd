@@ -16,6 +16,7 @@ from nix_daemon_protocol import (
     OptMicroseconds,
     QueryPathInfoResponse,
     Realisation,
+    Signature,
     StorePath,
 )
 from nix_daemon_protocol.context import ReadContext, WriteContext
@@ -52,7 +53,7 @@ def _values() -> tuple[WireModel, ...]:
                 "out": Realisation(
                     id=DrvOutput(drv_hash="sha256:0123456789abcdefghijklmnopqrstuv", output_name="out"),
                     out_path=output,
-                    signatures=["cache:signature"],
+                    signatures=[Signature("cache:signature")],
                     dependent_realisations={},
                 ),
             },

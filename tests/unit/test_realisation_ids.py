@@ -36,6 +36,7 @@ from pynixd.serde import (
     QueryRealisationResponse,
     Realisation,
     RegisterDrvOutputRequest,
+    Signature,
     StorePath as SerdeStorePath,
 )
 from pynixd.store_path import StorePath
@@ -252,7 +253,7 @@ async def test_a_signature_does_not_survive_the_new_id() -> None:
     """
     response = _response(f"sha256:{_flattened_hash()}!out", TOP_OUT)
     for realisation in response.built_outputs.values():
-        realisation.signatures = ["key1:notarealsignature"]
+        realisation.signatures = [Signature("key1:notarealsignature")]
 
     _, result = await _run(response)
 

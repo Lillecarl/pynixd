@@ -269,3 +269,29 @@ async def test_the_floor_shape_of_both_operations_is_unchanged() -> None:
     assert read.realisation is not None
     assert read.keyed_drv_output is None
     assert read.unkeyed_realisation is None
+
+
+def test_the_json_shape_keeps_signatures_as_plain_strings() -> None:
+    """`Realisation.signatures` holds `Signature`, and JSON never shows it.
+
+    The two shapes disagree on the container on purpose: this one is JSON and
+    keeps a list, `UnkeyedRealisation` is a struct and keeps a set. A set would
+    serialize in no fixed order, and two dumps of one value would differ.
+
+    The element type is the same scalar in both, so the `set(...)` that
+    `BuildResult` and `goals/ensure.py` build from this list is a
+    `set[Signature]` and needs no conversion at the call site.
+    """
+    raw = (
+        b'{"id":"sha256-abc!out","outPath":"' + OUT_PATH.encode() + b'",'
+        b'"signatures":["k1:sig1","k2:sig2"],"dependentRealisations":{}}'
+    )
+    realisation = Realisation.from_json(raw)
+
+    assert [type(one) for one in realisation.signatures] == [Signature, Signature]
+    assert realisation.signatures[0].name == "k1"
+    assert realisation.signatures[0].signature == "sig1"
+
+    # Order kept, and the same bytes every time.
+    assert realisation.to_json() == realisation.to_json()
+    assert '"signatures":["k1:sig1","k2:sig2"]' in realisation.to_json()

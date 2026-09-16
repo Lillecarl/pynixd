@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from .drv_output import DrvOutput
 from .logging import deserialization_scope
+from .signature import Signature
 from .store_path import StorePath
 from .wire_message import WireField, WireModel
 
@@ -27,7 +28,10 @@ class Realisation(WireModel):
 
     id: DrvOutput = WireField(default_factory=DrvOutput)
     out_path: StorePath | None = WireField(default=None, alias="outPath")
-    signatures: list[str] = WireField(default_factory=list)
+    # A list and not the `set` of `UnkeyedRealisation`, because this shape is
+    # JSON: a set serializes in no fixed order, and the bytes must not move
+    # between two dumps of one value.
+    signatures: list[Signature] = WireField(default_factory=list)
     dependent_realisations: dict[str, str] = WireField(default_factory=dict, alias="dependentRealisations")
 
     @classmethod

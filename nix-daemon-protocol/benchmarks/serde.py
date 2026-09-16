@@ -66,7 +66,7 @@ def _workload() -> tuple[WireModel, ...]:
     realisation = Realisation(
         id=DrvOutput(drv_hash="sha256:0123456789abcdefghijklmnopqrstuv", output_name="out"),
         out_path=output_path,
-        signatures=["cache:signature"],
+        signatures=[Signature("cache:signature")],
         dependent_realisations={"input": "sha256:abcdefghijklmnopqrstuv0123456789!out"},
     )
     result = BuildResult(
