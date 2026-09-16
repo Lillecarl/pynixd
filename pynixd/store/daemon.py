@@ -769,7 +769,7 @@ class DaemonStore(Store):
     async def query_path_infos(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """QueryPathInfos (op 103) — batch path info query, falls back to per-path calls."""
 
-        from nix_daemon_protocol.valid_path_info import ValidPathInfo as SerdeValidPathInfo
+        from nix_daemon_protocol.valid_path_info import ValidPathInfo
 
         from ..serde import QueryPathInfoRequest, QueryPathInfosResponse
 
@@ -779,13 +779,13 @@ class DaemonStore(Store):
         if "QueryPathInfos" in self.features:
             return await self.call(request, client=client, suppress_last=suppress_last)
 
-        infos: list[SerdeValidPathInfo] = []
+        infos: list[ValidPathInfo] = []
         for path in request.paths:
             resp = await self.query_path_info(
                 QueryPathInfoRequest(path=path), client=client, suppress_last=suppress_last
             )
             if resp.valid and resp.info is not None:
-                infos.append(SerdeValidPathInfo(path=path, info=resp.info))
+                infos.append(ValidPathInfo(path=path, info=resp.info))
         return QueryPathInfosResponse(infos=infos)
 
     async def query_closure(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:

@@ -14,8 +14,8 @@ from nix_daemon_protocol.ids import StoreId
 from nix_daemon_protocol.nar_hash import NARHash
 from nix_daemon_protocol.path_info import UnkeyedValidPathInfo
 from nix_daemon_protocol.query_all_valid_paths import (
-    QueryAllValidPathsRequest as SerdeQueryAllValidPathsRequest,
-    QueryAllValidPathsResponse as SerdeQueryAllValidPathsResponse,
+    QueryAllValidPathsRequest,
+    QueryAllValidPathsResponse,
 )
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from nix_daemon_protocol.wire_message import WireModel
@@ -24,7 +24,6 @@ from pynixd.config import StoreSpecBase
 from pynixd.psi import CpuUtil
 from pynixd.serde import (
     BuildDerivationRequest,
-    QueryAllValidPathsRequest,
     QueryClosureWithInfoRequest,
     QueryClosureWithInfoResponse,
     QueryValidPathsRequest,
@@ -205,8 +204,8 @@ class MockStore(DaemonStore):
         if isinstance(request, QueryValidPathsRequest):
             return QueryValidPathsResponse(paths=request.paths)
 
-        if req_type in (QueryAllValidPathsRequest, SerdeQueryAllValidPathsRequest):
-            return SerdeQueryAllValidPathsResponse(paths={StorePath(path=str(p)) for p in self._mock_known_paths})  # pyright: ignore[reportUnhashable]
+        if req_type is QueryAllValidPathsRequest:
+            return QueryAllValidPathsResponse(paths=set(self._mock_known_paths))
         if isinstance(request, QueryClosureWithInfoRequest):
             # Just return some dummy info for everything
 

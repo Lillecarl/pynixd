@@ -146,7 +146,7 @@ class LocalDBStore(LocalStore):
 
         from nix_daemon_protocol.content_address import ContentAddress
         from nix_daemon_protocol.nar_hash import NARHash
-        from nix_daemon_protocol.path_info import UnkeyedValidPathInfo as SerdeUnkeyedValidPathInfo
+        from nix_daemon_protocol.path_info import UnkeyedValidPathInfo
         from nix_daemon_protocol.signature import Signature
         from nix_daemon_protocol.wire_time import Time
         from pynixd.serde import QueryPathInfoResponse, StorePath
@@ -169,7 +169,7 @@ class LocalDBStore(LocalStore):
             for s in sigs.split():
                 sig_set.add(Signature(**Signature.from_str(s)))
 
-        info = SerdeUnkeyedValidPathInfo(
+        info = UnkeyedValidPathInfo(
             deriver=StorePath(path=deriver or ""),
             nar_hash=NARHash(hash=nar_hash),
             references={StorePath(path=r) for r in refs},  # type: ignore[arg-type]
@@ -252,9 +252,9 @@ class LocalDBStore(LocalStore):
 
         from nix_daemon_protocol.content_address import ContentAddress
         from nix_daemon_protocol.nar_hash import NARHash
-        from nix_daemon_protocol.path_info import UnkeyedValidPathInfo as SerdeUnkeyedValidPathInfo
+        from nix_daemon_protocol.path_info import UnkeyedValidPathInfo
         from nix_daemon_protocol.signature import Signature
-        from nix_daemon_protocol.valid_path_info import ValidPathInfo as SerdeValidPathInfo
+        from nix_daemon_protocol.valid_path_info import ValidPathInfo
         from nix_daemon_protocol.wire_time import Time
         from pynixd.serde import QueryClosureWithInfoResponse, StorePath
 
@@ -272,7 +272,7 @@ class LocalDBStore(LocalStore):
             if sigs:
                 for s in sigs.split():
                     sig_set.add(Signature(**Signature.from_str(s)))
-            uinfo = SerdeUnkeyedValidPathInfo(
+            uinfo = UnkeyedValidPathInfo(
                 deriver=StorePath(path=deriver or ""),
                 nar_hash=NARHash(hash=nar_hash),
                 references=references,
@@ -282,7 +282,7 @@ class LocalDBStore(LocalStore):
                 sigs=sig_set,
                 ca=ContentAddress(value=ca or ""),
             )
-            sorted_infos.append(SerdeValidPathInfo(path=sp, info=uinfo))
+            sorted_infos.append(ValidPathInfo(path=sp, info=uinfo))
 
         return QueryClosureWithInfoResponse(infos=sorted_infos)
 
@@ -312,9 +312,9 @@ class LocalDBStore(LocalStore):
 
         from nix_daemon_protocol.content_address import ContentAddress
         from nix_daemon_protocol.nar_hash import NARHash
-        from nix_daemon_protocol.path_info import UnkeyedValidPathInfo as SerdeUnkeyedValidPathInfo
+        from nix_daemon_protocol.path_info import UnkeyedValidPathInfo
         from nix_daemon_protocol.signature import Signature
-        from nix_daemon_protocol.valid_path_info import ValidPathInfo as SerdeValidPathInfo
+        from nix_daemon_protocol.valid_path_info import ValidPathInfo
         from nix_daemon_protocol.wire_time import Time
         from pynixd.serde import QueryPathInfosResponse, StorePath
 
@@ -339,7 +339,7 @@ class LocalDBStore(LocalStore):
             if sigs:
                 for s in sigs.split():
                     sig_set.add(Signature(**Signature.from_str(s)))
-            uinfo = SerdeUnkeyedValidPathInfo(
+            uinfo = UnkeyedValidPathInfo(
                 deriver=StorePath(path=deriver or ""),
                 nar_hash=NARHash(hash=nar_hash),
                 references=refs_map.get(sp, set()),
@@ -349,7 +349,7 @@ class LocalDBStore(LocalStore):
                 sigs=sig_set,
                 ca=ContentAddress(value=ca or ""),
             )
-            infos.append(SerdeValidPathInfo(path=sp, info=uinfo))
+            infos.append(ValidPathInfo(path=sp, info=uinfo))
 
         return QueryPathInfosResponse(infos=[*cached.values(), *infos])
 

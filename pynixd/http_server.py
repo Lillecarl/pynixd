@@ -33,7 +33,7 @@ from anyio.to_thread import run_sync
 from passlib.apache import HtpasswdFile
 
 from nix_daemon_protocol.store_dir import store_dir
-from nix_daemon_protocol.valid_path_info import ValidPathInfo as SerdeValidPathInfo
+from nix_daemon_protocol.valid_path_info import ValidPathInfo
 
 from . import metrics
 from .serde import (
@@ -320,7 +320,7 @@ class PynixdHttpServer:
         content = await request.text()
 
         try:
-            vinfo = SerdeValidPathInfo.from_narinfo(content)
+            vinfo = ValidPathInfo.from_narinfo(content)
         except (ValueError, KeyError, IndexError) as e:
             log.warning("invalid_narinfo_upload", error=str(e))
             return web.Response(
@@ -477,12 +477,10 @@ class PynixdHttpServer:
 
         return None
 
-    async def get_path_info(self, path: StorePath) -> SerdeValidPathInfo | None:
-        """Get ValidPathInfo for a store path. Returns ValidPathInfo or None."""
-        serde_path = StorePath(path=str(path))
-        resp = await self.store.execute(QueryPathInfoRequest(path=serde_path))
+    async def get_path_info(self, path: StorePath) -> ValidPathInfo | None:
+        resp = await self.store.execute(QueryPathInfoRequest(path=path))
         if resp.valid and resp.info:
-            return SerdeValidPathInfo(path=serde_path, info=resp.info)
+            return ValidPathInfo(path=path, info=resp.info)
         return None
 
     # ── Lifecycle ─────────────────────────────────────────────────────

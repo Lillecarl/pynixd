@@ -6,9 +6,9 @@ from typing import TYPE_CHECKING, ClassVar
 
 import structlog
 
-from nix_daemon_protocol.add_to_store import AddToStoreResponse as SerdeAddToStoreResponse
+from nix_daemon_protocol.add_to_store import AddToStoreResponse
 
-from ..daemon_extensions.sign_path_info import SignPathInfoRequest as SerdeSignPathInfoRequest
+from ..daemon_extensions.sign_path_info import SignPathInfoRequest
 from ..serde import AddToStoreRequest
 from ..serde.context import ReadContext, WriteContext
 from ..wire import forward_framed
@@ -25,7 +25,7 @@ class AddToStoreHandler(Handler):
 
     op: ClassVar[int] = 7
 
-    async def handle(self, ctx: RequestContext) -> SerdeAddToStoreResponse | None:
+    async def handle(self, ctx: RequestContext) -> AddToStoreResponse | None:
         """Decode AddToStore request, stream framed NAR to daemon, sign path info, cache result."""
         logger.debug("received_op")
         # **The connection that adds the path carries the options of the
@@ -53,13 +53,13 @@ class AddToStoreHandler(Handler):
             await forward_framed(ctx.proxy.r, conn.w)
 
             # 4. Read response from daemon
-            resp = await SerdeAddToStoreResponse.from_reader(
+            resp = await AddToStoreResponse.from_reader(
                 ReadContext.from_conn(conn),
             )
 
         # 5. Sign path info and update cache (outside conn so we don't re-enter the pool)
         if resp.info is not None:
-            sign_req = SerdeSignPathInfoRequest(info=resp.info)
+            sign_req = SignPathInfoRequest(info=resp.info)
             sign_resp = await ctx.proxy.local_store.execute(sign_req)
             resp.info = sign_resp.info
 
