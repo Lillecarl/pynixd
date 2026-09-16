@@ -7,7 +7,7 @@ This document defines the foundational architectural patterns and engineering st
 - **Committing**: Prefer `jj commit -m "..."` to finish a task. It creates a new revision and provides a clean working copy.
 - **Squashing**: If your changes are a fixup for the last commit, prefer `jj squash --use-destination-message` to keep the commit message or `jj squash -m "..."` to update the commit message
 - **Paging**: Always include `--no-pager` in all `jj` commands to ensure non-interactive execution.
-- **Subagents must NEVER use VCS tools** (no `jj`, no `git`, no `jj squash`, no `jj commit`, nothing). Subagents are strictly limited to reading/writing files and running validation commands (`just cheap`). If a subagent cannot complete its task, it should report the error back to the primary agent and let the primary agent handle it.
+- **Subagents must NEVER use VCS tools** (no `jj`, no `git`, no `jj squash`, no `jj commit`, nothing). Subagents are strictly limited to reading/writing files and running validation commands (`nix build --file . checks.format checks.lint checks.types`). If a subagent cannot complete its task, it should report the error back to the primary agent and let the primary agent handle it.
 
 ## 2. Core Architectural Pattern: Request-Driven Execution
 `pynixd` follows a strict three-tier execution pattern to separate protocol IO from business logic.
@@ -42,8 +42,16 @@ Pynixd will adversise 1.38 support even if local_store is 1.35 and translate whe
 - **Transparency**: No-op or cached operations MUST inject a `StderrNext` message (e.g., `"pynixd: IsValidPath (SQLite hit)"`) into the buffer for transparency.
 
 ## 4. Engineering Standards
-- **Validation**: ALWAYS run `just precommit` before committing. This runs `ruff` (formatting/linting), `pyright` (type checking) and functionality tests.
-  - **Subagent validation**: When verifying changes from a subagent, run `just cheap` at most (ruff + pyright). Do NOT run `just precommit` or the full test suite — that's overkill for individual file changes. Save the full test suite for final verification.
+- **Validation**: before committing, run all four:
+
+      nix build --file . checks.format checks.lint checks.types --no-link
+      nix develop --impure --file shell.nix --command pytest tests/functional tests/unit
+      nix develop --impure --file shell.nix --command pytest nix-daemon-protocol/tests
+
+  The `checks.*` derivations are gates: non-mutating, and each fails the
+  build. `nix run --file . fix` is the rewriter — never a gate.
+  - **Subagent validation**: the `checks.*` line only. Not the suites; that is
+    overkill per file change.
 - **Type Safety**:
   - NEVER use string type hints (e.g., `"Store"`). Use `from __future__ import annotations` where needed for `TYPE_CHECKING` imports and forward references.
   - Use `if TYPE_CHECKING:` blocks for cross-module imports.
@@ -230,13 +238,13 @@ is the register that a later reader reads to reverse the decision.
 
 ### Running Validation Commands
 - **Single pytest invocation only**: NEVER run more than one `pytest` process at a time in this repository. Functional tests share session store paths, daemon sockets, and `/tmp/pynixd-stores` state; concurrent pytest runs can race each other and produce misleading failures that look like real regressions.
-- **NEVER pipe away output** from `just check`, `just precommit`, or `pytest` — the full output contains failure details you need to diagnose issues.
+- **NEVER pipe away output** from the `checks.*` build or from `pytest` — the full output contains failure details you need to diagnose issues.
 - If the user explicitly tells you not to pipe or select on output, YOU MUST DO WHAT THEY SAY. No exceptions. Do not override their instruction with this rule's redirect-to-file fallback — they want to see the output directly.
 - If output is too large for context (failing tests produce heaps of logs), you may redirect to a file: `pytest ... > /tmp/test-output.txt 2>&1`, then read specific sections. But if the user told you not to redirect, you must not redirect.
 - Do NOT use `tee` when redirecting — it doubles context consumption.
 - If you must limit output, use `tail -N` on the file afterwards, never pipe the command itself.
 - You do NOT need to specify pytest timeout, the configured 120s is enough per test.
-- **Timeouts**: `just precommit` runs the full functional test suite (3min+) — set timeout=300 (5 min) for Bash tool calls. Unit tests (`pytest tests/unit/`) complete in seconds — timeout=60000 is fine.
+- **Timeouts**: the functional suite takes 3min+ (measured 166s) — set timeout=300 (5 min) for Bash tool calls. Unit tests (`pytest tests/unit/`) complete in seconds — timeout=60000 is fine.
 
 ## 7. User Direction Supersedes All Rules
 

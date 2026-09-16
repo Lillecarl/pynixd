@@ -1,10 +1,8 @@
 {
   lib,
   mkShell,
-  just,
   pyright,
   ruff,
-  pyupgrade,
   sqlite,
   python3,
   pynixd,
@@ -31,10 +29,8 @@ in
 mkShell {
   packages = [
     python
-    just
     pyright
     ruff
-    pyupgrade
     sqlite
   ];
   shellHook = ''

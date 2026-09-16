@@ -121,5 +121,16 @@ jobs:
           mkdir -p ~/.ssh
           ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N "" -q
 
-      - name: Run checks
-        run: nix develop --impure --file shell.nix --command just precommit
+      # One step per gate, so a red run names what broke without reading a log.
+      - name: Format, lint and types
+        run: nix build --file . checks.format checks.lint checks.types --no-link --print-build-logs
+
+      - name: Tests
+        run: nix develop --impure --file shell.nix --command pytest tests/functional tests/unit
+
+      # Its own process, and not a third path on the line above. `tests/unit`
+      # and this suite interfere: four of these pass alone and fail beside the
+      # pynixd suites. One process for both is how 57 failures hid behind a
+      # green run of 684, and one of them was a shipped regression. Issue #33.
+      - name: Protocol tests
+        run: nix develop --impure --file shell.nix --command pytest nix-daemon-protocol/tests
