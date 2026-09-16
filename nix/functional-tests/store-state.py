@@ -214,9 +214,9 @@ class Noise:
 # the two arms agree, one draw agreed with another.
 #
 # Measured, and not guessed: two runs of the same arm over the `ca` suite of
-# Nix 2.34. The daemon disagreed with itself on the first three, and pynixd on
-# the first four. `main/nix-shell` and `main/structured-attrs` were measured
-# the same way afterwards, with `record-control` twice over those two tests.
+# Nix 2.34. The daemon disagreed with itself on the first two, and pynixd on
+# the first three. `main/nix-shell` and `main/structured-attrs` came later,
+# from `record-control` twice over those two tests, so the daemon alone.
 #
 # Four of these five hold an `-env` derivation, and one variable is why.
 # `NIX_BUILD_TOP` is `.../var/nix/builds/nix-<pid>-<random>`, so it is a new
@@ -278,6 +278,7 @@ def _compare(control_path: Path, candidate_path: Path) -> int:
     same = 0
     different = 0
     missing = 0
+    extra = 0
     noise = 0
     report: list[str] = []
 
@@ -306,19 +307,26 @@ def _compare(control_path: Path, candidate_path: Path) -> int:
         else:
             same += 1
 
+    # An extra store is a different finding from a missing one, and counting
+    # the two in one number said "missing: 8" for a run that missed nothing.
+    # The path count belongs on the line: a store of 0 paths is a state
+    # directory that pynixd created and Nix did not, which is issue #42, and a
+    # store that holds paths is something else.
     for key in sorted(set(candidate) - set(control)):
-        print(f"EXTRA     {key}")
-        missing += 1
+        held = len(candidate[key].get("paths", {}))  # pyright: ignore[reportAttributeAccessIssue]
+        print(f"EXTRA     {key} ({held} path(s))")
+        extra += 1
 
     out = candidate_path.parent / "store-report.txt"
     out.write_text("\n".join(report) + "\n")
     print("=== STORE SUMMARY ===")
     print(f"same:      {same}")
     print(f"different: {different}")
-    print(f"missing:   {missing}")
+    print(f"missing:   {missing}  (a store the daemon left and pynixd did not)")
+    print(f"extra:     {extra}  (a store pynixd left and the daemon did not)")
     print(f"noise:     {noise}  (tests that disagree with themselves; see NOISE in store-state.py)")
     print(f"the differences are at {out}")
-    return 1 if different or missing else 0
+    return 1 if different or missing or extra else 0
 
 
 def main(argv: list[str]) -> int:

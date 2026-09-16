@@ -358,8 +358,14 @@ how a real one goes unnoticed once somebody widens the list.
 **A test in this list cannot be called "same" either**: when it agrees across
 the two arms, that is one draw agreeing with another.
 
-So the summary of this mode reads `same`, `different`, `missing` and
-`noise`, and the first run read 17, 3, 0 and 3.
+So the summary of this mode reads `same`, `different`, `missing`, `extra` and
+`noise`, and the first run over `ca` read 17, 3, 0, 0 and 3.
+
+`missing` and `extra` are different findings and used to share one counter,
+which made the full-suite run say "missing: 8" when it missed nothing. Each
+`EXTRA` line carries the path count of the store, because zero paths is a
+state directory pynixd created and Nix did not -- issue #42 -- and any other
+number is something else.
 
 **`NOISE` is not an exemption table.** An exemption covers a difference
 somebody explained and decided to keep, under one of the two verdicts of

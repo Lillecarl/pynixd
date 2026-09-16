@@ -276,7 +276,7 @@ class TestComparison:
 class TestNoise:
     """A test that disagrees with itself measures nothing, either way.
 
-    `NOISE` names three, each measured by running one arm twice. Such a test
+    `NOISE` names five, each measured by running one arm twice. Such a test
     cannot be called "different", and it cannot be called "same" either: when
     the two arms agree, one draw agreed with another.
     """
@@ -322,7 +322,7 @@ class TestNoise:
         assert "nar_size" in report
 
     def test_a_test_outside_the_list_is_still_a_difference(self, tmp_path, snapshot):
-        """The list names three tests, and covers no other."""
+        """The list names five tests, and covers no other."""
         control = {"ca/not-noisy": snapshot["ca/build"]}
         candidate = copy.deepcopy(control)
         candidate["ca/not-noisy"]["paths"]["ccc-out"]["nar_size"] = 999
@@ -333,3 +333,59 @@ class TestNoise:
         right.write_text(json.dumps(candidate))
 
         assert store_state._compare(left, right) == 1
+
+
+class TestMissingAndExtra:
+    """A store one arm left and the other did not.
+
+    The two directions are different findings. A missing store is a test that
+    ran against the daemon and left nothing under pynixd. An extra store is
+    the other way, and over the full suite every one of the eight held zero
+    paths: pynixd's startup handshake makes Nix construct a store that no
+    client asked for. Issue #42.
+
+    They shared one counter, and the summary then read "missing: 8" for a run
+    that missed nothing.
+    """
+
+    def _write(self, tmp_path: Path, control: dict, candidate: dict) -> tuple[Path, Path]:
+        left = tmp_path / "control.json"
+        right = tmp_path / "candidate.json"
+        left.write_text(json.dumps(control))
+        right.write_text(json.dumps(candidate))
+        return left, right
+
+    def test_a_store_only_the_daemon_left_is_missing(self, tmp_path, snapshot, capsys):
+        left, right = self._write(tmp_path, snapshot, {})
+        code = store_state._compare(left, right)
+        out = capsys.readouterr().out
+
+        assert "MISSING   ca/build" in out
+        assert "missing:   1" in out
+        assert "extra:     0" in out
+        assert code == 1
+
+    def test_a_store_only_pynixd_left_is_extra(self, tmp_path, snapshot, capsys):
+        left, right = self._write(tmp_path, {}, snapshot)
+        code = store_state._compare(left, right)
+        out = capsys.readouterr().out
+
+        assert "EXTRA     ca/build" in out
+        assert "extra:     1" in out
+        assert "missing:   0" in out
+        assert code == 1
+
+    def test_an_extra_store_says_how_many_paths_it_holds(self, tmp_path, snapshot, capsys):
+        """Zero paths is the shape of #42, and any other number is not.
+
+        A line that named the test alone could not tell the two apart.
+        """
+        empty = {"main/nars": {"paths": {}, "derivation_outputs": {}, "realisations": {}}}
+        left, right = self._write(tmp_path, {}, {**snapshot, **empty})
+        store_state._compare(left, right)
+        out = capsys.readouterr().out
+
+        held = len(snapshot["ca/build"]["paths"])
+        assert held > 0
+        assert "EXTRA     main/nars (0 path(s))" in out
+        assert f"EXTRA     ca/build ({held} path(s))" in out
