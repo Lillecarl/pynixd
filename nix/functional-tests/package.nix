@@ -65,6 +65,7 @@ let
       ./make-shim.sh
       ./make-record-shim.sh
       ./compare.py
+      ./store-state.py
     ];
   };
   wirelogInterpreter = "${wirelogPython}/bin/python";
@@ -157,6 +158,13 @@ writeShellApplication {
     STREAMS_CONTROL=$STREAMS/control
     STREAMS_PYNIXD=$STREAMS/pynixd
 
+    # The store of each test, as it stood when the run ended. These have to
+    # outlive `$WORK/tmp` for the same reason the recordings do, and more
+    # urgently: `run.sh` wipes that directory when the *next* run starts, so
+    # the stores of the control run are gone before the candidate run ends.
+    STREAMS_CONTROL_STORE=$STREAMS/control-store.json
+    STREAMS_PYNIXD_STORE=$STREAMS/pynixd-store.json
+
     usage() {
       cat >&2 <<USAGE
     nanopynix-nixft-$NIXFT_VERSION -- Nix's functional tests against a daemon
@@ -175,7 +183,8 @@ writeShellApplication {
       record-control [ARGS]  run against a plain nix daemon, and record
       record-pynixd  [ARGS]  run against pynixd, and record
       diff-streams           state which tests differ on the wire
-      streams [ARGS]         setup, record-control, record-pynixd, diff-streams
+      diff-store             state which tests differ in the store they left
+      streams [ARGS]         setup, record-control, record-pynixd, and both diffs
 
     Each ARGS goes to \`meson test\`, so \`control --suite ca\` runs one suite
     and \`control gc fetchurl\` runs two tests.
@@ -297,10 +306,16 @@ writeShellApplication {
       "$WIRELOG_PYTHON" -m nix_daemon_protocol.wirelog "$@"
     }
 
+    # Read what each test left in its store. `store-state.py` states why it
+    # reads the database and not a client: the stores are dead when this runs.
+    snapshot_stores() {
+      python3 "$SCRIPTS/store-state.py" snapshot "$WORK/tmp/nix-test" "$1"
+    }
+
     # Build the recording shim over one inner package, and run the suite.
     record_run() {
-      local inner=$1 out_root=$2 shim_dir=$3 save_log=$4
-      shift 4
+      local inner=$1 out_root=$2 shim_dir=$3 save_log=$4 store_out=$5
+      shift 5
       rm -rf "''${out_root:?}"
       mkdir -p "$out_root"
       local shim
@@ -309,12 +324,15 @@ writeShellApplication {
         bash "$SCRIPTS/make-record-shim.sh")
       WORK=$WORK NIX_DAEMON_PACKAGE=$shim SAVE_LOG=$save_log \
         bash "$SCRIPTS/run.sh" "$@"
+      # Here, and not in the caller. `do_record_pynixd` ends with a check that
+      # can fail, and the stores must be read before anything can end the run.
+      snapshot_stores "$store_out"
     }
 
     do_record_control() {
       echo "=== control, recorded: a plain nix daemon, $NIXFT_VERSION ==="
       record_run "$NIX_PKG" "$STREAMS_CONTROL" "$WORK/record-shim-control" \
-        "$CONTROL_LOG" "$@"
+        "$CONTROL_LOG" "$STREAMS_CONTROL_STORE" "$@"
     }
 
     do_record_pynixd() {
@@ -322,7 +340,7 @@ writeShellApplication {
       local inner
       inner=$(make_pynixd_shim)
       record_run "$inner" "$STREAMS_PYNIXD" "$WORK/record-shim-pynixd" \
-        "$PYNIXD_LOG" "$@"
+        "$PYNIXD_LOG" "$STREAMS_PYNIXD_STORE" "$@"
       check_pynixd_served
     }
 
@@ -368,6 +386,19 @@ writeShellApplication {
       fi
     }
 
+    # The other half of the stream mode. `diff-streams` reads what the two
+    # daemons said, and this reads what they left. A daemon can answer every
+    # request with the same bytes and still register a path wrongly, so the
+    # two measures are independent and a run reports both.
+    do_diff_store() {
+      if [ ! -e "$STREAMS_CONTROL_STORE" ] || [ ! -e "$STREAMS_PYNIXD_STORE" ]; then
+        echo "diff-store: run \`record-control\` and \`record-pynixd\` first" >&2
+        return 2
+      fi
+      python3 "$SCRIPTS/store-state.py" compare \
+        "$STREAMS_CONTROL_STORE" "$STREAMS_PYNIXD_STORE"
+    }
+
     do_compare() {
       if [ ! -e "$CONTROL_LOG" ] || [ ! -e "$PYNIXD_LOG" ]; then
         echo "compare: run \`control\` and \`pynixd\` first" >&2
@@ -399,11 +430,17 @@ writeShellApplication {
       record-control) do_record_control "$@" ;;
       record-pynixd)  do_record_pynixd "$@" ;;
       diff-streams)   do_diff_streams ;;
+      diff-store)     do_diff_store ;;
       streams)
         do_setup
         do_record_control "$@"
         do_record_pynixd "$@"
-        do_diff_streams
+        # Both comparisons run, and both report. A difference on the wire must
+        # not hide a difference in the store, so neither one ends the run.
+        rc=0
+        do_diff_streams || rc=1
+        do_diff_store || rc=1
+        exit "$rc"
         ;;
       ""|-h|--help|help) usage; exit 1 ;;
       *) echo "nanopynix-nixft: no command named '$command'" >&2; usage; exit 2 ;;

@@ -55,7 +55,8 @@ The stream mode reads the wire instead of the verdict of each script:
 | `record-control` | run against a plain `nix daemon`, and record       |
 | `record-pynixd`  | run against pynixd, and record                     |
 | `diff-streams`   | state which tests differ on the wire               |
-| `streams`        | setup, both records, and the comparison            |
+| `diff-store`     | state which tests differ in the store they left   |
+| `streams`        | setup, both records, and both comparisons         |
 
 ### From a darwin host: `nixft.sh`
 
@@ -283,6 +284,44 @@ The first run of this mode found issue Lillecarl/nanopynix#177: `BuildPaths` ans
 where Nix answers a constant `1`, so a failed build read as a successful one.
 No script could find it, because the client of Nix reads that number and drops
 it.
+
+### The store half: `diff-store`
+
+**A daemon can answer every request with the same bytes and still leave the
+wrong store.** The wire says what the two daemons *said*; this says what they
+*left*. The two measures are independent, so `streams` runs both and neither
+one ends the run.
+
+`store-state.py` reads `$TEST_ROOT/var/nix/db/db.sqlite` of every test, and
+the comparison is over four tables of Nix:
+
+| table | what a difference means |
+| --- | --- |
+| `ValidPaths` | a path that one engine registered and the other did not, or registered with another hash, size, deriver, content address or `ultimate` |
+| `Refs` | a reference that went missing, which a `BuildResult` cannot show |
+| `DerivationOutputs` | the two engines disagree on the output map of a derivation |
+| `Realisations`, `RealisationsRefs` | a CA output realised differently, or realised a different number of times |
+
+It reads the database and not a client, for three reasons. The stores are dead
+when the comparison runs, so a client would have to start 200 more daemons.
+The database sits under both engines, so a defect in a reader above them
+cannot hide a difference. And pynixd writes its own tables into the same file
+-- `PynixdSchema`, `PynixdDerivationStats`, `PynixdPathAccess` -- which are
+the work of the proxy and say nothing about the store.
+
+`registrationTime` and `sigs` are dropped. The first is a wall clock that two
+runs can never agree on, and the second names the key of the store that
+signed. `pynixd/tests/differential/snapshot.py` states the same two reasons.
+
+**The snapshot is taken when each arm ends, and not at the comparison.**
+`run.sh` wipes `$WORK/tmp` when the *next* run starts, so the stores of the
+control run are gone before the candidate run ends. The two snapshots go to
+`$NIXFT_WORK/streams/{control,pynixd}-store.json`, beside the recordings and
+for the same reason.
+
+`pynixd/tests/unit/test_store_state_reader.py` holds the negative controls: a
+reader that answered "the two agree" whatever it was given would pass every
+run and measure nothing.
 
 ### The same mode, without the suite
 
