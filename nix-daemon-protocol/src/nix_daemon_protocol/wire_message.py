@@ -24,7 +24,7 @@ from pydantic_core import PydanticUndefined
 from .context import ReadContext, WriteContext
 from .logging import deserialization_scope
 from .wire_integer import WireUInt64
-from .wire_scalar import WireScalar
+from .wire_scalar import is_wire_scalar
 
 # ── Helpers ──
 
@@ -65,7 +65,7 @@ def _find_reader(ann: type, version: int = 0, features: frozenset[str] = frozens
         non_none = tuple(a for a in args if a is not type(None))
         if len(non_none) == 1:
             inner = _find_reader(non_none[0], version, features)
-            if isinstance(non_none[0], type) and issubclass(non_none[0], WireScalar):
+            if is_wire_scalar(non_none[0]):
                 # Nix writes an absent scalar as the empty string, which
                 # `_write_value` below answers for `None`. Without this the
                 # value comes back as the empty scalar rather than as `None`,
@@ -146,8 +146,9 @@ def _find_reader(ann: type, version: int = 0, features: frozenset[str] = frozens
 
         return _read_string
 
-    # WireScalar — a typed native string with domain helper methods.
-    if isinstance(ann, type) and issubclass(ann, WireScalar):
+    # One Python value, one wire string. Tested by its methods, not its
+    # base class, so a scalar that stops being a `str` still reads here.
+    if is_wire_scalar(ann):
 
         async def _read_scalar(r):
             return ann.from_wire(await r.read_string(str))
@@ -201,7 +202,7 @@ async def _write_value(val: Any, ann: type, ctx: WriteContext) -> None:
     if origin is types.UnionType:
         non_none = tuple(a for a in args if a is not type(None))
         if len(non_none) == 1:
-            if val is None and isinstance(non_none[0], type) and issubclass(non_none[0], WireScalar):
+            if val is None and is_wire_scalar(non_none[0]):
                 # Nix represents an absent scalar as the empty string, and not
                 # as the textual representation of the Python value. This is
                 # the write half of the rule that `_find_reader` reads back,
@@ -238,8 +239,8 @@ async def _write_value(val: Any, ann: type, ctx: WriteContext) -> None:
         ctx.writer.write_string(str(val))
         return None
 
-    # WireScalar — write its canonical string value directly.
-    if isinstance(ann, type) and issubclass(ann, WireScalar):
+    # One Python value, one wire string. See `_find_reader`.
+    if is_wire_scalar(ann):
         ctx.writer.write_string(val.to_wire())
         return None
 

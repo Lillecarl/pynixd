@@ -30,7 +30,7 @@ from .logging import deserialization_scope
 from .wire_integer import WireUInt64
 from .wire_message import WireModel, _wire_fields
 from .wire_ops import WireRequest
-from .wire_scalar import WireScalar
+from .wire_scalar import WireScalarLike, is_wire_scalar
 
 Writer = Callable[[Any, WriteContext], Awaitable[None]]
 Reader = Callable[[ReadContext], Awaitable[Any]]
@@ -71,7 +71,7 @@ class _Enum:
 
 @dataclass(frozen=True)
 class _Scalar:
-    scalar: type[WireScalar]
+    scalar: type[WireScalarLike]
 
 
 @dataclass(frozen=True)
@@ -139,7 +139,7 @@ def _wire_node(annotation: type) -> WireNode:
         return _Primitive("bytes")
     if isinstance(annotation, type) and issubclass(annotation, IntEnum):
         return _Enum(annotation)
-    if isinstance(annotation, type) and issubclass(annotation, WireScalar):
+    if is_wire_scalar(annotation):
         return _Scalar(annotation)
 
     origin = get_origin(annotation)
@@ -207,7 +207,7 @@ class _AstLowerer:
     def __init__(self, version: int, direction: str) -> None:
         self.version = version
         self.direction = direction
-        self.adapters: list[Writer | Reader | type[WireUInt64] | Callable[[str], WireScalar]] = []
+        self.adapters: list[Writer | Reader | type[WireUInt64] | Callable[[str], WireScalarLike]] = []
         self.codecs: list[CompiledCodec] = []
         self.enums: list[type[IntEnum]] = []
         self._counter = 0
@@ -218,7 +218,7 @@ class _AstLowerer:
         self._counter += 1
         return _name(result, ast.Store())
 
-    def _adapter(self, adapter: Writer | Reader | type[WireUInt64] | Callable[[str], WireScalar]) -> ast.Subscript:
+    def _adapter(self, adapter: Writer | Reader | type[WireUInt64] | Callable[[str], WireScalarLike]) -> ast.Subscript:
         index = len(self.adapters)
         self.adapters.append(adapter)
         return _subscript(f"{self.direction}_adapters", index)
