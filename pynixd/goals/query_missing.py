@@ -106,6 +106,10 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
     async def _run(self) -> QueryMissingResponse:
         plan = QueryMissingPlan(will_build=set(), will_substitute=set(), unknown=set())
 
+        # Bound before the block, because an anyio task group may swallow
+        # what its body raised and `__aexit__` is typed as able to. The read
+        # of `walk.warnings` below is then past a name that never got one.
+        walk: _Walk | None = None
         async with anyio.create_task_group() as tg:
             walk = _Walk(plan=plan, task_group=tg)
             for wire_path in self.request.derived_paths:
@@ -125,7 +129,7 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
             download_size=plan.download_size,
             nar_size=plan.nar_size,
         )
-        for text in walk.warnings:
+        for text in walk.warnings if walk is not None else ():
             response.logs.add(LogNext(text=f"warning: {text}\n"))
         return response
 

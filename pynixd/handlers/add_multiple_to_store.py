@@ -57,6 +57,10 @@ class AddMultipleToStoreHandler(Handler):
             # records its result in this list. The group waits for the child
             # on exit, which is what `await resp_task` did before.
             responses: list[AddMultipleToStoreResponse] = []
+            # Same reason as `responses`: an anyio task group is typed as able
+            # to swallow what its body raised, so a name the body binds is not
+            # bound for certain after the block.
+            infos: list[ValidPathInfo] = []
 
             async def _read_response() -> None:
                 responses.append(
@@ -67,7 +71,7 @@ class AddMultipleToStoreHandler(Handler):
 
             async with anyio.create_task_group() as tg:
                 tg.start_soon(_read_response)
-                infos = await self._forward_stream(ctx.proxy.r, conn.w)
+                infos.extend(await self._forward_stream(ctx.proxy.r, conn.w))
 
             if not responses:
                 raise RuntimeError("the AddMultipleToStore reader task recorded no response")
