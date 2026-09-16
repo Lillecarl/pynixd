@@ -26,11 +26,12 @@ from ..wire import SSHNixReader, SSHNixWriter
 from .daemon import DaemonStore
 
 if TYPE_CHECKING:
+    from nix_daemon_protocol.ids import StoreId
+
     from ..psi import (
         CpuUtil,
         MemInfo,
     )
-    from ..serde.ids import StoreId
 
 log = structlog.get_logger(__name__)
 

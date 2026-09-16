@@ -12,8 +12,8 @@ from typing import TYPE_CHECKING
 from .store_path import StorePath
 
 if TYPE_CHECKING:
-    from .serde.aliases import StorePathSet
-    from .serde.valid_path_info import ValidPathInfo
+    from nix_daemon_protocol.aliases import StorePathSet
+    from nix_daemon_protocol.valid_path_info import ValidPathInfo
 
 
 @dataclass
@@ -39,13 +39,14 @@ class NarInfo:
 
     def to_valid_path_info(self) -> ValidPathInfo:
         """Convert to :class:`ValidPathInfo` for ``AddToStoreNar`` wire protocol."""
+        from nix_daemon_protocol.content_address import ContentAddress
+        from nix_daemon_protocol.nar_hash import NARHash
+        from nix_daemon_protocol.path_info import UnkeyedValidPathInfo
+        from nix_daemon_protocol.signature import Signature
+        from nix_daemon_protocol.valid_path_info import ValidPathInfo
+        from nix_daemon_protocol.wire_time import Time
+
         from .serde import StorePath as SerdeStorePath
-        from .serde.content_address import ContentAddress
-        from .serde.nar_hash import NARHash
-        from .serde.path_info import UnkeyedValidPathInfo
-        from .serde.signature import Signature
-        from .serde.valid_path_info import ValidPathInfo
-        from .serde.wire_time import Time
 
         return ValidPathInfo(
             path=SerdeStorePath(path=str(self.store_path)),

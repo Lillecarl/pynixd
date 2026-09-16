@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
+from nix_daemon_protocol.ids import LOCAL_STORE_ID, RequestId, StoreId
 from pynixd.build_queue import BuildQueue
 from pynixd.scheduler import Scheduler
 from pynixd.serde import (
@@ -29,7 +30,6 @@ from pynixd.serde import (
     SetOptionsRequest,
     StorePath as SerdeStorePath,
 )
-from pynixd.serde.ids import LOCAL_STORE_ID, RequestId, StoreId
 
 if TYPE_CHECKING:
     from pynixd.build_queue import QueuedBuild

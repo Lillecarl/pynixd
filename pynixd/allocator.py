@@ -13,9 +13,10 @@ from .system_features import PYNIXD_HANDLED_FEATURES
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
 
+    from nix_daemon_protocol.ids import StoreId
+
     from .build_queue import QueuedBuild
     from .config import PynixdSettings
-    from .serde.ids import StoreId
     from .store import DaemonStore
 
 log = structlog.get_logger(__name__)

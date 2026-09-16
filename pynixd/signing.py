@@ -20,8 +20,8 @@ from .utils import nix32_encode
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from .serde.aliases import NARHash
-    from .serde.valid_path_info import ValidPathInfo
+    from nix_daemon_protocol.aliases import NARHash
+    from nix_daemon_protocol.valid_path_info import ValidPathInfo
 
 
 # Nix32 alphabet (kept for reference; encoding is in utils.py)

@@ -29,9 +29,9 @@ import anyio
 import asyncssh
 import pytest
 
+from nix_daemon_protocol.ids import StoreId
 from pynixd.config import SSHSubprocessStoreSpec
 from pynixd.monitor import ResourceGate
-from pynixd.serde.ids import StoreId
 from pynixd.store.pool import ConnectionPool
 from pynixd.store.ssh import SSHStore, SSHSubprocessStore
 

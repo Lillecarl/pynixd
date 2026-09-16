@@ -11,8 +11,9 @@ from ..serde.context import ReadContext
 from ._base import Handler
 
 if TYPE_CHECKING:
+    from nix_daemon_protocol.wire_ops import WireResponse
+
     from ..serde.context import RequestContext
-    from ..serde.wire_ops import WireResponse
 
 logger = structlog.get_logger(__name__)
 

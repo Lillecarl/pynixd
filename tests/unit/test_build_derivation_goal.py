@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, cast
 import anyio
 import pytest
 
+from nix_daemon_protocol.ids import BuildId, RequestId
 from pynixd.connection import ClientConn
 from pynixd.goals.build_derivation import BuildDerivationGoal
 from pynixd.serde import (
@@ -23,7 +24,6 @@ from pynixd.serde import (
     SetOptionsRequest,
     StorePath as SerdeStorePath,
 )
-from pynixd.serde.ids import BuildId, RequestId
 from pynixd.wire import BytesWriter
 
 if TYPE_CHECKING:

@@ -11,11 +11,11 @@ import base64
 import nacl.bindings
 import pytest
 
+from nix_daemon_protocol.content_address import ContentAddress
+from nix_daemon_protocol.nar_hash import NARHash
+from nix_daemon_protocol.path_info import UnkeyedValidPathInfo
+from nix_daemon_protocol.wire_time import Time
 from pynixd.serde import StorePath as SerdeStorePath, ValidPathInfo
-from pynixd.serde.content_address import ContentAddress
-from pynixd.serde.nar_hash import NARHash
-from pynixd.serde.path_info import UnkeyedValidPathInfo
-from pynixd.serde.wire_time import Time
 from pynixd.signing import SecretKey, fingerprint, get_default_signing_key, sign_path_info
 from pynixd.store_path import StorePath
 from tests.test_features import TestFeatures as F

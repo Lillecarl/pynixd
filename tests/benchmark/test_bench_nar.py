@@ -10,10 +10,10 @@ from typing import TYPE_CHECKING
 import pytest
 import structlog
 
+from nix_daemon_protocol.ids import StoreId
 from pynixd import wire
 from pynixd.config import LocalSocketStoreSpec
 from pynixd.serde import QueryAllValidPathsRequest, QueryPathInfoRequest
-from pynixd.serde.ids import StoreId
 from pynixd.store import DaemonStore, LocalSocketStore
 from pynixd.store_path import StorePath
 from tests.conftest import CLIENT_BIN, rmtree_robust, run_subproc, serde_path
@@ -21,7 +21,7 @@ from tests.conftest import CLIENT_BIN, rmtree_robust, run_subproc, serde_path
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
-    from pynixd.serde.valid_path_info import ValidPathInfo
+    from nix_daemon_protocol.valid_path_info import ValidPathInfo
 
 from pynixd.store.transfer import stream_paths_store_to_store
 

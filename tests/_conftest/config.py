@@ -10,9 +10,9 @@ import pytest
 import structlog
 from environs import env
 
+from nix_daemon_protocol.ids import StoreId
 from pynixd import Server
 from pynixd.config import LocalSocketStoreSpec
-from pynixd.serde.ids import StoreId
 from pynixd.store.local_db import LocalDBStore
 from tests._conftest.constants import (
     _NO_PROBE_FEATURE_MATRIX,

@@ -20,12 +20,13 @@ from typing import TYPE_CHECKING
 import anyio
 import structlog
 
+from nix_daemon_protocol.ids import LOCAL_STORE_ID
+
 from . import metrics
 from .allocator import BuildAllocator, RankedStore, TelemetryStoreRanker
 from .build_queue import BuildQueue, QueuedBuild
 from .exceptions import BackendError, InfrastructureError, ResourceExhaustedError
 from .serde import LogNext, QueryValidPathsRequest, StorePath as SerdeStorePath
-from .serde.ids import LOCAL_STORE_ID
 from .store import DaemonStore, LocalDBStore
 from .store.transfer import stream_paths_store_to_store
 from .store_path import StorePath
@@ -33,6 +34,9 @@ from .substitution_queue import SubstitutionQueue
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+
+    from nix_daemon_protocol.aliases import StorePathSet
+    from nix_daemon_protocol.ids import BuildId, RequestId, StoreId
 
     from .connection import Connection
     from .context import PynixdContext
@@ -42,8 +46,6 @@ if TYPE_CHECKING:
         BuildDerivationResponse,
         SetOptionsRequest,
     )
-    from .serde.aliases import StorePathSet
-    from .serde.ids import BuildId, RequestId, StoreId
 
 log = structlog.get_logger(__name__)
 

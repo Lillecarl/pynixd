@@ -14,6 +14,7 @@ import anyio
 import pytest
 import structlog
 
+from nix_daemon_protocol.ids import BuildId, StoreId
 from pynixd import Server
 from pynixd.build_queue import QueuedBuild
 from pynixd.local_store_db import LocalStoreDB
@@ -37,7 +38,6 @@ from pynixd.serde import (
     UnkeyedValidPathInfo,
     ValidPathInfo,
 )
-from pynixd.serde.ids import BuildId, StoreId
 from pynixd.store import LocalDBStore
 from pynixd.store_layout import StoreLayout
 from pynixd.store_path import StorePath

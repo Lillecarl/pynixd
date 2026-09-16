@@ -14,6 +14,7 @@ import anyio
 import structlog
 
 from nix_daemon_protocol.store_dir import store_prefix
+from nix_daemon_protocol.wire_ops import WireRequest
 
 from .. import wire
 from .._lazy import ssh_errors
@@ -30,7 +31,6 @@ from ..serde import (
     StorePath as SerdeStorePath,
 )
 from ..serde.context import WriteContext
-from ..serde.wire_ops import WireRequest
 from ..store_layout import StoreLayout
 from ..system_features import KNOWN_FEATURES, PROBE_SYSTEMS
 from ..utils import random_nix32_hash
@@ -772,8 +772,9 @@ class DaemonStore(Store):
     async def query_path_infos(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """QueryPathInfos (op 103) — batch path info query, falls back to per-path calls."""
 
+        from nix_daemon_protocol.valid_path_info import ValidPathInfo as SerdeValidPathInfo
+
         from ..serde import QueryPathInfoRequest, QueryPathInfosResponse
-        from ..serde.valid_path_info import ValidPathInfo as SerdeValidPathInfo
 
         if not request.paths:
             return QueryPathInfosResponse(infos=[])
@@ -858,8 +859,9 @@ class DaemonStore(Store):
     ) -> Any:
         """QueryDerivationOutputMapBatch (op 106) — batch output map query, falls back per-drv."""
 
+        from pynixd.daemon_extensions.query_derivation_output_map_batch import DerivationOutputMapBatchResponse
+
         from ..serde import StorePath as SerdeStorePath
-        from ..serde.query_derivation_output_map_batch import DerivationOutputMapBatchResponse
 
         if not request.drv_paths:
             return DerivationOutputMapBatchResponse(outputs={})
@@ -889,9 +891,10 @@ class DaemonStore(Store):
             return response
 
         # Decompose: sign locally with pynixd keys, then call AddSignatures on daemon
-        from ..serde.add_signatures import AddSignaturesRequest
-        from ..serde.sign_path_info import SignPathInfoResponse
-        from ..serde.signature import Signature
+        from nix_daemon_protocol.add_signatures import AddSignaturesRequest
+        from nix_daemon_protocol.signature import Signature
+        from pynixd.daemon_extensions.sign_path_info import SignPathInfoResponse
+
         from ..signing import fingerprint
 
         info = request.info

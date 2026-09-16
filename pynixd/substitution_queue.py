@@ -12,19 +12,21 @@ import anyio
 import structlog
 from cachetools import TTLCache
 
+from nix_daemon_protocol.ids import LOCAL_STORE_ID
+from nix_daemon_protocol.valid_path_info import ValidPathInfo
+
 from .exceptions import OpNotImplementedError
 from .serde import AddToStoreNarRequest, NarFromPathRequest, QueryPathInfoRequest, StorePath as SerdeStorePath
 from .serde.context import ReadContext, WriteContext
-from .serde.ids import LOCAL_STORE_ID
-from .serde.valid_path_info import ValidPathInfo
 from .store import DaemonStore, is_http_binary_cache
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
+    from nix_daemon_protocol.ids import StoreId
+
     from .config import PynixdSettings
     from .context import PynixdContext
-    from .serde.ids import StoreId
     from .store import Store
     from .store.http_binary_cache import HTTPNarInfo
     from .store_path import StorePath

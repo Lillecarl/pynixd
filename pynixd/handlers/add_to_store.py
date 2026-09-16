@@ -6,10 +6,11 @@ from typing import TYPE_CHECKING, ClassVar
 
 import structlog
 
+from nix_daemon_protocol.add_to_store import AddToStoreResponse as SerdeAddToStoreResponse
+from pynixd.daemon_extensions.sign_path_info import SignPathInfoRequest as SerdeSignPathInfoRequest
+
 from ..serde import AddToStoreRequest
-from ..serde.add_to_store import AddToStoreResponse as SerdeAddToStoreResponse
 from ..serde.context import ReadContext, WriteContext
-from ..serde.sign_path_info import SignPathInfoRequest as SerdeSignPathInfoRequest
 from ..wire import forward_framed
 from ._base import Handler
 

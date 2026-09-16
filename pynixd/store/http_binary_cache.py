@@ -17,6 +17,7 @@ import structlog
 import zstandard as zstd
 
 from nix_daemon_protocol.store_dir import store_dir
+from nix_daemon_protocol.valid_path_info import ValidPathInfo
 
 from ..exceptions import OpNotImplementedError
 from ..serde import (
@@ -31,17 +32,17 @@ from ..serde import (
     QueryValidPathsResponse,
     StorePath as SerdeStorePath,
 )
-from ..serde.valid_path_info import ValidPathInfo
 from ..store_path import StorePath
 from .base import Store
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+    from nix_daemon_protocol.wire_ops import WireRequest
+
     from ..config import HTTPBinaryCacheSpec
     from ..connection import ClientConn, Connection
     from ..drv_parser import Derivation
-    from ..serde.wire_ops import WireRequest
 
 log = structlog.get_logger(__name__)
 

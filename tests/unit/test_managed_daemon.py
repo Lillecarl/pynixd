@@ -22,8 +22,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from nix_daemon_protocol.ids import StoreId
 from pynixd.config import LocalSocketStoreSpec
-from pynixd.serde.ids import StoreId
 from pynixd.store.local_daemon import LocalStore
 
 SYSTEM_SOCKET = Path("/nix/var/nix/daemon-socket/socket")

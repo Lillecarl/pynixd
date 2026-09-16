@@ -14,6 +14,8 @@ import os
 import struct
 from typing import TYPE_CHECKING, Protocol
 
+from nix_daemon_protocol.logs import LogMessage, drain as drain_log_stream, read_stream as read_log_stream
+
 from ._lazy import ssh_connection_lost
 from .constants import (
     FEATURE_EXCHANGE_PROTOCOL as FEATURE_EXCHANGE_PROTOCOL,
@@ -29,7 +31,6 @@ from .constants import (
     proto_str as proto_str,
 )
 from .serde.context import ReadContext
-from .serde.logs import LogMessage, drain as drain_log_stream, read_stream as read_log_stream
 
 if TYPE_CHECKING:
     import asyncio

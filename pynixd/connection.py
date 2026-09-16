@@ -31,9 +31,10 @@ if TYPE_CHECKING:
     from pathlib import Path
     from types import TracebackType
 
+    from nix_daemon_protocol.wire_message import WireModel
+    from nix_daemon_protocol.wire_ops import WireRequest
+
     from .serde import SetOptionsRequest
-    from .serde.wire_message import WireModel
-    from .serde.wire_ops import WireRequest
     from .wire import (
         NixReader,
         NixWriter,

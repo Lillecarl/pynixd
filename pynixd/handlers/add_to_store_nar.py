@@ -6,10 +6,11 @@ from typing import TYPE_CHECKING, ClassVar
 
 import structlog
 
-from ..serde.add_to_store_nar import (
+from nix_daemon_protocol.add_to_store_nar import (
     AddToStoreNarRequest,
     AddToStoreNarResponse,
 )
+
 from ..serde.context import ReadContext, WriteContext
 from ..wire import forward_framed
 from ._base import Handler

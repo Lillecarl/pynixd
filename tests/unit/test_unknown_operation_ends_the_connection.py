@@ -16,9 +16,9 @@ from typing import TYPE_CHECKING, cast
 import pytest
 
 from nix_daemon_protocol.operations import STANDARD_OPERATIONS
+from nix_daemon_protocol.wire_ops import WIRE_REGISTRY
 from pynixd.handlers._base import HANDLER_REGISTRY
 from pynixd.proxy import DaemonProxy
-from pynixd.serde.wire_ops import WIRE_REGISTRY
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Any, cast
 import structlog
 
 from nix_daemon_protocol.exceptions import DaemonProtocolError
+from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
+from nix_daemon_protocol.wire_ops import WIRE_REGISTRY, WireResponse
 
 from . import wire
 from ._lazy import ssh_connection_lost
@@ -35,19 +37,18 @@ from .serde import (
 )
 from .serde.auth import Role
 from .serde.context import ReadContext, RequestContext as RequestContext, WriteContext
-from .serde.ids import LOCAL_STORE_ID, StoreId
 from .serde.protocol import OptTrusted, Verbosity
-from .serde.wire_ops import WIRE_REGISTRY, WireResponse
 from .store_layout import StoreLayout
 from .temp_roots import TempRoots
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
+    from nix_daemon_protocol.wire_ops import WireRequest
+
     from .build_queue import BuildQueue
     from .context import PynixdContext
     from .scheduler import Scheduler
-    from .serde.wire_ops import WireRequest
     from .store import LocalStore, Store
     from .wire import NixReader, NixWriter
 

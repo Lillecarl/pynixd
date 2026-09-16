@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, ClassVar
 
+from nix_daemon_protocol.add_perm_root import AddPermRootResponse
+from nix_daemon_protocol.logs import LogNext
+
 from ..serde import AddPermRootRequest
-from ..serde.add_perm_root import AddPermRootResponse
 from ..serde.auth import Role
 from ..serde.context import ReadContext
-from ..serde.logs import LogNext
 from ._base import Handler
 
 if TYPE_CHECKING:

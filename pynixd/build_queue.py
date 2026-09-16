@@ -10,18 +10,20 @@ from typing import TYPE_CHECKING
 import anyio
 import structlog
 
+from nix_daemon_protocol.ids import BuildId, RequestId, StoreId
+
 from . import metrics, wire
 from .serde import BuildDerivationResponse, BuildMode, BuildResult, BuildResultStatus
 from .serde.context import WriteContext
-from .serde.ids import BuildId, RequestId, StoreId
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
+    from nix_daemon_protocol.logs import LogMessage
+
     from .connection import ClientConn
     from .derived_path import DerivedPath
     from .serde import BuildDerivationRequest, Realisation, SetOptionsRequest
-    from .serde.logs import LogMessage
 log = structlog.get_logger(__name__)
 
 MAX_STORE_RETRIES = 3

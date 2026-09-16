@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, cast
 import anyio
 import pytest
 
+from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
 from pynixd.derived_path import DerivedPath
 from pynixd.goals.requests import BuildPathsWithResultsGoal
 from pynixd.goals.results import GoalResult, goal_failure, goal_success
@@ -29,7 +30,6 @@ from pynixd.serde import (
     DerivedPath as SerdeDerivedPath,
     SetOptionsRequest,
 )
-from pynixd.serde.ids import LOCAL_STORE_ID, StoreId
 
 if TYPE_CHECKING:
     from pynixd.connection import ClientConn

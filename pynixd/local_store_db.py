@@ -45,7 +45,7 @@ from .store_path import StorePath
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterable
 
-    from .serde.aliases import StorePathSet
+    from nix_daemon_protocol.aliases import StorePathSet
 
 log = structlog.get_logger(__name__)
 

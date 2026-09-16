@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from nix_daemon_protocol.ids import BuildId, RequestId
 from pynixd.build_queue import BuildQueue
 from pynixd.serde import (
     BasicDerivation,
@@ -15,7 +16,6 @@ from pynixd.serde import (
     SetOptionsRequest,
     StorePath as SerdeStorePath,
 )
-from pynixd.serde.ids import BuildId, RequestId
 from pynixd.store_path import StorePath
 
 

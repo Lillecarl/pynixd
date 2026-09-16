@@ -9,10 +9,10 @@ import asyncssh
 import pytest
 import structlog
 
+from nix_daemon_protocol.ids import StoreId
 from pynixd import Server
 from pynixd.config import SSHSubprocessStoreSpec
 from pynixd.serde import IsValidPathRequest, StorePath as SerdeStorePath
-from pynixd.serde.ids import StoreId
 from pynixd.store import LocalSocketStore, SSHSubprocessStore
 from pynixd.store_path import StorePath
 from tests.conftest import (

@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING, Any
 
 import anyio
 
+from nix_daemon_protocol.ids import LOCAL_STORE_ID, RequestId
+
 from ..exceptions import BackendError
 from ..serde import (
     BuildDerivationRequest,
@@ -19,7 +21,6 @@ from ..serde import (
     QueryMissingRequest,
     QueryMissingResponse,
 )
-from ..serde.ids import LOCAL_STORE_ID, RequestId
 from .build_derivation import BuildDerivationGoal
 from .ensure import EnsureDerivedPathGoal
 from .keys import BuildDerivationKey, EnsureDerivedPathKey, SubstitutePathKey
@@ -31,10 +32,11 @@ from .substitute import SubstitutePathGoal, substituter_fingerprint
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
+    from nix_daemon_protocol.ids import BuildId
+
     from ..connection import ClientConn
     from ..context import PynixdContext
     from ..derived_path import DerivedPath
-    from ..serde.ids import BuildId
     from ..store import Store
     from ..store_path import StorePath
     from .goal import Goal

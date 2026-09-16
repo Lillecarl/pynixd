@@ -15,9 +15,9 @@ from pathlib import Path
 
 import pytest
 
+from nix_daemon_protocol.ids import StoreId
 from pynixd.config import LocalSocketStoreSpec, PynixdSettings
 from pynixd.local_store_db import LocalStoreDB, resolve_db_path
-from pynixd.serde.ids import StoreId
 from pynixd.store.local_daemon import LocalStore
 from pynixd.store.local_db import LocalDBStore
 from pynixd.store_layout import StoreLayout

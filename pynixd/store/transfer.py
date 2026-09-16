@@ -7,18 +7,20 @@ from typing import TYPE_CHECKING
 import anyio
 import structlog
 
+from nix_daemon_protocol.add_multiple_to_store import AddMultipleToStoreRequest, AddMultipleToStoreResponse
+from nix_daemon_protocol.nar_from_path import NarFromPathRequest
+from pynixd.daemon_extensions.query_closure_with_info import QueryClosureWithInfoRequest
+
 from .. import wire
 from ..serde import StorePath as SerdeStorePath
-from ..serde.add_multiple_to_store import AddMultipleToStoreRequest, AddMultipleToStoreResponse
 from ..serde.context import ReadContext, WriteContext
-from ..serde.nar_from_path import NarFromPathRequest
-from ..serde.query_closure_with_info import QueryClosureWithInfoRequest
 from ..store_path import StorePath as RealStorePath
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from ..serde.valid_path_info import ValidPathInfo
+    from nix_daemon_protocol.valid_path_info import ValidPathInfo
+
     from .daemon import DaemonStore
 
 
@@ -66,7 +68,7 @@ async def stream_paths_store_to_store(
         return
 
     # 2. Filter out paths already in destination
-    from ..serde.query_valid_paths import QueryValidPathsRequest as SerdeQueryValidPathsRequest
+    from nix_daemon_protocol.query_valid_paths import QueryValidPathsRequest as SerdeQueryValidPathsRequest
 
     closure_paths = {info.path for info in closure_resp.infos}  # pyright: ignore[reportUnhashable]
     check = await dst.execute(SerdeQueryValidPathsRequest(paths=closure_paths, substitute=0))

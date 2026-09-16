@@ -18,8 +18,8 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
+from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
 from pynixd.scheduler import Scheduler
-from pynixd.serde.ids import LOCAL_STORE_ID, StoreId
 
 if TYPE_CHECKING:
     from pynixd.build_queue import QueuedBuild

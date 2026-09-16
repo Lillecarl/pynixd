@@ -6,6 +6,7 @@ import aiohttp
 import anyio
 import pytest
 
+from nix_daemon_protocol.ids import StoreId
 from pynixd import Server
 from pynixd.serde import (
     BasicDerivation,
@@ -15,7 +16,6 @@ from pynixd.serde import (
     BuildResult,
     BuildResultStatus,
 )
-from pynixd.serde.ids import StoreId
 from pynixd.store_path import StorePath
 from tests.conftest import serde_path
 from tests.functional.mock_store import MockStore

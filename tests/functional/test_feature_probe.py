@@ -11,8 +11,8 @@ from pathlib import Path
 import pytest
 import structlog
 
+from nix_daemon_protocol.ids import StoreId
 from pynixd.config import SSHSubprocessStoreSpec
-from pynixd.serde.ids import StoreId
 from pynixd.store import LocalSocketStore, SSHSubprocessStore
 from tests._conftest.nix_config import for_ca_derivations
 from tests.conftest import (

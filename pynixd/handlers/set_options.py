@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, ClassVar
 
+from nix_daemon_protocol.logs import LogNext
+
 from ..serde import SetOptionsRequest, SetOptionsResponse
 from ..serde.auth import Role
 from ..serde.context import ReadContext
-from ..serde.logs import LogNext
 from ._base import Handler
 
 if TYPE_CHECKING:

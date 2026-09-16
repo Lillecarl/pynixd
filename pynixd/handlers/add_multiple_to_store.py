@@ -8,12 +8,13 @@ from typing import TYPE_CHECKING, ClassVar
 import anyio
 import structlog
 
-from ..serde.add_multiple_to_store import (
+from nix_daemon_protocol.add_multiple_to_store import (
     AddMultipleToStoreRequest,
     AddMultipleToStoreResponse,
 )
+from nix_daemon_protocol.valid_path_info import ValidPathInfo
+
 from ..serde.context import ReadContext, WriteContext
-from ..serde.valid_path_info import ValidPathInfo
 from ..wire import FramedReader, FramedWriter, NixReader, NixWriter
 from ._base import Handler
 

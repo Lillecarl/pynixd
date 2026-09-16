@@ -14,8 +14,9 @@ from pydantic_settings import (
     SettingsConfigDict,
 )
 
+from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
+
 from .nix_config import NixConfig
-from .serde.ids import LOCAL_STORE_ID, StoreId
 from .store_layout import StoreLayout
 
 

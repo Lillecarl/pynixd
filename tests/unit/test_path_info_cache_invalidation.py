@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from nix_daemon_protocol.signature import Signature
 from pynixd.serde import (
     AddSignaturesRequest,
     NARHash,
@@ -36,7 +37,6 @@ from pynixd.serde import (
     UnkeyedValidPathInfo,
     ValidPathInfo,
 )
-from pynixd.serde.signature import Signature
 from pynixd.store.daemon import DaemonStore
 
 if TYPE_CHECKING:
@@ -67,8 +67,8 @@ class RecordingStore(DaemonStore):
     def __init__(self) -> None:
         # `Store.__init__` wants a spec, and every field this test reads comes
         # from the base class rather than the spec, so a minimal one does.
+        from nix_daemon_protocol.ids import StoreId
         from pynixd.config import LocalSocketStoreSpec
-        from pynixd.serde.ids import StoreId
 
         super().__init__(LocalSocketStoreSpec(store_id=StoreId("test")))
         self.sent: list[str] = []

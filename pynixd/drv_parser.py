@@ -49,7 +49,7 @@ from .utils import compress_hash, nix32_encode
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection
 
-    from .serde.aliases import OutputMap, StorePathSet
+    from nix_daemon_protocol.aliases import OutputMap, StorePathSet
 
 
 # Recursive type for input drv nodes in unparse.

@@ -17,8 +17,9 @@ from typing import TYPE_CHECKING
 import asyncssh
 import structlog
 
+from nix_daemon_protocol.ids import StoreId
+
 from .config import ReverseAcceptorSettings, ReverseStoreSpec
-from .serde.ids import StoreId
 from .store.reverse import ReverseStore
 
 if TYPE_CHECKING:

@@ -8,12 +8,12 @@ from __future__ import annotations
 
 import pytest
 
+from nix_daemon_protocol.content_address import ContentAddress
+from nix_daemon_protocol.nar_hash import NARHash
+from nix_daemon_protocol.path_info import UnkeyedValidPathInfo
+from nix_daemon_protocol.signature import Signature
+from nix_daemon_protocol.wire_time import Time
 from pynixd.serde import StorePath, ValidPathInfo
-from pynixd.serde.content_address import ContentAddress
-from pynixd.serde.nar_hash import NARHash
-from pynixd.serde.path_info import UnkeyedValidPathInfo
-from pynixd.serde.signature import Signature
-from pynixd.serde.wire_time import Time
 from tests.test_features import TestFeatures as F
 
 

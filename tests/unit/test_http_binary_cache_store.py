@@ -6,9 +6,9 @@ from typing import TYPE_CHECKING
 
 from aiohttp import web
 
+from nix_daemon_protocol.ids import StoreId
 from pynixd.config import HTTPBinaryCacheSpec
 from pynixd.serde import IsValidPathRequest, QueryPathInfoRequest, QueryValidPathsRequest, StorePath as SerdeStorePath
-from pynixd.serde.ids import StoreId
 from pynixd.store.http_binary_cache import HTTPBinaryCacheStore
 from pynixd.store_path import StorePath
 

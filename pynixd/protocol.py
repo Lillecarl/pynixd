@@ -3,8 +3,9 @@ Nix daemon protocol types and operation codes.
 Protocol versions 1.32+ are supported (negotiated per connection).
 """
 
+from nix_daemon_protocol.wire_ops import WIRE_REGISTRY
+
 from . import serde as serde
-from .serde.wire_ops import WIRE_REGISTRY
 
 
 def get_extension_features() -> set[str]:

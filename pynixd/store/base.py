@@ -17,12 +17,13 @@ from cachetools import TTLCache
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Set as AbstractSet
 
+    from nix_daemon_protocol.ids import StoreId
+    from nix_daemon_protocol.valid_path_info import ValidPathInfo
+    from nix_daemon_protocol.wire_ops import WireRequest
+
     from ..config import StoreSpecBase
     from ..connection import ClientConn, Connection
     from ..drv_parser import Derivation
-    from ..serde.ids import StoreId
-    from ..serde.valid_path_info import ValidPathInfo
-    from ..serde.wire_ops import WireRequest
     from ..signing import SecretKey
     from ..store_path import StorePath
 

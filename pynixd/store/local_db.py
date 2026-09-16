@@ -144,12 +144,12 @@ class LocalDBStore(LocalStore):
 
             return QueryPathInfoResponse(valid=True, info=cached.info)
 
+        from nix_daemon_protocol.content_address import ContentAddress
+        from nix_daemon_protocol.nar_hash import NARHash
+        from nix_daemon_protocol.path_info import UnkeyedValidPathInfo as SerdeUnkeyedValidPathInfo
+        from nix_daemon_protocol.signature import Signature
+        from nix_daemon_protocol.wire_time import Time
         from pynixd.serde import QueryPathInfoResponse, StorePath as SerdeStorePath
-        from pynixd.serde.content_address import ContentAddress
-        from pynixd.serde.nar_hash import NARHash
-        from pynixd.serde.path_info import UnkeyedValidPathInfo as SerdeUnkeyedValidPathInfo
-        from pynixd.serde.signature import Signature
-        from pynixd.serde.wire_time import Time
 
         from .queries import QUERY_PATH_INFO, QUERY_REFERENCES
 
@@ -250,13 +250,13 @@ class LocalDBStore(LocalStore):
 
         import json
 
+        from nix_daemon_protocol.content_address import ContentAddress
+        from nix_daemon_protocol.nar_hash import NARHash
+        from nix_daemon_protocol.path_info import UnkeyedValidPathInfo as SerdeUnkeyedValidPathInfo
+        from nix_daemon_protocol.signature import Signature
+        from nix_daemon_protocol.valid_path_info import ValidPathInfo as SerdeValidPathInfo
+        from nix_daemon_protocol.wire_time import Time
         from pynixd.serde import QueryClosureWithInfoResponse, StorePath as SerdeStorePath
-        from pynixd.serde.content_address import ContentAddress
-        from pynixd.serde.nar_hash import NARHash
-        from pynixd.serde.path_info import UnkeyedValidPathInfo as SerdeUnkeyedValidPathInfo
-        from pynixd.serde.signature import Signature
-        from pynixd.serde.valid_path_info import ValidPathInfo as SerdeValidPathInfo
-        from pynixd.serde.wire_time import Time
 
         from .queries import QUERY_CLOSURE_WITH_INFO
 
@@ -310,13 +310,13 @@ class LocalDBStore(LocalStore):
 
         import json
 
+        from nix_daemon_protocol.content_address import ContentAddress
+        from nix_daemon_protocol.nar_hash import NARHash
+        from nix_daemon_protocol.path_info import UnkeyedValidPathInfo as SerdeUnkeyedValidPathInfo
+        from nix_daemon_protocol.signature import Signature
+        from nix_daemon_protocol.valid_path_info import ValidPathInfo as SerdeValidPathInfo
+        from nix_daemon_protocol.wire_time import Time
         from pynixd.serde import QueryPathInfosResponse, StorePath as SerdeStorePath
-        from pynixd.serde.content_address import ContentAddress
-        from pynixd.serde.nar_hash import NARHash
-        from pynixd.serde.path_info import UnkeyedValidPathInfo as SerdeUnkeyedValidPathInfo
-        from pynixd.serde.signature import Signature
-        from pynixd.serde.valid_path_info import ValidPathInfo as SerdeValidPathInfo
-        from pynixd.serde.wire_time import Time
 
         from .queries import QUERY_PATH_INFOS_BATCH, QUERY_REFERENCES_BATCH
 
@@ -359,14 +359,14 @@ class LocalDBStore(LocalStore):
         """QueryDerivationOutputMapBatch — batch output map via SQLite, fallback to drv parse."""
 
         if not request.drv_paths:
-            from pynixd.serde.query_derivation_output_map_batch import DerivationOutputMapBatchResponse
+            from pynixd.daemon_extensions.query_derivation_output_map_batch import DerivationOutputMapBatchResponse
 
             return DerivationOutputMapBatchResponse(outputs={})
 
         import json
 
+        from pynixd.daemon_extensions.query_derivation_output_map_batch import DerivationOutputMapBatchResponse
         from pynixd.serde import StorePath as SerdeStorePath
-        from pynixd.serde.query_derivation_output_map_batch import DerivationOutputMapBatchResponse
 
         from .queries import QUERY_DERIVATION_OUTPUT_MAP_BATCH
 

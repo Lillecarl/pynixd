@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
+from nix_daemon_protocol.ids import StoreId
 from pynixd import Server
 from pynixd.serde import IsValidPathRequest, StorePath as SerdeStorePath
-from pynixd.serde.ids import StoreId
 from pynixd.store import LocalSocketStore
 from tests.conftest import CLIENT_BIN, make_test_spec, run_subproc
 from tests.test_features import TestFeatures as F

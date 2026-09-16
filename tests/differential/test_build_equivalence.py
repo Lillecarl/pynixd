@@ -31,6 +31,7 @@ import anyio
 import pytest
 from nanopynix_testing.nix_environment import NixTestEnvironment
 
+from nix_daemon_protocol.ids import StoreId
 from pynixd.goals.engine import GoalEngine
 from pynixd.goals.results import result_succeeded
 from pynixd.instance import Server
@@ -39,7 +40,6 @@ from pynixd.serde import (
     BuildPathsWithResultsRequest,
     DerivedPath as SerdeDerivedPath,
 )
-from pynixd.serde.ids import StoreId
 from pynixd.store.local_daemon import LocalStore
 from pynixd.store.local_db import LocalDBStore
 from tests._conftest.config import make_test_spec

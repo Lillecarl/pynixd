@@ -9,19 +9,19 @@ from typing import TYPE_CHECKING, Any, cast
 import anyio
 import pytest
 
+from nix_daemon_protocol.content_address import ContentAddress
+from nix_daemon_protocol.ids import StoreId
+from nix_daemon_protocol.nar_hash import NARHash
+from nix_daemon_protocol.path_info import UnkeyedValidPathInfo
+from nix_daemon_protocol.wire_time import Time
 from pynixd.config import PynixdSettings
 from pynixd.serde import QueryPathInfoResponse
-from pynixd.serde.content_address import ContentAddress
-from pynixd.serde.ids import StoreId
-from pynixd.serde.nar_hash import NARHash
-from pynixd.serde.path_info import UnkeyedValidPathInfo
-from pynixd.serde.wire_time import Time
 from pynixd.store_path import StorePath
 from pynixd.substitution_queue import SubstitutionHealthLog, SubstitutionQueryResult, SubstitutionQueue
 
 if TYPE_CHECKING:
+    from nix_daemon_protocol.wire_ops import WireRequest
     from pynixd.context import PynixdContext
-    from pynixd.serde.wire_ops import WireRequest
 
 
 class FakeSubstituter:

@@ -14,7 +14,8 @@ from .goal import ExecutionGoal
 from .results import GoalResult, goal_failure, goal_success
 
 if TYPE_CHECKING:
-    from ..serde.valid_path_info import ValidPathInfo
+    from nix_daemon_protocol.valid_path_info import ValidPathInfo
+
     from .engine import GoalEngine
 
 log = structlog.get_logger(__name__)

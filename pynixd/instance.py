@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, urlsplit
 import anyio
 import structlog
 
+from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
 from nix_daemon_protocol.store_dir import set_real_store_dir, set_store_dir
 
 from . import _optional, wire
@@ -20,7 +21,6 @@ from .config import ExternalUnixStoreSpec, HTTPBinaryCacheSpec, LocalSocketStore
 from .context import PynixdContext
 from .scheduler import Scheduler
 from .serde import PynixdCollectGarbageRequest
-from .serde.ids import LOCAL_STORE_ID, StoreId
 from .serde.protocol import PynixdGCAction
 from .store import DaemonStore, ExternalUnixStore, LocalDBStore, LocalStore, Store, is_http_binary_cache
 from .store_layout import DEFAULT_STORE_DIR

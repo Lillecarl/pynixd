@@ -11,8 +11,8 @@ import anyio
 import pytest
 import structlog
 
+from nix_daemon_protocol.ids import StoreId
 from pynixd.instance import Server
-from pynixd.serde.ids import StoreId
 from pynixd.store import LocalSocketStore, get_current_system
 from tests.conftest import (
     CLIENT_BIN,

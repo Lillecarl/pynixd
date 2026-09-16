@@ -7,7 +7,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from .serde.ids import LOCAL_STORE_ID, StoreId
+from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
+
 from .store.daemon import DaemonStore
 
 if TYPE_CHECKING:

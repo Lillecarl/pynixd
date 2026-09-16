@@ -33,6 +33,7 @@ from anyio.to_thread import run_sync
 from passlib.apache import HtpasswdFile
 
 from nix_daemon_protocol.store_dir import store_dir
+from nix_daemon_protocol.valid_path_info import ValidPathInfo as SerdeValidPathInfo
 
 from . import metrics
 from .serde import (
@@ -43,7 +44,6 @@ from .serde import (
     StorePath as SerdeStorePath,
 )
 from .serde.context import ReadContext, WriteContext
-from .serde.valid_path_info import ValidPathInfo as SerdeValidPathInfo
 from .store_path import StorePath
 
 if TYPE_CHECKING:

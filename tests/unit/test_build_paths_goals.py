@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
 import anyio
 import pytest
 
+from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
 from pynixd.exceptions import BackendError
 from pynixd.goals.engine import GoalEngine
 from pynixd.goals.goal import Goal
@@ -22,7 +23,6 @@ from pynixd.serde import (
     BuildResultStatus,
     DerivedPath as SerdeDerivedPath,
 )
-from pynixd.serde.ids import LOCAL_STORE_ID, StoreId
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable

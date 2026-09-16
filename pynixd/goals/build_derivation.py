@@ -19,8 +19,9 @@ from .goal import ExecutionGoal
 from .results import GoalResult, goal_failure, result_succeeded
 
 if TYPE_CHECKING:
+    from nix_daemon_protocol.ids import BuildId
+
     from ..connection import ClientConn
-    from ..serde.ids import BuildId
     from .engine import GoalEngine
 
 log = structlog.get_logger(__name__)
