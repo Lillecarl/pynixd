@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import json
+import os
 import time
 from pathlib import Path
 
@@ -33,7 +34,13 @@ def pytest_ignore_collect(collection_path: Path) -> bool:
 def pytest_sessionstart(session: pytest.Session) -> None:
     """Create session-wide log directory and clean up leftovers."""
     run_id = str(int(time.time()))
-    log_dir = Path(f"/tmp/pynixd-logs/{run_id}")
+    # `$PYNIXD_TEST_LOG_DIR` names the root, and `/tmp` is only the
+    # default. A run inside a guest or a build sandbox needs these files
+    # somewhere that outlives it: `/tmp` there is thrown away with the
+    # machine, and a parity failure says nothing but "logs: /tmp/..." --
+    # a path to a file that no longer exists. See tests/guest/run.py.
+    root = Path(os.environ.get("PYNIXD_TEST_LOG_DIR", "/tmp/pynixd-logs"))
+    log_dir = root / run_id
     log_dir.mkdir(parents=True, exist_ok=True)
     session.config.stash[_log_dir_key] = log_dir
 
