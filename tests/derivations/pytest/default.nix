@@ -14,7 +14,11 @@ let
 in
 pkgs.runCommand "pynixd-pytest"
   {
-    requiredSystemFeatures = [ "recursive-nix" ];
+    # No `requiredSystemFeatures = [ "recursive-nix" ]`. Nothing schedules a
+    # build that asks for a feature no machine advertises, so this waited for
+    # a builder that does not exist -- measured, one such build sat for 5h40m
+    # on one second of CPU. recursive-nix belongs to the inner daemon, which
+    # the builder below configures for itself in $NIX_CONF_DIR.
     __noSandbox = true;
     allowSubstitutes = false;
     buildInputs = [
