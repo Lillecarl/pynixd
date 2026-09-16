@@ -44,8 +44,16 @@ class StorePath(WireScalar):
         return self.path.endswith(".drv")
 
     def with_store_prefix(self) -> StorePath:
-        """Return a StorePath that starts with the store directory."""
+        """Return a StorePath that starts with the store directory.
+
+        `name` and not `hash_part()`. This put the hash alone after the store
+        directory, so `StorePath("abc123-foo").with_store_prefix()` gave
+        `/nix/store/abc123` -- a path that names no file, with nothing
+        reporting the loss. Only `pynixd.store_path.StorePath` had callers, so
+        no shipped path took this; merging the two classes (#4) would have
+        made it live.
+        """
         prefix = store_prefix()
         if self.path.startswith(prefix):
             return self
-        return StorePath(f"{prefix}{self.hash_part()}")
+        return StorePath(f"{prefix}{self.name}")

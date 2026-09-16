@@ -107,3 +107,18 @@ def test_a_plain_type_is_not_a_scalar() -> None:
     assert not is_wire_scalar(str)
     assert not is_wire_scalar(int)
     assert not is_wire_scalar(WireModel)
+
+
+def test_with_store_prefix_keeps_the_whole_base_name() -> None:
+    """It used `hash_part()`, so the name after the hash was dropped.
+
+    `StorePath("abc123-foo").with_store_prefix()` gave `/nix/store/abc123`,
+    which names no file. Only `pynixd.store_path.StorePath` had callers, so
+    nothing shipped took it; merging the two classes (#4) would have.
+    """
+    assert str(StorePath("abc123-foo").with_store_prefix()) == "/nix/store/abc123-foo"
+
+
+def test_with_store_prefix_leaves_a_prefixed_path_alone() -> None:
+    already = StorePath("/nix/store/abc123-foo")
+    assert already.with_store_prefix() is already
