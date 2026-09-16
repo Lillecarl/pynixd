@@ -44,7 +44,7 @@ def _env_int(name: str, default: int) -> int:
 
     `environs` did this, and it cost 64 ms of every daemon start for four
     calls across three modules: it pulls `marshmallow` and `python-dotenv`,
-    and nothing here ever called `env.read_env()`. Issue #290.
+    and nothing here ever called `env.read_env()`. Issue #30.
     """
     raw = os.environ.get(name, "")
     return int(raw) if raw else default

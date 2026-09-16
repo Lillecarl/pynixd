@@ -11,12 +11,12 @@ made.
 of pynixd read the derivation alone and drew that conclusion, and each one was
 wrong in its own way:
 
-- `EnsureDerivedPathGoal` built the derivation again. Issue #185.
+- `EnsureDerivedPathGoal` built the derivation again. Issue Lillecarl/nanopynix#185.
 - `QueryMissingPlanGoal` answered `willBuild`, and `nix-daemon` answers an
   empty set, because `misc.cc:217` reads the same map and finds every output
   valid.
 
-Issue #175.
+Issue Lillecarl/nanopynix#175.
 """
 
 from __future__ import annotations
@@ -79,7 +79,7 @@ async def realisations_of(
         # and an output name as two. This code does not know which connection
         # it will take, and it does not have to: `needs_features` and
         # `unless_features` on the fields of the request pick one and drop the
-        # other. Issue #162.
+        # other. Issue #14.
         response = await store.execute(
             QueryRealisationRequest(
                 drv_output=DrvOutput(key),
@@ -89,7 +89,7 @@ async def realisations_of(
         realisation = _the_realisation(response, DrvOutput(key))
         if realisation is None or realisation.out_path is None:
             # One line that says which shape answered and what it held, so a
-            # run states whether the query missed or the codec did. Issue #162.
+            # run states whether the query missed or the codec did. Issue #14.
             log.debug(
                 "realisation_missing",
                 drv_output=key,
@@ -114,7 +114,7 @@ def _the_realisation(response: QueryRealisationResponse, drv_output: DrvOutput) 
     A `Realisation` of pynixd carries its own id, and `_register_realisations`
     reads `id.output_name`, so an answer with an empty id would register the
     output under no name at all. The caller built that id to ask the
-    question, so it is the right one to give back. Issue #162.
+    question, so it is the right one to give back. Issue #14.
     """
     if response.realisation is not None:
         return Realisation(

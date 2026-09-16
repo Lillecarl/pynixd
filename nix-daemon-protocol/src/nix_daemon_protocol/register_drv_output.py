@@ -6,7 +6,7 @@ master branch writes the two in that order, and both halves raise when
 `realisation-with-path-not-hash` is off. Nix 2.34 writes the whole thing as
 one JSON string.
 
-This is the operation that the report on issue #162 saw raise: the backend
+This is the operation that the report on issue #14 saw raise: the backend
 named the feature, pynixd named nothing back, and the codec of the backend
 then refused the request that needed it.
 """

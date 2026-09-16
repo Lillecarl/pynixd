@@ -43,7 +43,7 @@ class StorePath:
         The refusal is the point. This method kept an absolute path of another
         store whole, and ``__str__`` then put the store directory in front of
         it a second time. The result named no file, and nothing reported the
-        mistake. Issue #173 holds the measurement.
+        mistake. Issue Lillecarl/nanopynix#173 holds the measurement.
         """
         prefix = store_prefix()
         if path.startswith(prefix):

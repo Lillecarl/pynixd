@@ -280,7 +280,7 @@ async def test_a_realised_content_addressed_output_is_in_no_bucket() -> None:
     map answers from the realisation when the derivation names no path.
     pynixd read the derivation alone, so a second `nix build` of a
     content-addressed derivation asked for a build. `tests/parity/` recorded
-    the difference. Issue #175.
+    the difference. Issue Lillecarl/nanopynix#175.
     """
     drv_path = "/nix/store/11111111111111111111111111111111-example.drv"
     out_path = "/nix/store/22222222222222222222222222222222-example"
@@ -365,7 +365,7 @@ async def test_a_request_that_names_no_output_plans_nothing(wanted: str) -> None
     pynixd read the empty selection as "no output path is known" and answered
     `willBuild`. The client then asked for the path of that derivation and
     tried to build it, so it sent four operations where it sends three to
-    `nix-daemon`. Issue #203.
+    `nix-daemon`. Issue #26.
     """
     drv_path = "/nix/store/11111111111111111111111111111111-multiple-outputs-a.drv"
     first = "/nix/store/22222222222222222222222222222222-a-first"
@@ -403,7 +403,7 @@ async def test_a_sibling_output_with_no_realisation_does_not_force_a_build() -> 
     **This test stands for a difference of the wire, and not for a line of the
     suite.** `ca:build` passes on both sides. `streams build` records the
     difference: `QueryMissing` of `nix-daemon` names `rootCA.drv` in
-    `will_build` seven times, and pynixd names it in none of them. Issue #203.
+    `will_build` seven times, and pynixd names it in none of them. Issue #26.
 
     `rootCA` of `ca/content-addressed.nix` has the outputs `out`, `dev` and
     `foo`, and `dev` and `foo` are symbolic links to `$out`. A client that

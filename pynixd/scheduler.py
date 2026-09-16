@@ -275,7 +275,7 @@ class Scheduler:
         interchangeable: `_local_slot_is_full` read `override_in_flight` first,
         so one active connection filled the single slot of `-j1` and every
         build waited for a completion that no build was running to give.
-        Issue #196.
+        Issue Lillecarl/nanopynix#196.
         """
         schedulable: list[QueuedBuild] = []
 
@@ -342,7 +342,7 @@ class Scheduler:
             # root that has not answered -- and that root is what runs
             # `let_go`, so a build left pending waits for a release that waits
             # for the build. `cancel_unwanted` holds the measurement.
-            # Issue #286.
+            # Issue Lillecarl/nanopynix#286.
             if self.queue.nobody_wants(build):
                 log.debug("build_wanted_by_nobody", build_id=build.build_id)
                 await self.queue.cancel_unwanted(build.build_id)
@@ -432,7 +432,7 @@ class Scheduler:
         limited the root goals of one request already, and that is not the
         whole fan-out: a root goal realises the input derivations of its
         derivation at the same time, and each one is a separate build. Three
-        builds ran together under `-j1` for that reason. Issue #196.
+        builds ran together under `-j1` for that reason. Issue Lillecarl/nanopynix#196.
 
         **`running_builds` counts builds, and not connections.**
         `DaemonStore.in_flight` answers `pool.active_connections`, which one
@@ -658,7 +658,7 @@ class Scheduler:
         # pynixd wrote one `pynixd: <line>` for each line of the message. A
         # `BuildPathsWithResults` request then carried a log that `nix-daemon`
         # does not send, and the client printed the same text twice. Issue
-        # #188.
+        # Lillecarl/nanopynix#188.
         log.debug(
             "build_executed",
             build_id=build.build_id,
@@ -683,7 +683,7 @@ class Scheduler:
         # Pull outputs from remote store to local store
         ca_output_paths: StorePathSet = set()
         # `realised_outputs` reads whichever of the two wire shapes the answer
-        # carried. Issue #162.
+        # carried. Issue #14.
         realised = resp.result.realised_outputs()
         if realised:
             for realisation in realised.values():
@@ -725,7 +725,7 @@ class Scheduler:
         outputs and on the network, and not on the builder.
 
         A pull that fails also raises, and the statistics of a build that
-        already succeeded went with it. Issue #157 is the larger half of that:
+        already succeeded went with it. Issue #12 is the larger half of that:
         the client is told the build succeeded before the pull runs.
         """
         if not isinstance(self.local_store, LocalDBStore):
@@ -801,7 +801,7 @@ class Scheduler:
         NAR: `UDSRemoteStore::narFromPath` calls `Store::narFromPath`, which
         reads the store directory through `LocalFSStore::getFSAccessor`. So
         `nix copy --from unix://...` of a backend-built path reported "path
-        ... does not exist" and named the local store directory -- issue #160.
+        ... does not exist" and named the local store directory -- issue Lillecarl/nanopynix#160.
 
         `ctx.output_locations` still holds, and it still answers for the
         clients that do use the wire, such as `ssh-ng://` and the HTTP cache.
@@ -810,7 +810,7 @@ class Scheduler:
         One route, over the wire, for every backend. A second route copied the
         store directory and then the SQLite rows of the builder database
         straight into the local one, when both ends were a `LocalDBStore`.
-        Issue #158 removed it, and it was wrong in four ways:
+        Issue Lillecarl/nanopynix#158 removed it, and it was wrong in four ways:
 
         - No NAR was written and no hash was checked, so a truncated copy
           registered as valid.

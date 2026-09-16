@@ -11,7 +11,7 @@ refused.
 Two derivations may depend on an impure one: an impure derivation, and a
 fixed-output one. Neither takes its output path from the hash of its inputs.
 
-Refs #175.
+Refs Lillecarl/nanopynix#175.
 """
 
 from __future__ import annotations
@@ -101,7 +101,7 @@ class FakeLocalStore:
 
 class FakeBuildGoal:
     may_reach_a_root_goal = False
-    """A build goal reaches no root goal, so a caller keeps its place. Issue #207."""
+    """A build goal reaches no root goal, so a caller keeps its place. Issue Lillecarl/nanopynix#207."""
 
     def __init__(self, request: BuildDerivationRequest) -> None:
         self.request = request
@@ -110,7 +110,7 @@ class FakeBuildGoal:
         del client
 
     async def start(self) -> None:
-        """`Goal.start` begins the build and does not wait. Issue #207."""
+        """`Goal.start` begins the build and does not wait. Issue Lillecarl/nanopynix#207."""
 
     async def wait_until_it_reached_the_queue(self) -> None:
         """This fake needs no queue, so the build is on it at once."""
@@ -121,7 +121,7 @@ class FakeBuildGoal:
 
 class FakeChildGoal:
     may_reach_a_root_goal = True
-    """The goal of an input can reach a root goal of the request. Issue #207."""
+    """The goal of an input can reach a root goal of the request. Issue Lillecarl/nanopynix#207."""
 
     def note_a_parent(self) -> None:
         """The goal of an input has a goal that waits for it."""
@@ -137,7 +137,7 @@ class FakeChildGoal:
 
 class FakeSubstituteGoal:
     may_reach_a_root_goal = False
-    """A substitute goal reaches no root goal. Issue #207."""
+    """A substitute goal reaches no root goal. Issue Lillecarl/nanopynix#207."""
 
     async def result(self) -> SubstituteAttempt:
         return SubstituteAttempt(found=False, result=goal_success())

@@ -9,7 +9,7 @@ it writes an output path and a set of signatures when it does. There is no
 Nix 2.34 has no such type on the wire at all: it carries a whole
 `Realisation` as one JSON string, and `realisation.py` beside this holds that
 shape. The two never appear on one connection, because the feature decides
-which one the peers speak. Issue #162.
+which one the peers speak. Issue #14.
 """
 
 from __future__ import annotations

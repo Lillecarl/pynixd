@@ -47,7 +47,7 @@ _DAEMON_START_TIMEOUT = 30.0
 soon as `bind` returns, and `accept` needs the daemon to have finished its own
 start-up. `main:multiple-outputs-substitute-failure` of the Nix functional
 suite failed on the 5 s one while the rest of the suite loaded the machine,
-and the test then reported nothing about its own subject. Issue #199.
+and the test then reported nothing about its own subject. Issue #24.
 
 A daemon that starts in the ordinary way binds and listens in milliseconds, so
 a larger number costs nothing in the case that works. The loop leaves as soon
@@ -188,13 +188,13 @@ class LocalStore(DaemonStore):
         # <root>` gives the store a rootDir, and `local-fs-store.hh:54-70`
         # then builds `<root>/nix/var/nix` and `<root>/nix/var/log/nix` from
         # that root and ignores NIX_DATA_DIR, NIX_LOG_DIR and NIX_STATE_DIR.
-        # Setting the three was how issue #171 started, and the values were
+        # Setting the three was how issue Lillecarl/nanopynix#171 started, and the values were
         # wrong as well: they said `<root>/var/nix`, without the `nix`
         # element that Nix puts there.
         #
         # A relocated store is the other case. It has no root, so the two
         # names below are the only way to say where its store and its state
-        # are. Issue #176.
+        # are. Issue Lillecarl/nanopynix#176.
         env.update(self.layout.daemon_environment())
 
         self.daemon_proc = await asyncio.create_subprocess_exec(

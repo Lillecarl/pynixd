@@ -7,7 +7,7 @@ that passed `--post-build-hook` then saw the hook run for three of the five
 derivations that its request built, because pynixd built the five at the same
 time on several connections.
 
-Issue #192 holds the measurement, and `scratchpad/probe_posthook.py` is the
+Issue Lillecarl/nanopynix#192 holds the measurement, and `scratchpad/probe_posthook.py` is the
 program that made it.
 """
 
@@ -141,7 +141,7 @@ class FakeProxy:
         self.r = BytesReader(body, identifier="test:set-options")
         self.version = VERSION
         # What the client handshake negotiated. Empty is what Nix 2.34 names,
-        # and every codec here has the shape that goes with it. Issue #162.
+        # and every codec here has the shape that goes with it. Issue #14.
         self.standard_features: frozenset[str] = frozenset()
         self.local_store = FakeStore()
         self.client = ClientConn(BytesWriter("client"))
@@ -222,7 +222,7 @@ class FakeEngine:
     def __init__(self, scheduler: FakeScheduler) -> None:
         self.ctx = FakeCtx(scheduler)
         # The engine is the request, as far as the build queue is concerned.
-        # Issue #286.
+        # Issue Lillecarl/nanopynix#286.
         self.request_id = RequestId(1)
         self.held_builds: list[BuildId] = []
 

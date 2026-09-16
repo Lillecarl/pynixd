@@ -59,12 +59,12 @@ class StatsTestStore(LocalDBStore):
 
     @asynccontextmanager
     async def build_conn(self, options: SetOptionsRequest | None = None):  # type: ignore[override]
-        # **The `options` parameter is not decoration.** Issue #192 gave a
+        # **The `options` parameter is not decoration.** Issue Lillecarl/nanopynix#192 gave a
         # build the option set of the client that asked for it, and
         # `Scheduler.execute_build` has passed it ever since. A stand-in
         # without it made the build crash with a `TypeError` that the
         # scheduler reported as "Internal scheduler error", so this test read
-        # an empty stats table and blamed the recording. Issue #289.
+        # an empty stats table and blamed the recording. Issue #29.
         async with self.pool.acquire("build", options):
 
             class MockConn:
@@ -222,11 +222,11 @@ async def test_build_stats_recording(tmp_path: Path) -> None:
         # **The future resolves before the row exists, and that is deliberate.**
         # `Scheduler.execute_build` calls `queue.complete` as soon as the
         # backend answers, and `_collect_outputs` runs after that and holds
-        # `_record_build_stats`. Issue #157 states the same order from the
+        # `_record_build_stats`. Issue #12 states the same order from the
         # other side: the client is told the build succeeded before the pull
         # runs. So the row lands a moment after `await future` returns, and a
         # read at that instant found nothing and read as "the recording is
-        # broken". Issue #289.
+        # broken". Issue #29.
         assert pynixd_local.db is not None
         row = None
         with anyio.fail_after(10):

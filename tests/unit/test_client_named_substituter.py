@@ -2,7 +2,7 @@
 
 `--option substituters file:///...` names a cache that pynixd has no backend
 for. pynixd asks the daemon behind it, which speaks to every kind of
-substituter. Issue #187.
+substituter. Issue Lillecarl/nanopynix#187.
 """
 
 from __future__ import annotations

@@ -103,7 +103,7 @@ class StoreSpecBase(BaseModel):
     A worker of the daemon holds a temporary root for each path that it
     builds or substitutes, and it releases those roots when it exits. A
     pooled connection keeps that worker alive, so a connection in steady
-    use holds every root it ever made. Zero turns the rule off. Issue #174.
+    use holds every root it ever made. Zero turns the rule off. Issue #20.
     """
     scheduleable: bool = True
     priority: float = 1.0
@@ -148,7 +148,7 @@ class LocalSocketStoreSpec(StoreSpecBase):
     moved, rather than one that `--store <root>` moved. The two shapes differ:
     a chroot store keeps `builtins.storeDir` at `/nix/store` and puts the
     files under the root, and a relocated store moves the store path itself.
-    `pynixd/store_layout.py` states both. Issue #176.
+    `pynixd/store_layout.py` states both. Issue Lillecarl/nanopynix#176.
     """
 
     state_dir: Path | None = None
@@ -327,7 +327,7 @@ class SSHSubprocessStoreSpec(StoreSpecBase):
     `nix` asks the same question. A `nix.buildMachines` entry carries
     `publicHostKey`, and `ssh-ng://` verifies against it, so a person moving
     a builder from `nix.buildMachines` to `stores` used to lose the check
-    without being told. Issue #165.
+    without being told. Issue Lillecarl/nanopynix#165.
     """
 
     monitor: bool = True
@@ -350,7 +350,7 @@ class SSHSubprocessStoreSpec(StoreSpecBase):
     failing to reach it.
 
     Set `monitor = false` alongside it. The monitor polls over the same
-    connection, so it would hold the builder awake by itself. Issue #164.
+    connection, so it would hold the builder awake by itself. Issue Lillecarl/nanopynix#164.
     """
 
     def to_store(self, store_id: str) -> SSHSubprocessStore:
@@ -394,7 +394,7 @@ class SSHSocketStoreSpec(StoreSpecBase):
     `nix` asks the same question. A `nix.buildMachines` entry carries
     `publicHostKey`, and `ssh-ng://` verifies against it, so a person moving
     a builder from `nix.buildMachines` to `stores` used to lose the check
-    without being told. Issue #165.
+    without being told. Issue Lillecarl/nanopynix#165.
     """
 
     monitor: bool = True
@@ -417,7 +417,7 @@ class SSHSocketStoreSpec(StoreSpecBase):
     failing to reach it.
 
     Set `monitor = false` alongside it. The monitor polls over the same
-    connection, so it would hold the builder awake by itself. Issue #164.
+    connection, so it would hold the builder awake by itself. Issue Lillecarl/nanopynix#164.
     """
 
     def to_store(self, store_id: str) -> SSHSocketStore:

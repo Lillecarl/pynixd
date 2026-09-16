@@ -4,7 +4,7 @@
 everybody uses. The reason is the temporary roots of the daemon: a worker adds
 a root for each path that it builds or substitutes and releases those roots
 when it exits, so a connection in steady use holds every root it ever made.
-Issue #174.
+Issue #20.
 """
 
 from __future__ import annotations

@@ -58,11 +58,11 @@ def _adopt_store_dir(local_store: Store) -> None:
     `StoreLayout` answers both, so this reads the layout of the store rather
     than a root. It used to set the real directory alone, from the root, and
     a relocated store then got `/nix/store` for the logical one and answered
-    a store path that no client could read. Issue #176.
+    a store path that no client could read. Issue Lillecarl/nanopynix#176.
 
     A store at `/` changes neither, and it is the default.
 
-    Issue #173 holds what one constant did instead: it put `/nix/store/` in
+    Issue Lillecarl/nanopynix#173 holds what one constant did instead: it put `/nix/store/` in
     front of a path that already named another store, and reported nothing.
     """
     layout = getattr(local_store, "layout", None)
@@ -386,7 +386,7 @@ class Server:
             # `LocalStore`, so the shipped `pynixd daemon` always lands here;
             # `Server.__init__` calls `spec.to_store()` and honours
             # `use_db`, so a programmatic server and the test suite do not.
-            # Issue #163 holds the decision.
+            # Issue Lillecarl/nanopynix#163 holds the decision.
             log.warning(
                 "local_store_db_disabled",
                 store_id=str(local_store.store_id),
@@ -424,7 +424,7 @@ class Server:
 
         # **The `enabled` check belongs here as well as in the function.**
         # `start_reverse_acceptor` answers `None` for a set that is off, and
-        # reaching it at all imports `asyncssh`. Issue #290.
+        # reaching it at all imports `asyncssh`. Issue #30.
         if s.reverse_acceptor.enabled:
             self.reverse_acceptor = await _optional.reverse_server.start_reverse_acceptor(
                 server=self,

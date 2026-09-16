@@ -9,7 +9,7 @@ off. One `min_version` cannot express that, because both shapes live at 1.38.
 
 `WireField` therefore takes `needs_features` and `unless_features`, and
 `ReadContext` and `WriteContext` carry the set that the two peers negotiated.
-Issue #162.
+Issue #14.
 """
 
 from __future__ import annotations
@@ -103,7 +103,7 @@ async def test_a_nested_model_reads_the_same_set() -> None:
 
     `_find_reader` builds a fresh `ReadContext` for a nested `WireModel`, and
     that context carried no feature set until this. `BuildResult` holds
-    `builtOutputs`, so the gated field of #162 is a nested one.
+    `builtOutputs`, so the gated field of #14 is a nested one.
     """
 
     class Outer(WireModel):

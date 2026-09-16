@@ -36,7 +36,7 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
 
     `_run_and_let_the_next_goal_enqueue` calls the scheduler and nothing else
     before the build is on the queue. `Goal.may_reach_a_root_goal` gives the
-    rule. Issue #207.
+    rule. Issue Lillecarl/nanopynix#207.
     """
 
     engine: GoalEngine
@@ -50,7 +50,7 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
 
     A root goal of a request waits for this before it lets the next root goal
     enqueue. The end of the build is far later, and the order needs the
-    earlier moment. Issue #207.
+    earlier moment. Issue Lillecarl/nanopynix#207.
     """
 
     def __post_init__(self) -> None:
@@ -78,7 +78,7 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
         """Stop sending the log of this build to *client*.
 
         The build runs on for every other client that asked for it. This says
-        one client stopped listening, and nothing more. Issue #196.
+        one client stopped listening, and nothing more. Issue Lillecarl/nanopynix#196.
         """
         if client is None:
             return
@@ -108,7 +108,7 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
     async def _run(self) -> GoalResult:
         # **Every road out of this method must let the next goal enqueue.**
         # A goal that fails before it reaches the queue would otherwise hold
-        # every root goal after it in the order. Issue #207.
+        # every root goal after it in the order. Issue Lillecarl/nanopynix#207.
         try:
             return await self._run_and_let_the_next_goal_enqueue()
         finally:
@@ -120,7 +120,7 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
 
         # **The build carries the options of the client that asked for it.**
         # A build runs after the request of the client returned, so the
-        # connection that runs it must get the set from the queue. Issue #192.
+        # connection that runs it must get the set from the queue. Issue Lillecarl/nanopynix#192.
         options = next((c.options for c in self._subscribers if c.options is not None), None)
         build_id, future = await self.engine.ctx.scheduler.build_derivation(
             self.request,
@@ -131,10 +131,10 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
         # `from_goal_path` made the queue take a reference for this request,
         # under its own lock. This records which one to give back when the
         # request answers, and it takes no await, so nothing lands between the
-        # two calls and loses the record. Issue #196.
+        # two calls and loses the record. Issue Lillecarl/nanopynix#196.
         self.engine.note_a_held_build(build_id)
         # The build is on the queue now, so the next root goal of the request
-        # may enqueue behind it and the order of the queue decides. Issue #207.
+        # may enqueue behind it and the order of the queue decides. Issue Lillecarl/nanopynix#207.
         self._reached_the_queue.set()
         async with self._lock:
             self._build_id = build_id
@@ -164,7 +164,7 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
                 produced.add(path)
 
         # `realised_outputs` keys by the output name, whichever of the two
-        # wire shapes the answer carried. Issue #162.
+        # wire shapes the answer carried. Issue #14.
         for output_name, realisation in response.result.realised_outputs().items():
             if realisation.out_path:
                 path = StorePath(str(realisation.out_path)).with_store_prefix()
@@ -178,7 +178,7 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
         # cannot appear, so the wait ended at its deadline every time.
         # Measured: 2.0498 s for each failed build of
         # `nix build -f fod-failing.nix -j1 -L`, holding 226 `IsValidPath`
-        # queries and nothing else. Issue #287.
+        # queries and nothing else. Issue Lillecarl/nanopynix#287.
         if result_succeeded(response.result):
             await self._wait_for_local_paths(produced)
 
@@ -196,7 +196,7 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
             # message, and it says the request that wanted this build had
             # already stopped. The mark travels up so the request leaves the
             # place of that root empty rather than reporting a build it chose
-            # not to run. Issue #286.
+            # not to run. Issue Lillecarl/nanopynix#286.
             abandoned=not result_succeeded(response.result) and not response.result.error_msg,
         )
 

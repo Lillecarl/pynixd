@@ -12,7 +12,7 @@ that was missing.
 
 `PynixdPathAccess` is the second half. `registrationTime` says "when this
 path entered the store", and `nix path-info --json` reports it as that, so
-one number cannot answer both questions afterwards. Issue #166.
+one number cannot answer both questions afterwards. Issue Lillecarl/nanopynix#166.
 """
 
 from __future__ import annotations

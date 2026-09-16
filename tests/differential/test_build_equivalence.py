@@ -293,7 +293,7 @@ async def test_a_distributed_build_reassembles_the_same_store(
     copying `ValidPaths` and `Refs` rows out of the builder's SQLite database,
     where a reference to a path that had not arrived yet inserted nothing and
     reported nothing. `Scheduler._pull_outputs` streams the closure over the
-    wire now, so a reference cannot go missing -- issue #158.
+    wire now, so a reference cannot go missing -- issue Lillecarl/nanopynix#158.
     """
     roots = differential_roots
     drv = await _instantiate_both(roots.pynixd, roots.nix, case)
@@ -425,7 +425,7 @@ async def test_a_client_fetches_a_backend_built_output_through_pynixd(
     process copying out of pynixd over its Unix socket. What the client ends up
     with is compared against what Nix produced.
 
-    Issue #160 has two layers, and the first one is fixed. `nix copy`
+    Issue Lillecarl/nanopynix#160 has two layers, and the first one is fixed. `nix copy`
     realises its installables against the source store before it copies, so a
     store path installable arrives as an opaque derived path in a `BuildPaths`
     request -- and `DaemonProxy.execute` hands that to the goal engine before

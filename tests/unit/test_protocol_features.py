@@ -7,7 +7,7 @@ does pynixd speak" is answered by the feature set, and not by the number.
 
 The negotiated set is the intersection of the two sides,
 `intersectFeatures` at `worker-protocol-connection.cc:148`. A peer that names
-a feature gets it only when pynixd names it back. Issue #162.
+a feature gets it only when pynixd names it back. Issue #14.
 """
 
 from __future__ import annotations
@@ -118,7 +118,7 @@ def test_a_client_of_the_master_branch_negotiates_the_build_trace() -> None:
     """A `nix` client of the master branch names both features of `latest`.
 
     pynixd names one of the two back, so a realisation survives the proxy and
-    `delete-dead-specific-referrers` stays off. Issue #162.
+    `delete-dead-specific-referrers` stays off. Issue #14.
 
     **This is what the codecs can do, and not what a proxy will claim.**
     `DaemonProxy.honourable_features` narrows it again to what every store
@@ -157,7 +157,7 @@ def test_one_backend_that_does_not_offer_it_takes_it_away() -> None:
     A client on the new shape and a backend on the old one would need pynixd
     to translate, and one direction of that has no answer on the wire: the
     old `DrvOutput` carries the hash of the derivation and the new one carries
-    the path. Issue #162, step 4.
+    the path. Issue #14, step 4.
     """
     stores = {
         "new": _Store(no_schedule=False, features={FEATURE}),

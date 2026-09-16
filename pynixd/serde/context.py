@@ -34,7 +34,7 @@ class ReadContext(ProtocolReadContext):
     gives `conn.standard_features`. A field with `needs_features` reads the
     set of the side it is going to or coming from, so a context built from
     the wrong one puts the shape of one peer on the wire of the other.
-    Issue #162.
+    Issue #14.
     """
 
     @classmethod

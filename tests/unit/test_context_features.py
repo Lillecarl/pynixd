@@ -10,7 +10,7 @@ handshake gives `proxy.standard_features`; each backend handshake gives
 `conn.standard_features`. A context built from the wrong one puts the shape of
 one peer on the wire of the other, and the wire holds no marker that says
 which shape it carries, so the other side decodes a wrong value rather than
-raising. Issue #162.
+raising. Issue #14.
 
 This is the machine-checkable half of that rule.
 """
@@ -85,7 +85,7 @@ def test_a_context_that_faces_a_peer_names_its_features() -> None:
     assert bare == [], (
         f"these contexts carry no feature set: {sorted(bare)}. Pass "
         f"`features=` from the handshake of the peer they face, or use a "
-        f"`from_request` / `from_conn` / `from_proxy` constructor. Issue #162."
+        f"`from_request` / `from_conn` / `from_proxy` constructor. Issue #14."
     )
 
 
@@ -123,7 +123,7 @@ async def test_a_client_connection_can_send_before_the_handshake() -> None:
 
     The set is empty until `DaemonProxy.handshake` fills it in, which is the
     right answer before a handshake: the two sides have agreed on nothing.
-    Issue #162.
+    Issue #14.
     """
     client = ClientConn(BytesWriter("client"))
 

@@ -8,7 +8,7 @@ no byte.
 
 `RemoteStore::queryRealisationUncached` at `remote-store.cc:526` warns and
 answers `nullptr` when the feature is off, so a client that asks pynixd for a
-build trace gets nothing and no error. That is consequence 2 of issue #162,
+build trace gets nothing and no error. That is consequence 2 of issue #14,
 and it stays true until pynixd claims the feature.
 """
 

@@ -125,7 +125,7 @@ def _whole_path(path: object) -> StorePath:
     Nix, and `UnkeyedRealisation` carries a `StorePath` on the wire, which is
     the whole path. A bare name where the wire wants a whole path makes the
     peer answer "not an absolute path: '...'", and `ca:build-cache` read that.
-    Issue #162.
+    Issue #14.
     """
     text = str(path)
     if not text or text.startswith("/"):
@@ -170,7 +170,7 @@ class BuildResult(WireModel):
     # `realisation-with-path-not-hash` it is a map of output name to
     # `UnkeyedRealisation`; without it, and from 1.28, it is a map of
     # `"<drvHash>!<output>"` to a JSON `Realisation`. Both live at 1.38, so a
-    # version alone cannot separate them. Issue #162.
+    # version alone cannot separate them. Issue #14.
     built_outputs: dict[str, Realisation] | None = WireField(
         default=None,
         min_version=proto(1, 28),
@@ -206,7 +206,7 @@ class BuildResult(WireModel):
         `Realisation` this builds therefore has an empty `id`, and a caller
         that needs the id must build it from the derivation it already holds.
         No caller in this repository does: each one reads `out_path` and the
-        key. Issue #162.
+        key. Issue #14.
         """
         if self.built_outputs_by_name:
             return {
@@ -256,7 +256,7 @@ class BuildResult(WireModel):
         and the feature shape carries no hash anywhere. This keys by the
         output name and leaves the id empty, so the output path survives and
         the id does not. Building the real id means reading the derivation
-        and hashing it, which this model cannot do. Issue #162.
+        and hashing it, which this model cannot do. Issue #14.
         """
         update: dict[str, object] = {}
 

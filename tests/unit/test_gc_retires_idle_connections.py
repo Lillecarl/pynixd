@@ -17,7 +17,7 @@ against pynixd, and the two recordings differed in `paths_deleted` and in
 **The rule narrows the window and does not close it.** A connection in flight
 keeps its roots, another client may take a connection and add a root a moment
 later, and a client that reaches the store with no pynixd in the path never
-asks pynixd anything. Issue #174 holds the answer that closes it: one upstream
+asks pynixd anything. Issue #20 holds the answer that closes it: one upstream
 connection for each client session, closed with the session.
 """
 
@@ -64,7 +64,7 @@ async def test_retire_idle_closes_each_idle_connection():
 
 @pytest.mark.anyio
 async def test_retire_idle_leaves_a_connection_in_flight():
-    """A build holds its paths, and issue #174 accepts that difference."""
+    """A build holds its paths, and issue #20 accepts that difference."""
     pool = make_pool(300.0)
     busy = FakeConnection("busy")
     pool.all_conns.append(busy)
@@ -106,7 +106,7 @@ class FakeProxy:
         self.r = BytesReader(body, identifier="test:gc")
         self.version = VERSION
         # What the client handshake negotiated. Empty is what Nix 2.34 names,
-        # and every codec here has the shape that goes with it. Issue #162.
+        # and every codec here has the shape that goes with it. Issue #14.
         self.standard_features: frozenset[str] = frozenset()
         self.local_store = FakeStore()
         self.errors: list[str] = []

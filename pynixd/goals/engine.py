@@ -42,7 +42,7 @@ if TYPE_CHECKING:
     from .goal import Goal
 
 _REQUEST_IDS = itertools.count(1)
-"""Names the live goal systems apart, for `BuildQueue`. Issue #286."""
+"""Names the live goal systems apart, for `BuildQueue`. Issue Lillecarl/nanopynix#286."""
 
 
 def _build_failure_message(failed: list[Any]) -> str:
@@ -72,7 +72,7 @@ class GoalEngine:
         # for one request, so the engine *is* the request, and the queue needs
         # a name for it to answer "does any live request still want this
         # build". A counter is enough: the queue compares the names of live
-        # engines and nothing else. Issue #286.
+        # engines and nothing else. Issue Lillecarl/nanopynix#286.
         self.request_id = RequestId(next(_REQUEST_IDS))
         self._lock = anyio.Lock()
         self._goals: dict[Any, Goal[Any]] = {}
@@ -80,7 +80,7 @@ class GoalEngine:
         # Every build that a goal of this engine waits for. `proxy.py` makes
         # one engine for one request, so this list is the reference that the
         # request holds on the build queue. `let_go_of_every_build` gives it
-        # back. Issue #196.
+        # back. Issue Lillecarl/nanopynix#196.
         self._held_builds: list[BuildId] = []
 
     def note_a_held_build(self, build_id: BuildId) -> None:
@@ -120,7 +120,7 @@ class GoalEngine:
         # After the loop, and not before it. `nobody_wants` reads this set, so
         # forgetting the request while it still held a build would let a
         # scheduling pass assign a build that this request no longer wants.
-        # Issue #286.
+        # Issue Lillecarl/nanopynix#286.
         await scheduler.queue.forget_request(self.request_id)
 
     async def subscribe_build(self, build_id: BuildId, client: ClientConn) -> bool:
@@ -153,7 +153,7 @@ class GoalEngine:
         # `buildPaths` throws when a build fails. A client of Nix reads the
         # number and drops it, so a value of 0 for success reached no client
         # and no test, and a value of 1 for failure read as success. Issue
-        # #177 holds the measurement that found this.
+        # Lillecarl/nanopynix#177 holds the measurement that found this.
         failed = [item for item in response.results if not result_succeeded(item.result)]
         if failed:
             raise BackendError(_build_failure_message(failed))

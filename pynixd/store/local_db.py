@@ -111,7 +111,7 @@ class LocalDBStore(LocalStore):
         `flush_references` returned at its first line every time, and the
         background task woke every five seconds to do nothing. So
         `registrationTime` was never refreshed, and the LRU garbage collection
-        that the refresh exists for never had an input. Issue #166.
+        that the refresh exists for never had an input. Issue Lillecarl/nanopynix#166.
         """
         self.db.mark_paths(referenced_paths(request))
         return await super().execute(request, client=client, suppress_last=suppress_last, skip_probe=skip_probe)

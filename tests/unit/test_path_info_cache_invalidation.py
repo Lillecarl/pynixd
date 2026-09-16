@@ -19,7 +19,7 @@ fault, so every case of it is a divergence from Nix.
 
 **These tests are here and not only in `tests/functional/`, because no gate
 runs that suite.** `checks.pynixd` builds the unit suite, so an assertion here
-is one CI enforces. Issue #289 holds the other half.
+is one CI enforces. Issue #29 holds the other half.
 """
 
 from __future__ import annotations

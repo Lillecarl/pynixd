@@ -4,12 +4,12 @@
 fails and `keepGoing` is off, and `Worker::run` then leaves its loop.
 `Worker::buildPathsWithResults` at `entry-points.cc:93` skips each goal whose
 `exitCode` is still `ecBusy`, so the answer holds fewer entries than the
-request. Issue #190.
+request. Issue Lillecarl/nanopynix#190.
 
 **`max-jobs` reaches no test here.** It limits the builders of the machine at
 `worker.cc:261`, and pynixd holds them in `Scheduler._local_slot_is_full`.
 The docstring of `_build_slots` states what a second limit on the goals cost.
-Issue #196.
+Issue Lillecarl/nanopynix#196.
 """
 
 from __future__ import annotations
@@ -90,7 +90,7 @@ class FakeEnsureGoal:
 
         The real goal keeps the turn until its build reaches the queue. This
         fake enqueues no build, so it marks the turn decided at once and the
-        goals after it start with no delay. Issue #207.
+        goals after it start with no delay. Issue Lillecarl/nanopynix#207.
         """
         turn.decided()
 
@@ -150,7 +150,7 @@ class FakeEngine:
 
 def _client(options: SetOptionsRequest | None) -> ClientConn:
     # `standard_features` is what the client handshake negotiated. Empty is
-    # what Nix 2.34 names, and `for_the_wire` reads it. Issue #162.
+    # what Nix 2.34 names, and `for_the_wire` reads it. Issue #14.
     return cast("ClientConn", SimpleNamespace(options=options, standard_features=frozenset()))
 
 
@@ -258,7 +258,7 @@ async def test_a_backend_keeps_the_fan_out_that_the_client_asked_to_limit() -> N
     `_build_slots` counted the stores of the context, so a pynixd with a
     backend fanned out and a pynixd without one did not. `worker.cc:261`
     counts the local builders, and `Scheduler._local_slot_is_full` is where
-    pynixd asks the same question. Issue #196.
+    pynixd asks the same question. Issue Lillecarl/nanopynix#196.
     """
     started, answered = await _run(
         failing=set(),
@@ -295,7 +295,7 @@ async def test_a_substituter_changes_no_fan_out() -> None:
     `http-cache.nixos.org` lifted its limit for every request, and almost
     every configuration holds one. No limit here reads a store now, so this
     holds the answer steady against a configuration that once changed it.
-    Issue #196.
+    Issue Lillecarl/nanopynix#196.
     """
     started, answered = await _run(
         failing=set(),
@@ -343,7 +343,7 @@ async def test_the_answer_keeps_the_order_of_the_request() -> None:
 
     `nix build --json` reads the answers by position. `_goal_order` decides
     which goal runs first and writes each result to the place of the request,
-    so the two orders stay apart. Issue #196.
+    so the two orders stay apart. Issue Lillecarl/nanopynix#196.
     """
     paths = [f"/nix/store/{chr(ord('a') + 4 - index) * 32}-x{index}.drv!out" for index in (4, 3, 2, 1)]
     started, answered = await _run(

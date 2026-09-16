@@ -21,7 +21,7 @@ The comparison reads `STDERR_NEXT` alone. The activities -- `STDERR_START_ACTIVI
 `STDERR_RESULT` and the rest -- carry the progress bar of `nix build`, and the
 decoder drops them. That is the gap that remains.
 
-Issue #175.
+Issue Lillecarl/nanopynix#175.
 """
 
 from __future__ import annotations
@@ -124,7 +124,7 @@ EXEMPT_FIELDS: frozenset[str] = frozenset(item.field for item in EXEMPTIONS)
 # A field of one named request. `request.<Operation>.<field>` is the prefix
 # that `EXEMPTIONS` writes, and the operation is a part of the key on purpose:
 # a value that belongs to the run rather than to the answer belongs to one
-# operation, and the same field name in another one is a finding. Issue #202.
+# operation, and the same field name in another one is a finding. Issue Lillecarl/nanopynix#202.
 REQUEST_PREFIX = "request."
 EXEMPT_REQUEST_FIELDS: frozenset[str] = frozenset(
     item.field.removeprefix(REQUEST_PREFIX) for item in EXEMPTIONS if item.field.startswith(REQUEST_PREFIX)
@@ -231,7 +231,7 @@ def _compare_request(where: str, control: Operation, candidate: Operation) -> li
     and a request whose only difference is the exempt field is not.
 
     A request that no model covers falls back to the raw bytes, which is what
-    the comparison did for every request before issue #202.
+    the comparison did for every request before issue Lillecarl/nanopynix#202.
     """
     one_fields = control.request_fields
     two_fields = candidate.request_fields
@@ -342,7 +342,7 @@ def _pairs(control: list[Operation], candidate: list[Operation]) -> Iterator[tup
 
     **A comparison by index reads one divergence as many.** One operation more
     on either side puts every operation after it against the wrong
-    counterpart. Issue #203 holds a divergence that pynixd keeps, and the
+    counterpart. Issue #26 holds a divergence that pynixd keeps, and the
     client of pynixd then sends no `QueryPathInfo` for one derivation. Every
     later `QueryPathInfo` of that connection then differed in four fields,
     because the two sides were reading two paths. The number also moved with

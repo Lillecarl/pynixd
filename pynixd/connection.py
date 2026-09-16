@@ -70,7 +70,7 @@ class ClientConn:
 
         **This is the set of the client, and not of a backend.** The two
         differ, and a message written with the wrong one carries a shape the
-        reader does not expect. Issue #162.
+        reader does not expect. Issue #14.
         """
         self.options: SetOptionsRequest | None = None
         """The options that this client set for its session.
@@ -79,7 +79,7 @@ class ClientConn:
         client reaches every operation of that client. pynixd holds a pool,
         and it gave the option to whichever connection was free. The client
         then set `--post-build-hook` and the hook ran for three of the five
-        derivations that the request built. Issue #192.
+        derivations that the request built. Issue Lillecarl/nanopynix#192.
 
         `Connection.call` reads this and applies the set to the connection it
         holds, when that connection carries another set.
@@ -152,7 +152,7 @@ class Connection:
         pooled connection keeps the worker alive, so the roots of one client
         can reach the next one. `ConnectionPool.max_lifetime` retires a
         connection that has lived long enough, which retires those roots with
-        it. Issue #174.
+        it. Issue #20.
         """
         self.applied_options: SetOptionsRequest | None = None
         """The option set that this connection carries now.
@@ -160,7 +160,7 @@ class Connection:
         A daemon keeps the options of a `SetOptions` request until the next
         one, so a pooled connection carries the options of whichever client
         used it last. `apply_options` reads this field, and it sends nothing
-        when the set does not change. Issue #192.
+        when the set does not change. Issue Lillecarl/nanopynix#192.
         """
 
     async def __aenter__(self) -> Connection:
@@ -203,7 +203,7 @@ class Connection:
         connection that is about to do the work.
 
         It sends nothing when the connection carries the set already, so the
-        common case costs one comparison. Issue #192.
+        common case costs one comparison. Issue Lillecarl/nanopynix#192.
         """
         if options is None or options == self.applied_options:
             return

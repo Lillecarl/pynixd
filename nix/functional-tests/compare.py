@@ -15,7 +15,7 @@ on, so the last line can be half written. This script drops a line it cannot
 read, and says how many it dropped.
 
 It needs the standard library alone, so it runs under the Python of any
-machine that has Nix. Issue #172 holds the work this belongs to.
+machine that has Nix. Issue #19 holds the work this belongs to.
 """
 
 from __future__ import annotations

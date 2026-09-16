@@ -3,7 +3,7 @@
 `pynixd daemon` over a Unix socket uses no SSH and no HTTP binary cache.
 Loading either costs 0.28 s of the 1.28 s that a daemon start takes, and Nix's
 functional suite restarts the daemon 344 times, so the two imports were about
-96 s of a gate. Issue #290 holds the measurement.
+96 s of a gate. Issue #30 holds the measurement.
 
 **A class that nothing imported has no instance, and raises nothing.** That is
 what makes the answer here exact rather than a guess. This module reads

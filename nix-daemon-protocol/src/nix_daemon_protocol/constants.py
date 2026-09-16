@@ -108,7 +108,7 @@ SUPPORTED_STANDARD_FEATURES: Final[frozenset[str]] = frozenset({FEATURE_REALISAT
 
 A name belongs here when the codec that the name gates is in this package,
 and not before: a peer that reads the name then sends the new shape, and a
-codec that cannot read it drops the connection. Issue #162.
+codec that cannot read it drops the connection. Issue #14.
 
 **This says what the codecs can do, and not what a proxy may claim.** pynixd
 speaks to a backend as well as to a client, and it honours a feature only

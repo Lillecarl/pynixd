@@ -13,7 +13,7 @@ with a derivation path and an output name.
 These tests pin the second shape, byte for byte. Nothing writes it yet:
 `SUPPORTED_STANDARD_FEATURES` is empty, so pynixd never claims the feature and
 never meets a peer that sends it. The codec lands first and the claim lands
-after, because a claim with no codec drops the connection. Issue #162.
+after, because a claim with no codec drops the connection. Issue #14.
 """
 
 from __future__ import annotations
@@ -104,7 +104,7 @@ async def test_an_unkeyed_realisation_carries_no_dependent_realisations() -> Non
 
 @pytest.mark.anyio
 async def test_a_keyed_drv_output_names_a_derivation_and_not_a_hash() -> None:
-    """The report on #162 saw `sha256:0000…0000!out`, which this shape cannot say."""
+    """The report on #14 saw `sha256:0000…0000!out`, which this shape cannot say."""
     value = KeyedDrvOutput(drv_path=StorePath(DRV_PATH), output_name="out")
 
     _, read = await _round_trip(value, KeyedDrvOutput)

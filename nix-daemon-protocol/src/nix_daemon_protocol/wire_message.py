@@ -70,7 +70,7 @@ def _find_reader(ann: type, version: int = 0, features: frozenset[str] = frozens
                 # `_write_value` below answers for `None`. Without this the
                 # value comes back as the empty scalar rather than as `None`,
                 # so a caller that tests `is None` never takes that branch.
-                # The bytes do not move; only the Python value does. Issue #194.
+                # The bytes do not move; only the Python value does. Issue Lillecarl/nanopynix#194.
                 async def _read_optional_scalar(r: Any) -> Any:
                     value = await inner(r)
                     return None if value == "" else value
@@ -206,7 +206,7 @@ async def _write_value(val: Any, ann: type, ctx: WriteContext) -> None:
                 # as the textual representation of the Python value. This is
                 # the write half of the rule that `_find_reader` reads back,
                 # and it holds for every scalar rather than for `StorePath`
-                # alone. Issue #194.
+                # alone. Issue Lillecarl/nanopynix#194.
                 ctx.writer.write_string("")
                 return None
             return await _write_value(val, non_none[0], ctx)
@@ -311,7 +311,7 @@ def WireField(  # noqa: N802
     `needs_features` keeps the field when the negotiated set holds **every**
     name. `unless_features` keeps it when the set holds **none** of them. A
     field with neither is there whatever the peers agreed, which is every
-    field of the Nix 2.34 shape. Issue #162.
+    field of the Nix 2.34 shape. Issue #14.
     """
     if default is not PydanticUndefined:
         kwargs.setdefault("default", default)

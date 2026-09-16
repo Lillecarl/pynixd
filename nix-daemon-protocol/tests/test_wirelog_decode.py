@@ -3,7 +3,7 @@
 These tests build a recording from the codecs of this package, so they check
 the framing and the way the decoder divides the two directions. The proof
 against a real daemon is the run of the functional tests, which is a separate
-gate. Issue #175.
+gate. Issue Lillecarl/nanopynix#175.
 """
 
 from __future__ import annotations
@@ -339,13 +339,13 @@ async def test_an_operation_that_one_side_skipped_does_not_shift_the_rest(workdi
     An operation that one side alone sends is one difference. Every operation
     after it stays comparable, and the operations that agree report nothing.
 
-    Issue #203 holds the divergence that found this. pynixd leaves one
+    Issue #26 holds the divergence that found this. pynixd leaves one
     derivation out of `willBuild`, so its client sends no `QueryPathInfo` for
     that derivation, and every later `QueryPathInfo` of the connection then
     reported four fields that differ, because the two sides were reading two
     paths. The count moved with the store directory as well, which decides the
     order of a `StorePath` set and so decides where the shift starts. Issue
-    #202.
+    Lillecarl/nanopynix#202.
     """
     control = await decode(
         await build_ops(
@@ -493,7 +493,7 @@ async def test_the_exemptions_are_not_part_of_each_report(workdir):
 
 
 # `nix build` writes its `result` link under a directory that carries the pid
-# of the client, so these two stand for two runs of one command. Issue #202.
+# of the client, so these two stand for two runs of one command. Issue Lillecarl/nanopynix#202.
 RESULT_ONE = StorePath("/tmp/nix-build-1606846-2001787725/result")
 RESULT_TWO = StorePath("/tmp/nix-build-1610114-3168049170/result")
 
@@ -505,7 +505,7 @@ async def test_the_build_directory_of_the_client_is_exempt_in_add_indirect_root(
     Two runs are two processes, so this differs in every pair and says nothing
     about pynixd. The bytes cannot answer it: a string on the wire carries an
     8-byte length, and two pids of different width give two lengths, so the
-    comparison reads the decoded field. Issue #202.
+    comparison reads the decoded field. Issue Lillecarl/nanopynix#202.
     """
     control = await decode(
         await build_ops(workdir / "a.wire", [(AddIndirectRootRequest(path=RESULT_ONE), valid(True))])

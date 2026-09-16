@@ -3,7 +3,7 @@
 Each one loads `asyncssh` or `aiohttp`, and `Server.start` runs it only when
 its port or its `enabled` flag is set. A daemon that serves a Unix socket
 starts none of them, and it used to load all four anyway: 232 modules and
-0.28 s of every start. Issue #290 holds the measurement.
+0.28 s of every start. Issue #30 holds the measurement.
 
 **Read the module through this one, and not with an import.** `instance.py`
 does `from . import _optional` at the top, and

@@ -13,7 +13,7 @@ file means nothing to the collector, which uses the name for a log line only,
 so pynixd is free to write one file for each client session.
 
 **pynixd forwarded `AddTempRoot` to the upstream daemon, and that is the
-defect of issue #174.** The root then belonged to the upstream connection,
+defect of issue #20.** The root then belonged to the upstream connection,
 and pynixd pools those connections between clients. So the root of a client
 outlived that client, and a discarded connection dropped the root of a client
 that still ran. A root that pynixd writes itself needs no connection at all,

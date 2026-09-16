@@ -4,7 +4,7 @@
 `http_binary_cache` pulls `aiohttp`, and `ssh` pulls `asyncssh`, which
 `reverse` pulls in turn. A daemon that serves a Unix socket uses none of the
 three, and this file used to load all of them for every start: 232 modules and
-0.28 s. Issue #290 holds the measurement.
+0.28 s. Issue #30 holds the measurement.
 
 `__getattr__` (PEP 562) resolves each name on the first read, so
 `from pynixd.store import SSHSocketStore` still works and pays for `asyncssh`
@@ -100,7 +100,7 @@ def is_http_binary_cache(store: Store) -> TypeGuard[HTTPBinaryCacheStore]:
     answer always finds the module already there.
 
     This exists so that an `isinstance` check over a set of stores does not
-    load `aiohttp` for a configuration that holds no cache. Issue #290.
+    load `aiohttp` for a configuration that holds no cache. Issue #30.
     """
     module = sys.modules.get(f"{__name__}.http_binary_cache")
     if module is None:

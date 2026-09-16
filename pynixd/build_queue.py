@@ -106,7 +106,7 @@ class QueuedBuild:
         **A build is shared between the clients that ask for it, and each one
         has its own options.** The first client to ask decides, and a second
         client with another set gets the set of the first. Nix builds for one
-        client at a time and has no answer to copy. Issue #192.
+        client at a time and has no answer to copy. Issue Lillecarl/nanopynix#192.
         """
         self.future = future
         self.expected_duration = expected_duration
@@ -146,7 +146,7 @@ class QueuedBuild:
         # holds one reference, whatever number of its goals want the same
         # derivation, because `GoalEngine` lives for one request and lets go
         # of every build it holds when that request answers. `BuildQueue.let_go`
-        # states what the count decides. Issue #196.
+        # states what the count decides. Issue Lillecarl/nanopynix#196.
         self.goal_holders = 0
 
         # Every goal system that ever wanted this build, by request. This is
@@ -159,7 +159,7 @@ class QueuedBuild:
         # request, so a release cannot say which entry to drop, and a stale
         # entry is the safe direction: `BuildQueue.nobody_wants` asks whether
         # every entry gave up, and an entry that is still there and did not
-        # give up makes the answer False, which runs the build. Issue #286.
+        # give up makes the answer False, which runs the build. Issue Lillecarl/nanopynix#286.
         self.goal_request_ids: set[RequestId] = set()
 
         # Guards add_subscriber replay vs post_log_bytes fanout so that a
@@ -258,7 +258,7 @@ class QueuedBuild:
         test kills the daemon while it runs, and the exception left
         `Scheduler.execute_build` through its own error path. Nothing
         retrieves the exception of that task, so asyncio reported it as one
-        that was never retrieved and no client learned anything. Issue #196.
+        that was never retrieved and no client learned anything. Issue Lillecarl/nanopynix#196.
         """
         try:
             await sub.send_raw(raw)
@@ -304,7 +304,7 @@ class QueuedBuild:
         twice, and it did not stop the replay. Each further subscription sent
         the whole log again, so the client printed the error of one build two
         or three times. `build.sh:167` of the functional suite counts the
-        `error:` lines. Issue #196.
+        `error:` lines. Issue Lillecarl/nanopynix#196.
         """
         async with self._sub_lock:
             if cancel_on_unsubscribe:
@@ -374,7 +374,7 @@ class BuildQueue:
         # Each goal system that met a failed build and did not set
         # `keep-going`. `complete` and `fail` write it, under this lock and
         # before `Scheduler.trigger`, which is what lets `_assign_to_stores`
-        # read a fact rather than win a race. Issue #286.
+        # read a fact rather than win a race. Issue Lillecarl/nanopynix#286.
         self._given_up: set[RequestId] = set()
         self.lock: anyio.Lock = anyio.Lock()
 
@@ -556,7 +556,7 @@ class BuildQueue:
         directory of the fifo, so no reader can ever appear. Nix answers in
         about two seconds and kills that builder. pynixd left it running, a
         second request deduplicated onto it, and the run reached the 300 s
-        timeout of the test. Issue #196.
+        timeout of the test. Issue Lillecarl/nanopynix#196.
         """
         async with self.lock:
             build = self._by_id.get(build_id)
@@ -581,7 +581,7 @@ class BuildQueue:
         arrived. That decides which build runs first whenever `max-jobs` makes
         the slots scarce, and the answer of a request then depends on the
         order a client happened to ask. `_goal_order` in `goals/requests.py`
-        takes the same decision one level up. Issue #196.
+        takes the same decision one level up. Issue Lillecarl/nanopynix#196.
 
         The id stays as the last part of the key, so two derivations of one
         name keep a stable order.
@@ -664,7 +664,7 @@ class BuildQueue:
         *decision* instead, and it takes it here, where the failure first
         becomes a fact. `Scheduler.execute_build` calls `complete` and then
         `trigger`, so this runs before the scheduling pass that would give the
-        freed slot to the next build. Issue #286.
+        freed slot to the next build. Issue Lillecarl/nanopynix#286.
 
         The option set is the one of the client that made the build, which is
         the same set `_local_slot_is_full` reads. A build with no options is
@@ -713,7 +713,7 @@ class BuildQueue:
         nothing left to do. Nix reaches the same end differently --
         `Goal::amDone` at `goal.cc:242` drops every waitee that is left when
         one fails and `keep-going` is off, so those derivations are not built
-        either. Issue #286.
+        either. Issue Lillecarl/nanopynix#286.
         """
         async with self.lock:
             build = self._by_id.get(build_id)

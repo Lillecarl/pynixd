@@ -98,11 +98,11 @@ There are three verdicts, and two markers:
 
 | Verdict | Marker |
 | --- | --- |
-| Nix is wrong, and pynixd copies it | `NIX-DEFECT (#191):` |
-| Nix is wrong, and pynixd answers correctly | `NIX-DEFECT (#191):` |
-| Nix is right, and pynixd answers differently | `NIX-DEVIATION (#206):` |
+| Nix is wrong, and pynixd copies it | `NIX-DEFECT (#23):` |
+| Nix is wrong, and pynixd answers correctly | `NIX-DEFECT (#23):` |
+| Nix is right, and pynixd answers differently | `NIX-DEVIATION (#27):` |
 
-### `NIX-DEFECT (#191):`, for a defect of Nix
+### `NIX-DEFECT (#23):`, for a defect of Nix
 
 Write the tag exactly, and give four parts:
 
@@ -114,7 +114,7 @@ Write the tag exactly, and give four parts:
 Report the defect on the fork, which is `Lillecarl/nix`, and name that report
 in part 4. Do not report it upstream.
 
-### `NIX-DEVIATION (#206):`, for a decision of pynixd
+### `NIX-DEVIATION (#27):`, for a decision of pynixd
 
 Nix is right here, or neither answer is wrong, and pynixd answers differently
 on purpose. Write the tag exactly, and give four parts:
@@ -143,17 +143,17 @@ Four things make such a divergence complete:
 **Scope the exemption so that it cannot hide a difference that nobody
 explained.** `EXEMPTIONS` keys on the name of a field today, and a whole field
 is too wide when only some of its differences have a reason. An exemption on
-`response.will_build` covers the seven differences of issue #203, and it
+`response.will_build` covers the seven differences of issue #26, and it
 covers the eighth one as well, which has another cause. When a whole field is
 the only key available, that is a fault of the comparison, and it is not a
-reason to widen the exemption. Issue #202 holds that work.
+reason to widen the exemption. Issue Lillecarl/nanopynix#202 holds that work.
 
 **Do not add a "Nix-correct mode" and a "correct-result mode".** A mode splits
 every behaviour in two, and the parity run can prove only one of them. A flag
 earns its place when one entry of a list has a measured cost, and the flag is
 then scoped to that entry.
 
-Issue #191 and issue #206 hold the two lists.
+Issue #23 and issue #27 hold the two lists.
 `tests/meta/test_nix_defect_markers.py` finds every marker and reads the two
 parts that a machine can read: the tag names its tracking issue, and the
 paragraph names a file of Nix.
@@ -220,8 +220,8 @@ The functional suite proves the bytes of a run. A test of this kind proves the
 decision that makes those bytes, and it runs in one second.
 
 **A divergence that pynixd keeps needs a marker as well.** Section 5b gives
-the two, and the verdict picks one: `NIX-DEFECT (#191):` when Nix is wrong,
-and `NIX-DEVIATION (#206):` when Nix is not. Do not write `NIX-DEFECT` for a
+the two, and the verdict picks one: `NIX-DEFECT (#23):` when Nix is wrong,
+and `NIX-DEVIATION (#27):` when Nix is not. Do not write `NIX-DEFECT` for a
 place where Nix is right, because the tag then states a defect that nobody
 found.
 

@@ -1106,7 +1106,7 @@ async def read_drv_file(drv_store_path: StorePath | str) -> Derivation | None:
     #
     # `real_store_dir` is where the files are. `store_dir` is what a store path
     # says. A chroot store makes the two differ, and only the first one names a
-    # file. Issue #173.
+    # file. Issue Lillecarl/nanopynix#173.
     path = anyio.Path(on_disk(str(drv_store_path)))
     if not await path.exists():
         return None

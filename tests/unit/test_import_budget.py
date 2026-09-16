@@ -1,6 +1,6 @@
 """``pynixd daemon`` must load neither ``asyncssh`` nor ``aiohttp``, and stay under a budget.
 
-Issue #290 measured why this matters. Nix's functional suite restarts the
+Issue #30 measured why this matters. Nix's functional suite restarts the
 daemon for every configuration change, **344 times over the suite**, and each
 start took 1.28 s where ``nix daemon`` takes 0.2 s. Of that 1.28 s only 0.20 s
 is work: spawn the upstream daemon, connect, bind the socket. The rest is
@@ -46,7 +46,7 @@ from pynixd.config import HTTPBinaryCacheSpec
 
 #: The most modules ``import pynixd.instance`` may load in a clean interpreter.
 #:
-#: Measured at 703 when issue #290 made both stacks lazy and dropped
+#: Measured at 703 when issue #30 made both stacks lazy and dropped
 #: `environs`, down from 925.
 #: The headroom is small on purpose. A legitimate new dependency raises this
 #: number in the commit that adds it, and a reader sees the cost. Raise it with
@@ -105,7 +105,7 @@ def test_the_daemon_loads_no_ssh_and_no_http_stack() -> None:
 
     assert result["present"] == [], (
         f"a fresh `import pynixd.instance` loaded {result['present']}. "
-        "Something reached one of those at module level again; issue #290 says why that costs 0.28 s "
+        "Something reached one of those at module level again; issue #30 says why that costs 0.28 s "
         "of every daemon start."
     )
 

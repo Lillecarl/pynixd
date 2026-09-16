@@ -64,7 +64,7 @@ class ConnectionPool:
         free nothing that passed through it.
 
         This is a bound on how long that lasts, and not a promise that a root
-        goes away at the end of the client that made it. Issue #174.
+        goes away at the end of the client that made it. Issue #20.
         """
         self._slots = anyio.Semaphore(max_connections)
         self.on_connection_created = on_connection_created
@@ -163,7 +163,7 @@ class ConnectionPool:
         `--auto-optimise-store` therefore left that setting on, and the next
         client got a store that optimises when it asked for none.
         `main:optimise-store` reads exactly that. So an idle connection with
-        another set is of no use here, and this discards it. Issue #192.
+        another set is of no use here, and this discards it. Issue Lillecarl/nanopynix#192.
         """
 
         """Pop an idle connection or create a new one."""
@@ -358,7 +358,7 @@ class ConnectionPool:
         for that reason.
 
         The lifetime of the connection is the mechanism, so the answer is the
-        one that issue #174 states: give each client session its own upstream
+        one that issue #20 states: give each client session its own upstream
         connection, and close it with the session. Then a root lives as long
         as the client that made it, as in `nix-daemon`, and no window is left.
         """

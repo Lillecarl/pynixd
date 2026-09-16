@@ -149,7 +149,7 @@ class Store(ABC):
         temporary root for each path that it took, and an idle connection
         keeps that worker alive, so the collector frees nothing that passed
         through pynixd. A store that pools no connection holds no such root
-        and answers zero. Issue #174.
+        and answers zero. Issue #20.
         """
         return 0
 

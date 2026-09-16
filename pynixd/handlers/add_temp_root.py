@@ -17,7 +17,7 @@ class AddTempRootHandler(Handler):
 
     The root belongs to the client session, and it goes away when that
     session does. `DaemonProxy.add_temp_root` and `pynixd.temp_roots` hold
-    the mechanism, and issue #174 gives the defect that they correct.
+    the mechanism, and issue #20 gives the defect that they correct.
 
     The role of the client makes no difference now. The operation used to
     forward to the upstream daemon for an admin and to do nothing for anyone

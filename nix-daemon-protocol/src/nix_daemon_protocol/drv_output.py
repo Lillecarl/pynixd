@@ -10,7 +10,7 @@ exist in that shape at all: a `DrvOutput` there names the derivation that made
 the output, and not a hash of it.
 
 `KeyedDrvOutput` in `keyed_drv_output.py` holds the other shape.
-`SUPPORTED_STANDARD_FEATURES` is empty, so nothing writes it yet. Issue #162.
+`SUPPORTED_STANDARD_FEATURES` is empty, so nothing writes it yet. Issue #14.
 """
 
 from __future__ import annotations

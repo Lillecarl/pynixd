@@ -207,7 +207,7 @@ class DaemonProxy:
 
         So this answers what **every** store that a build can go to offers,
         and pynixd claims nothing that one of them would refuse. Step 4 of
-        issue #162.
+        issue #14.
 
         **A substituter is left out.** `no_schedule` marks a store that the
         scheduler never sends a build to, and a binary cache is not a peer of
@@ -254,7 +254,7 @@ class DaemonProxy:
             # The intersection, and not what the client named. A client that
             # names `realisation-with-path-not-hash` gets the new codec only
             # when pynixd names it back, which is `intersectFeatures` at
-            # `worker-protocol-connection.cc:148`. Issue #162.
+            # `worker-protocol-connection.cc:148`. Issue #14.
             honourable = self.honourable_features()
             self.standard_features = wire.negotiate_features(client_features, honourable)
             # `ClientConn.send` writes a log message straight to the client,
@@ -314,7 +314,7 @@ class DaemonProxy:
         before `logger->startWork()`. `canSendStderr` is therefore false, so
         `errorAllowed` at `daemon.cc:1218` is false and the handler re-throws.
         The outer catch at `daemon.cc:1232` writes the error, flushes and
-        returns, which closes the connection. Issue #193.
+        returns, which closes the connection. Issue Lillecarl/nanopynix#193.
         """
         while True:
             try:
@@ -468,13 +468,13 @@ class DaemonProxy:
         pynixd writes the root itself, in the `temproots` directory of the
         store. It used to forward the operation to the upstream daemon, and
         the root then belonged to a pooled connection rather than to the
-        client that asked for it. Issue #174, and `temp_roots.py` for how the
+        client that asked for it. Issue #20, and `temp_roots.py` for how the
         file works.
         """
         if self._temp_roots is None:
             # The state directory of the store that pynixd serves, which is
             # `<root>/nix/var/nix` for a chroot store and `NIX_STATE_DIR` for
-            # a relocated one. `StoreLayout` answers both. Issue #176.
+            # a relocated one. `StoreLayout` answers both. Issue Lillecarl/nanopynix#176.
             layout = getattr(self.local_store, "layout", None) or StoreLayout.chroot(None)
             self._temp_roots = TempRoots(layout.state_dir)
         await self._temp_roots.add(path)

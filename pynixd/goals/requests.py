@@ -44,7 +44,7 @@ async def _the_result_unless_it_stops(goal: EnsureDerivedPathGoal, stop: anyio.E
     for the same derivation, and one client that gave up must not take the
     work of the others. So this stops waiting and leaves the build alone.
 
-    NIX-DEVIATION (#206): `Worker::run` at `worker.cc:352` leaves its loop
+    NIX-DEVIATION (#27): `Worker::run` at `worker.cc:352` leaves its loop
     when `topGoals` is empty, and the destructor of the goals that are left
     kills each builder. pynixd keeps every such build and ends it in
     `BuildQueue.let_go`, when the **last** goal system stops waiting for it.
@@ -56,10 +56,10 @@ async def _the_result_unless_it_stops(goal: EnsureDerivedPathGoal, stop: anyio.E
     `nix build -f fod-failing.nix -j1 -L` writes one `building '...'` line
     through pynixd and one through `nix-daemon`, measured on Nix 2.34.8.
 
-    It wrote three until issue #287 and issue #286, and the two answered
-    different halves. #287: the request took 2.05 s to act on the failure of
+    It wrote three until issue Lillecarl/nanopynix#287 and issue Lillecarl/nanopynix#286, and the two answered
+    different halves. Lillecarl/nanopynix#287: the request took 2.05 s to act on the failure of
     x1, because a failed build waited a 2 s deadline for an output it could
-    not have. #286: even at 2.3 ms the freed slot of `-j1` still went out
+    not have. Lillecarl/nanopynix#286: even at 2.3 ms the freed slot of `-j1` still went out
     first, in the same pass as the completion, so `Scheduler._assign_to_stores`
     now asks `BuildQueue.nobody_wants` before it assigns. That reads a fact
     rather than winning a race, so the count above does not rest on timing.
@@ -78,7 +78,7 @@ async def _the_result_unless_it_stops(goal: EnsureDerivedPathGoal, stop: anyio.E
     cancellation reaches that one alone. It also reads the outcome of the
     goal when nothing else does, so an abandoned failure raises no "exception
     was never retrieved" report. anyio offers no equivalent, and the goal
-    system is asyncio below `Goal.result`. Issue #196.
+    system is asyncio below `Goal.result`. Issue Lillecarl/nanopynix#196.
     """
     if stop.is_set():
         return None
@@ -125,7 +125,7 @@ class BuildPathsWithResultsGoal(ExecutionGoal[BuildPathsWithResultsResponse]):
         # **In the order the client asked, and not sorted.** `nix build --json`
         # reads the answers by position, and `build.sh:8` of the functional
         # suite states which entry is which derivation. `Store::buildPaths` of
-        # Nix keeps the order of the request. Issue #180.
+        # Nix keeps the order of the request. Issue Lillecarl/nanopynix#180.
         for serde_path in self.request.derived_paths:
             path = DerivedPath(str(serde_path))
             goal = await self.engine.get_ensure_derived_path_goal(path, self.request.build_mode, substituter_ids)
@@ -152,7 +152,7 @@ class BuildPathsWithResultsGoal(ExecutionGoal[BuildPathsWithResultsResponse]):
         # two negotiate apart. A backend that offers
         # `realisation-with-path-not-hash` fills one `builtOutputs` field and
         # leaves the other at `None`, and a client that offers nothing reads
-        # the one that is `None`. Issue #162.
+        # the one that is `None`. Issue #14.
         client_features = self.client.standard_features if self.client is not None else frozenset()
         return BuildPathsWithResultsResponse(
             results=[
@@ -196,7 +196,7 @@ class BuildPathsWithResultsGoal(ExecutionGoal[BuildPathsWithResultsResponse]):
         # **The order decides which build the queue holds first.** Every goal
         # prepares beside its siblings, and each one may enqueue its build
         # when the goals before it decided. `dispatch_order.py` gives the
-        # reason and the measurement. Issue #207.
+        # reason and the measurement. Issue Lillecarl/nanopynix#207.
         dispatch = DispatchOrder(len(goals))
         for goal, turn in zip(goals, dispatch.turns_in_the_order_of(order), strict=True):
             goal.take_a_turn(turn)
@@ -217,7 +217,7 @@ class BuildPathsWithResultsGoal(ExecutionGoal[BuildPathsWithResultsResponse]):
                     # client that asked for it, and this client has had its
                     # answer. Without the unsubscribe its log still reaches
                     # that client, and `build.sh:167` counts the `error:`
-                    # lines of the whole run. Issue #196.
+                    # lines of the whole run. Issue Lillecarl/nanopynix#196.
                     await goals[index].unsubscribe(self.client)
                     return
                 if result.abandoned:
@@ -226,7 +226,7 @@ class BuildPathsWithResultsGoal(ExecutionGoal[BuildPathsWithResultsResponse]):
                     # reports nothing for the waitees it drops. Without this
                     # the cancellation raced the failure that caused it, and
                     # `build.sh:167` read two `error:` lines where it asserts
-                    # one. Issue #286.
+                    # one. Issue Lillecarl/nanopynix#286.
                     log.debug(
                         "root_goal_abandoned_by_the_queue",
                         index=index,
@@ -264,7 +264,7 @@ class BuildPathsWithResultsGoal(ExecutionGoal[BuildPathsWithResultsResponse]):
             # after it.** `stop` ends the loop at the first failure, so a goal
             # of a later place can stay untaken, and a goal that never ran
             # never decides. This lets every turn go, so no goal of another
-            # request waits for one of this request. Issue #207.
+            # request waits for one of this request. Issue Lillecarl/nanopynix#207.
             dispatch.release_every_goal()
 
         return results
@@ -299,7 +299,7 @@ class BuildPathsWithResultsGoal(ExecutionGoal[BuildPathsWithResultsResponse]):
         The flake-check half of the same test needs no rule, and shows why the
         name is what decides. It asks for `^*` and not `^out`, so the root and
         the input are two goal objects for one derivation, and the failure of
-        each one names itself. Issue #196.
+        each one names itself. Issue Lillecarl/nanopynix#196.
         """
         failing = result.failing_derivation
         if failing is None or result_succeeded(result.result):
@@ -329,7 +329,7 @@ class BuildPathsWithResultsGoal(ExecutionGoal[BuildPathsWithResultsResponse]):
 
         The answer of the request keeps the order the client asked. This
         decides which goal runs first, and `results[index]` still writes to
-        the place of the request. Issue #196.
+        the place of the request. Issue Lillecarl/nanopynix#196.
         """
         return sorted(
             range(len(goals)),
@@ -362,10 +362,10 @@ class BuildPathsWithResultsGoal(ExecutionGoal[BuildPathsWithResultsResponse]):
         **The order of the request survives this.** Every root goal runs at
         once, and each one still enqueues its build in the order of
         `Goal::key()`, because `dispatch_order.py` orders the moment of the
-        enqueue and not the preparation. This was `NIX-DEVIATION (#206)` until
+        enqueue and not the preparation. This was `NIX-DEVIATION (#27)` until
         then: the goal that reached the queue first took the one slot of `-j1`,
         and that was x2 or x3 as often as x1. `build.sh:167` reads the name in
         the message, so the deviation was a failure of the suite and not a
-        difference with no effect. Issue #207.
+        difference with no effect. Issue Lillecarl/nanopynix#207.
         """
         return len(self._root_goals) or 1

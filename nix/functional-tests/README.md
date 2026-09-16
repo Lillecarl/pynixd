@@ -4,7 +4,7 @@ Nix carries 203 functional test scripts. They encode what the daemon protocol
 must do. pynixd sits in the middle of that protocol, so the scripts test
 pynixd as well, when a pynixd daemon answers them.
 
-Issue #172 holds the plan and the measurements. This file gives the mode and
+Issue #19 holds the plan and the measurements. This file gives the mode and
 the commands.
 
 ## The mode, and why Nix does not run it
@@ -23,7 +23,7 @@ So the ca suite and the dyn-drv suite have **no daemon coverage upstream**.
 This directory makes the third mode: one store for each test, as in mode 1,
 and a daemon, as in mode 2. `setup.sh` applies four patches to reach it, and
 each patch names its reason in the file. A fifth patch rewrote the layout of
-the store of each test, and issue #176 removed it.
+the store of each test, and issue Lillecarl/nanopynix#176 removed it.
 
 ## Run it
 
@@ -91,7 +91,7 @@ of this repository. `nix_2_35` and `git` are the other two.
     --work /scratch/nixft-235 all --suite ca
 ```
 
-**2.35 is the only arm that can see the gap of issue #162.** The protocol
+**2.35 is the only arm that can see the gap of issue #14.** The protocol
 number stopped at 1.38 and each new capability is a feature name; 2.34 offers
 none of them, so a run against 2.34 measures nothing about the features that
 `DrvOutput` and `UnkeyedRealisation` now hang on. 2.35 offers
@@ -273,13 +273,13 @@ time of a store path. The last one is a difference of the two runs and not of
 the two daemons: they add the same path at two times.
 
 **A build holds its temporary roots for the lifetime of the connection, and
-the GC tests read that as a defect.** Issue #174 records the decision: a
+the GC tests read that as a defect.** Issue #20 records the decision: a
 long-lived daemon that holds a path is not a fault, and `max_lifetime` bounds
 how long it lasts. `simple`, `gc`, `ca/gc`, `dependencies`, `build-delete`,
 `gc-concurrent`, `optimise-store`, `multiple-outputs` and `selfref-gc` differ
 for this reason and will keep differing.
 
-The first run of this mode found issue #177: `BuildPaths` answered a status
+The first run of this mode found issue Lillecarl/nanopynix#177: `BuildPaths` answered a status
 where Nix answers a constant `1`, so a failed build read as a successful one.
 No script could find it, because the client of Nix reads that number and drops
 it.
@@ -296,7 +296,7 @@ the suite reports:
 
 1. `nix store gc` deleted nothing through pynixd. An idle pooled connection
    kept a worker of the daemon alive, and that worker held the temporary root
-   of the path. Issue #174.
+   of the path. Issue #20.
 2. `QueryPathInfo` answered `sha256:<digest>` where `nix-daemon` answers the
    digest alone. The fast path of pynixd read the `narHash` column of the
    database, and that column carries the name of the algorithm. No client
@@ -337,7 +337,7 @@ with the relocated store layout that the suite itself sets.
 | ----------------- | ------------------------------------------------ |
 | `main:store-info` | permanent, and the next section gives the reason |
 
-**The other two regressions are gone, and issue #207 took them.**
+**The other two regressions are gone, and issue Lillecarl/nanopynix#207 took them.**
 `ca:new-build-cmd` and `main:build` were **one assertion**, at
 `build.sh:167`: `new-build-cmd.sh` sources `build.sh`, so both arrived at the
 same line. The root goals of one request now enqueue their builds in the
@@ -345,12 +345,12 @@ order of `Goal::key()`, which is the order that `Worker::run` steps them, so
 `-j1` over the four failing derivations of `fod-failing.nix` names x1 the way
 Nix does. `dispatch_order.py` holds the reason and the measurement.
 
-`main:multiple-outputs-substitute-failure` moved SKIP to FAIL. Issue #199
+`main:multiple-outputs-substitute-failure` moved SKIP to FAIL. Issue #24
 holds it: the managed upstream daemon did not start, which is a fault of the
 harness rather than of the subject of the test.
 
 `main:multiple-outputs`, `main:gc-concurrent` and `main:build-delete` come and
-go between runs, and all three are the #174 family. Read a single failure of
+go between runs, and all three are the #20 family. Read a single failure of
 one of them as a report of that issue, and not as a new one.
 
 **12 tests fail in both arms.** Those are a defect of Nix or of this harness,
@@ -377,7 +377,7 @@ is the shorter loop, and the numbers are for `--suite ca`.
 | pynixd  | 20  | 0    | 4    |
 
 **The `ca` suite has no regression left, and no failure in either arm.**
-`new-build-cmd` passed when issue #207 gave the root goals the order of Nix,
+`new-build-cmd` passed when issue Lillecarl/nanopynix#207 gave the root goals the order of Nix,
 and `ca:recursive` passes in both arms now. It failed in both before, so
 pynixd did not take it.
 
@@ -401,7 +401,7 @@ error: the daemon is missing the 'realisation-with-path-not-hash' protocol
 feature, needed to support content-addressing derivations
 ```
 
-**That was issue #162, measured.** The protocol number stopped at 1.38 and
+**That was issue #14, measured.** The protocol number stopped at 1.38 and
 each new capability is a feature name. 2.34 offers none of them, so every
 measurement of this suite before that one was taken against the one version
 that cannot see the gap.
@@ -423,8 +423,8 @@ same checkout:
 The control answers 19 OK / 1 FAIL / 4 SKIP at every one of them.
 
 **The two arms agree now.** The one regression left is `ca:new-build-cmd`,
-and it is the same regression that 2.34 has, which issue #196 holds. So the
-feature work of issue #162 costs nothing that the floor does not cost too.
+and it is the same regression that 2.34 has, which issue Lillecarl/nanopynix#196 holds. So the
+feature work of issue #14 costs nothing that the floor does not cost too.
 
 Run both arms after a change to a codec. They should give the same two
 numbers, and a difference between them is the report.
@@ -438,28 +438,28 @@ the feature works.
 
 | correction | measured |
 | ---------- | -------- |
-| #195, the empty output path off the wire | `ca:build-cache` and `ca:issue-13247` stopped dropping the connection, and each moved to the behaviour the crash was hiding |
-| #197, the options of the client on a path that is added | `ca:signatures` FAIL to OK |
-| #196, a cap for `max-jobs`, and one replay for each client | every derivation is built once, and the log of a build reaches a client once |
+| Lillecarl/nanopynix#195, the empty output path off the wire | `ca:build-cache` and `ca:issue-13247` stopped dropping the connection, and each moved to the behaviour the crash was hiding |
+| Lillecarl/nanopynix#197, the options of the client on a path that is added | `ca:signatures` FAIL to OK |
+| Lillecarl/nanopynix#196, a cap for `max-jobs`, and one replay for each client | every derivation is built once, and the log of a build reaches a client once |
 | do not build a derivation whose input failed | `resolved_derivation_not_stored` gone from `main:build` |
-| #198, the daemon substitutes a content-addressed output | `ca:issue-13247` FAIL to OK |
-| #187, the plan sees a realisation that a substituter holds | `ca:build-cache` FAIL to OK |
+| Lillecarl/nanopynix#198, the daemon substitutes a content-addressed output | `ca:issue-13247` FAIL to OK |
+| Lillecarl/nanopynix#187, the plan sees a realisation that a substituter holds | `ca:build-cache` FAIL to OK |
 
-Removing the layout patch of #176 moved `nix-channel` from FAIL to OK in the
+Removing the layout patch of Lillecarl/nanopynix#176 moved `nix-channel` from FAIL to OK in the
 control run, so that patch was breaking a test of Nix on its own.
 `nested-sandboxing` still fails, and its cause is not the layout.
 
-The count was 40 before issues #178, #179, #180, #182, #183, #184 and #185.
-Issues #174 and #175 then took it from 29 to 9, in five steps: 29, 19, 15,
+The count was 40 before issues Lillecarl/nanopynix#178, Lillecarl/nanopynix#179, Lillecarl/nanopynix#180, Lillecarl/nanopynix#182, Lillecarl/nanopynix#183, Lillecarl/nanopynix#184 and Lillecarl/nanopynix#185.
+Issues #20 and Lillecarl/nanopynix#175 then took it from 29 to 9, in five steps: 29, 19, 15,
 11, 9. Each one is below.
 
 `compare` reports no "other change" now. Three tests moved from SKIP to FAIL
 in an earlier run -- `local-overlay-store:delete-duplicate`,
 `local-overlay-store:stale-file-handle` and
 `main:multiple-outputs-substitute-failure` -- and all three skip again, in
-both runs. Issue #186 holds the first two, and the cause is not proven: the
-run that reported them differs from this one in the corrections of #174 and
-#175, and in nothing that touches the shape of a store.
+both runs. Issue #22 holds the first two, and the cause is not proven: the
+run that reported them differs from this one in the corrections of #20 and
+Lillecarl/nanopynix#175, and in nothing that touches the shape of a store.
 
 ### A regression that stays
 
@@ -489,10 +489,10 @@ so it walks once.
 pynixd already holds the answer in its substitution queue. Writing the line a
 second time without the walk would be a line that no work produced. The
 marker at `pynixd/goals/query_missing.py:209` names the defect of Nix, and
-issue #191 tracks the list of such markers.
+issue #23 tracks the list of such markers.
 
 No script of the suite reads this line, so no test moves either way. Issue
-#189 holds the measurement.
+Lillecarl/nanopynix#189 holds the measurement.
 
 ### The 12 control failures
 
@@ -525,8 +525,8 @@ quietly turns a real regression into an expected failure.
 `main:placeholders` passed through pynixd in every run before this one, and it
 was never passing. pynixd answered `BuildPaths` with a number that said
 "failed", `RemoteStore::buildPaths` of Nix reads that number and drops it, and
-`placeholders.sh` reads the exit status alone. Issue #177 corrected the answer
-and the test moved to FAIL, with a real builder error under it. Issue #178
+`placeholders.sh` reads the exit status alone. Issue Lillecarl/nanopynix#177 corrected the answer
+and the test moved to FAIL, with a real builder error under it. Issue Lillecarl/nanopynix#178
 holds that defect.
 
 Measured both ways: with the correction the test fails, and with the
@@ -538,14 +538,14 @@ correction reverted and nothing else changed it reports `Ok: 1`.
 each one made the next one visible. This is the shape of the work here, so it
 is worth stating once:
 
-1. **#178.** pynixd sent the wanted outputs of a derivation and dropped the
+1. **Lillecarl/nanopynix#178.** pynixd sent the wanted outputs of a derivation and dropped the
    others. The daemon rewrites `builtins.placeholder <name>` for each output
    the derivation names, so `${placeholder "bin"}` reached the builder as a
    path that is not there. `main:placeholders` passes with this corrected.
-2. **#179.** An already-valid derived path answered with no realisation, so
+2. **Lillecarl/nanopynix#179.** An already-valid derived path answered with no realisation, so
    `nix build --json` wrote no `outputs` key. `main:build` read `null` at
    line 23.
-3. **#180.** The request held its derived paths in a set, so the answers came
+3. **Lillecarl/nanopynix#180.** The request held its derived paths in a set, so the answers came
    back sorted. `main:build` reads them by position at line 8. That test
    passed in one work directory and failed in another, with no change but the
    hash part of two store paths.
@@ -557,7 +557,7 @@ when it still fails.
 ### The same test, and four more defects
 
 `main:build` reached line 167 after those three, and it reaches line 247 now.
-Issue #196 holds the four, and each one is a decision of the root-goal loop
+Issue Lillecarl/nanopynix#196 holds the four, and each one is a decision of the root-goal loop
 that Nix takes differently:
 
 1. **A substituter counted as a builder.** `_build_slots` returned the number
@@ -600,7 +600,7 @@ every goal behind it. Three failures had that shape:
    so `fast-fail` was never a root of its own.
 2. **`build.sh:269` hung for the whole 300 s cap.** `slow` blocks on a fifo
    that nothing opens, and the loop waited for it before it started
-   `fast-fail`. Issue #196 holds the two pieces that this needed beside the
+   `fast-fail`. Issue Lillecarl/nanopynix#196 holds the two pieces that this needed beside the
    line: a goal that the request leaves behind goes quiet, and a build that no
    goal waits for ends.
 3. **`build.sh:279` held an answer that Nix does not send.** `nix build
@@ -629,7 +629,7 @@ gives the slot away before the other candidates exist.
 The count of `error:` lines has the same cause. x1 has no goal that waits for
 it, so Nix writes one block. x2 and x3 each have x4, so
 `_tell_the_client_it_failed` writes the reason and the client writes it again,
-which is the defect that the `NIX-DEFECT (#191)` note in that method states.
+which is the defect that the `NIX-DEFECT (#23)` note in that method states.
 
 The whole suite reads `156 OK, 36 SKIP, 15 FAIL` against this pynixd, and
 `compare` names the same three regressions as the table above: `main:build`,
@@ -678,7 +678,7 @@ This is the second time the harness, and not pynixd, decided what a test
 said. The `$HOME` table above is the first. Read a control failure as a
 question about the harness before you read it as a defect of Nix.
 
-`main:multiple-outputs` is a `#174` difference now, and not one of the three
+`main:multiple-outputs` is a `#20` difference now, and not one of the three
 above. `nix store delete --ignore-liveness` cannot delete a path that a temp
 root holds: `collectGarbage` of Nix reads the temp roots whatever that option
 says. Add it to the list of GC tests above.
@@ -695,11 +695,11 @@ Assertion 'thisRealisation' failed at built-path.cc:122      (5 tests)
 Assertion 'maybeOutputPath' failed at nix-build.cc:730       (4 tests)
 ```
 
-Issue #182 gives each id its original hash again, as Nix does at
+Issue Lillecarl/nanopynix#182 gives each id its original hash again, as Nix does at
 `derivation-goal.cc:193-236`. Both assertions are gone, and each test that
 they killed reaches a later line now.
 
-Issue #183 is the other half. `Derivation::shouldResolve` at
+Issue Lillecarl/nanopynix#183 is the other half. `Derivation::shouldResolve` at
 `derivations.cc:1129` states which derivations Nix resolves before it builds
 them, and pynixd asked a narrower question: a deferred output alone. A
 floating content-addressed output therefore went unresolved, so the builder
@@ -707,7 +707,7 @@ read a `DownstreamPlaceholder` as a path and the input was not in `inputSrcs`.
 
 The two together took the `ca` regressions from 14 to 10.
 
-Issue #184 is the third defect. pynixd sends a resolved derivation, and it
+Issue Lillecarl/nanopynix#184 is the third defect. pynixd sends a resolved derivation, and it
 sent the path of the original derivation with it. `DerivationBuildingGoal` of
 the daemon prefers the derivation on the disk whenever that path is valid, at
 `derivation-building-goal.cc:1239`, so the daemon read the original derivation
@@ -716,7 +716,7 @@ to the store now, as `derivation-resolution-goal.cc` of Nix does, and names
 that path in the request. `Store.add_text_to_store` and
 `Connection.call_with_payload` are the two parts that this needed.
 
-Issue #185 is the fourth. A floating content-addressed output takes its path
+Issue Lillecarl/nanopynix#185 is the fourth. A floating content-addressed output takes its path
 from the build, so the derivation names no path for that output, and pynixd
 built the derivation again. `DerivationGoal::checkPathValidity` at
 `derivation-goal.cc:405` reads the store instead: `sha256:<hash>!<name>` maps
@@ -727,9 +727,9 @@ build is not allowed.
 
 | `ca` suite    | OK  | FAIL | SKIP |
 | ------------- | --- | ---- | ---- |
-| before #184   | 5   | 16   | 3    |
-| with #184     | 7   | 14   | 3    |
-| with #185     | 11  | 9    | 4    |
+| before Lillecarl/nanopynix#184   | 5   | 16   | 3    |
+| with Lillecarl/nanopynix#184     | 7   | 14   | 3    |
+| with Lillecarl/nanopynix#185     | 11  | 9    | 4    |
 
 `ca:build` passes. So do `build-with-garbage-path`,
 `duplicate-realisation-in-closure`, `nix-copy`, `nix-shell`, `selfref-gc` and
@@ -745,7 +745,7 @@ and writes them into the configuration of pynixd.
 
 Nix moves a store the other way as well. `--store <root>` puts the files at
 `<root>/nix/store` and moves no store path, so `builtins.storeDir` still
-answers `/nix/store`. pynixd served that shape alone until issue #176, and a
+answers `/nix/store`. pynixd served that shape alone until issue Lillecarl/nanopynix#176, and a
 fifth patch here rewrote the layout of the suite to match. **That patch
 changed the tests to fit pynixd**, and it was the one patch of the five that
 worked around pynixd rather than around the harness. It is gone, with the two

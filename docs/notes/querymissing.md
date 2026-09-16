@@ -198,7 +198,7 @@ wanted one alone. Each half makes the answer of pynixd complete where the
 answer of Nix is not, so pynixd leaves `rootCA.drv` out of `willBuild` and
 `nix-daemon` puts it in.
 
-**pynixd keeps its answer.** Issue #203 holds the difference, and issue #191
+**pynixd keeps its answer.** Issue #26 holds the difference, and issue #23
 holds the convention for a defect of Nix that pynixd copies. This is not one
 of those: pynixd does not copy this defect.
 

@@ -481,7 +481,7 @@ class LocalStoreDB:
         `PynixdPathAccess` is the column that says what it means.
         `registrationTime` claims to be when the path entered the store, and
         `nix path-info --json` reports it as that, so one number cannot answer
-        both questions afterwards. Issue #166 has the whole argument.
+        both questions afterwards. Issue Lillecarl/nanopynix#166 has the whole argument.
         """
         if not self.active or self.read_only:
             return
@@ -574,7 +574,7 @@ def resolve_db_path(layout: StoreLayout) -> Path | None:
     """
     # `StoreLayout` answers this for a chroot store and for a relocated one.
     # This used to build `<root>/nix/var/nix/db/db.sqlite` itself, which named
-    # the wrong file for a store that `NIX_STORE_DIR` moved. Issue #176.
+    # the wrong file for a store that `NIX_STORE_DIR` moved. Issue Lillecarl/nanopynix#176.
     db_path = layout.db_path
 
     if db_path.exists():

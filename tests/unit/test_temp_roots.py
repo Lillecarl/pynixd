@@ -2,7 +2,7 @@
 
 Each test uses the real file and the real `flock`, because the contract is
 with `LocalStore::findTempRoots` of Nix and not with a Python object. The
-tests read the file the way that function reads it. Issue #174.
+tests read the file the way that function reads it. Issue #20.
 """
 
 from __future__ import annotations

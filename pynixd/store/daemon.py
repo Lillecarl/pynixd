@@ -56,7 +56,7 @@ _CB_MAX_COOLDOWN: float = 300.0
 # A `try: import asyncssh` at module level loads the library for every store,
 # and a Unix-socket daemon opens no SSH connection. `ssh_errors` answers with
 # an empty tuple until something imports asyncssh, which is exact: no error of
-# that library can be in flight before the library is there. Issue #290.
+# that library can be in flight before the library is there. Issue #30.
 _TRANSPORT_ERRORS: tuple[type[BaseException], ...] = (
     ConnectionError,
     EOFError,
@@ -87,7 +87,7 @@ class DaemonStore(Store):
         self.layout: StoreLayout = (
             spec.layout() if hasattr(spec, "layout") else StoreLayout.chroot(getattr(spec, "store_path", None))
         )
-        """The three directories of this store. Issue #176.
+        """The three directories of this store. Issue Lillecarl/nanopynix#176.
 
         A store that is not local has no layout of its own, so it takes the
         chroot layout of its root. Nothing reads the state directory of such

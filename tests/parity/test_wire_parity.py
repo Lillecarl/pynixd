@@ -54,7 +54,7 @@ where Nix builds an impure derivation every time; and
 a content hash, so it called the derivation fixed-output and gave every
 realisation an id that no Nix agrees with.
 
-Issue #175.
+Issue Lillecarl/nanopynix#175.
 """
 
 from __future__ import annotations
@@ -399,7 +399,7 @@ async def _failure(run: Runner, root: Path, work: Path) -> None:
     derivation that the client asked for, because the client holds that
     failure in the `BuildResult` and prints it itself.
 
-    pynixd wrote both, and it wrote each one as a `pynixd: ` note. Issue #188
+    pynixd wrote both, and it wrote each one as a `pynixd: ` note. Issue Lillecarl/nanopynix#188
     corrected the frame: a goal that another goal waits for writes its failure
     as one error message, and a goal at the top of the request writes none.
     """
@@ -518,11 +518,11 @@ async def clean_base() -> AsyncIterator[None]:
         _queries,
         _modes,
         _impure,
-        # **Issue #187.** pynixd reads the substituters of its own
+        # **Issue Lillecarl/nanopynix#187.** pynixd reads the substituters of its own
         # configuration alone, so it answers `willBuild` where `nix-daemon`
         # answers `willSubstitute`, and it then builds. `strict`, so the
         # marker goes away with the correction and does not hide it.
-        pytest.param(_substitute, marks=pytest.mark.xfail(strict=True, reason="issue #187")),
+        pytest.param(_substitute, marks=pytest.mark.xfail(strict=True, reason="issue Lillecarl/nanopynix#187")),
         _failure,
     ],
     ids=["builds", "queries", "modes", "impure", "substitute", "failure"],

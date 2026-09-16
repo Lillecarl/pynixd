@@ -5,7 +5,7 @@ reads the first argument as the next operation number. `nix-daemon` closes the
 connection instead: `performOp` throws `invalid operation` at
 `daemon.cc:1107`, before `logger->startWork()`, so `errorAllowed` at
 `daemon.cc:1218` is false and the outer catch at `daemon.cc:1232` returns.
-Issue #193.
+Issue Lillecarl/nanopynix#193.
 """
 
 from __future__ import annotations
@@ -109,7 +109,7 @@ def test_the_manifest_leaves_out_only_what_no_client_sends() -> None:
     the number that Nix 2.34, Nix 2.35 and the master branch all report. The
     last two entries below are therefore gated by a name that pynixd does not
     claim in the handshake. `tests/unit/test_protocol_features.py` holds the
-    ledger of those names, and issue #162 holds the work.
+    ledger of those names, and issue #14 holds the work.
 
     Both of those two belong to `builder-rpc-v0`, which is a derivation
     feature of dynamic derivations. Nix gives such a builder a restricted
@@ -134,7 +134,7 @@ def test_the_manifest_leaves_out_only_what_no_client_sends() -> None:
 
 
 def test_the_manifest_holds_the_two_substituter_operations() -> None:
-    """Both were missing, and both are reachable. Issue #193."""
+    """Both were missing, and both are reachable. Issue Lillecarl/nanopynix#193."""
     names = {op.code: op.name for op in STANDARD_OPERATIONS}
     assert names[21] == "QuerySubstitutablePathInfo"
     assert names[30] == "QuerySubstitutablePathInfos"

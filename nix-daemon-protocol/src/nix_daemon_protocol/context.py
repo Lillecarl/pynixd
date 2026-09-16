@@ -45,7 +45,7 @@ class ReadContext:
 
     `intersectFeatures` at `worker-protocol-connection.cc:148` of Nix builds
     it. A field with `needs_features` or `unless_features` reads this set.
-    Issue #162.
+    Issue #14.
     """
 
 

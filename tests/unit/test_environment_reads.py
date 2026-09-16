@@ -1,6 +1,6 @@
 """The four environment variables that pynixd reads, without `environs`.
 
-Issue #290 took `environs` out of the library. It answered four calls across
+Issue #30 took `environs` out of the library. It answered four calls across
 three modules and cost 64 ms of every daemon start, because it pulls
 `marshmallow` and `python-dotenv`, and nothing ever called `env.read_env()`.
 `pynixd/tests/_conftest/config.py` still uses it, which is what
@@ -39,7 +39,7 @@ class TestEnvInt:
         """`PYNIXD_CHUNK_SIZE=` from a shell must not stop the daemon.
 
         `environs` raised on this. Taking the default is the deliberate
-        difference, and the reason issue #290 could drop the library.
+        difference, and the reason issue #30 could drop the library.
         """
         monkeypatch.setenv("PYNIXD_TEST_INT", "")
 

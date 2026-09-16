@@ -63,7 +63,7 @@ class BuildDerivationHandler(Handler):
             # A backend that offers `realisation-with-path-not-hash` fills one
             # `builtOutputs` field of the result and leaves the other at
             # `None`, and this client reads whichever its own set names.
-            # `for_the_wire` fills the one it will read. Issue #162.
+            # `for_the_wire` fills the one it will read. Issue #14.
             return response.model_copy(
                 update={"result": response.result.for_the_wire(ctx.proxy.standard_features)},
             )
