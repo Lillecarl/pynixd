@@ -884,7 +884,26 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
                 original=wanted,
             )
 
-        if parsed.needs_realisations:
+        # `changed or`, and not `needs_realisations` alone. That property asks
+        # the derivation whether the store *needs* realisations, and it
+        # answers False for every output that names a path -- which an
+        # input-addressed output does. A derivation of that shape whose input
+        # is content-addressed still gets resolved before it is sent, so the
+        # daemon registers under the hash of the resolved ATerm, and the
+        # correction above never reached the store.
+        #
+        # `ca/import-from-derivation` of the functional suite: `nix-daemon`
+        # leaves `sha256:749c1858...!out` for `add-path` and pynixd left
+        # `sha256:58306574...!out`, both naming the same output path. The
+        # client got the right answer, so no wire comparison could see it; the
+        # store comparison of issue #39 found it. Issue #40.
+        #
+        # `changed` is safe where `needs_realisations` was careful. It is true
+        # only when the daemon answered with a realisation of its own, and a
+        # daemon with `ca-derivations` off answers none -- so it cannot put
+        # pynixd back in front of the `RegisterDrvOutput` refusal that
+        # `needs_realisations` was written to avoid.
+        if changed or parsed.needs_realisations:
             await self._register_realisations(answer.values())
         if changed:
             result.result = result.result.model_copy(update={"built_outputs": answer})

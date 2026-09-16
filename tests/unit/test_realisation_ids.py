@@ -301,12 +301,54 @@ async def test_a_deferred_output_registers_a_realisation() -> None:
 
 
 @pytest.mark.anyio
-async def test_an_input_addressed_output_registers_no_realisation() -> None:
-    """A realisation belongs to `ca-derivations`, and this derivation has none.
+async def test_an_input_addressed_output_registers_the_corrected_id() -> None:
+    """Issue #40, and it used to assert the opposite.
 
-    A daemon with the feature off refuses `RegisterDrvOutput`, and pynixd then
-    discards a good connection as dirty.
+    The rule here was `Derivation.needs_realisations`, which answers False for
+    every output that names a path -- and an input-addressed output names its
+    own. The corrected id therefore never reached the store.
+
+    **Nix registers a realisation for an input-addressed output too.** Its own
+    docstring says so: "Nix registers a realisation for every output of every
+    derivation while `ca-derivations` is on", at `derivation-builder.cc:1994`
+    and `derivation-goal.cc:236`. The control store of
+    `ca/import-from-derivation` holds one for `add-path`, whose output names a
+    path.
+
+    That is what the old assertion missed, and the daemon answering a
+    realisation at all is what disproves its reason: a daemon with
+    `ca-derivations` off answers none, which the test below states.
+
+    Measured: `nix-daemon` left `sha256:749c1858...!out` and pynixd left
+    `sha256:58306574...!out`, both naming the same output path. The client
+    read the corrected id either way, so no comparison of the wire could see
+    it; the store comparison of issue #39 found it.
     """
+    original = await output_hashes(parse_drv(TOP_TEXT), _read_drv, cache={})
+    if original is None:
+        raise AssertionError("the walk read both derivations, so it has an answer")
+    wanted = f"sha256:{original['out']}!out"
+
     engine, _ = await _run(_response(f"sha256:{_flattened_hash()}!out", TOP_OUT))
+
+    assert [str(item.id) for item in engine.local_store.registered] == [wanted]
+
+
+@pytest.mark.anyio
+async def test_a_daemon_that_answers_no_realisation_registers_nothing() -> None:
+    """The guard that `needs_realisations` was written to be, stated directly.
+
+    A daemon with `ca-derivations` off answers no realisation, and pynixd must
+    not send `RegisterDrvOutput`: the daemon refuses it, and the pool then
+    discards a good connection as dirty, leaving the temporary roots it held
+    in the file.
+
+    This is the condition the rule should always have read. The old one asked
+    the derivation whether the store needed realisations; this asks whether
+    the daemon gave one to correct.
+    """
+    engine, _ = await _run(
+        BuildResult(status=BuildResultStatus.BUILT, built_outputs={}),
+    )
 
     assert engine.local_store.registered == []
