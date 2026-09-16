@@ -54,9 +54,31 @@ class WireScalar(str):
         _source_type: Any,
         _handler: Any,
     ) -> core_schema.CoreSchema:
-        """Validate and serialize this scalar as its underlying string."""
-        return core_schema.no_info_after_validator_function(
-            cls.from_wire,
-            core_schema.str_schema(),
-            serialization=core_schema.to_string_ser_schema(),
-        )
+        return wire_scalar_schema(cls)
+
+
+def wire_scalar_schema(cls: type[WireScalarLike]) -> core_schema.CoreSchema:
+    """The pydantic schema for one Python value that travels as one string.
+
+    **The instance arm is what lets a scalar keep its own type.** A schema of
+    `str_schema()` alone validates the *input*, so it passes only because a
+    `WireScalar` is a `str`. Give it a scalar that is not one and pydantic
+    refuses the value it would itself have produced: "Input should be a valid
+    string ... input_type=Tag". Measured in
+    `tests/unit/test_wire_scalar_interface.py`.
+
+    Serialization names `to_wire` rather than going through `str()`. The two
+    agree for a `WireScalar`, and they must not be assumed to: `StorePath` is
+    to hold the base name and print the store directory in `__str__` (#4), so
+    `str()` would write the wrong bytes.
+    """
+    return core_schema.union_schema(
+        [
+            core_schema.is_instance_schema(cls),
+            core_schema.no_info_after_validator_function(
+                cls.from_wire,
+                core_schema.str_schema(),
+            ),
+        ],
+        serialization=core_schema.plain_serializer_function_ser_schema(cls.to_wire),
+    )
