@@ -57,6 +57,15 @@ test = [
     # Issue #290.
     "environs",
 ]
+# What `nix/docs.nix` builds the manual with. Declared here so that the
+# development environment resolves them from this file rather than from a
+# second list in Nix: `nix/shell.nix` named the same three by hand, and a
+# list in two places is a list that disagrees with itself.
+docs = [
+    "sphinx",
+    "myst-parser",
+    "furo",
+]
 
 [project.scripts]
 pynixd = "pynixd.__main__:main"

@@ -48,6 +48,67 @@ let
   };
   uml-runner = (import (sources.user-mode-nixos + "/lib.nix") { inherit pkgs; }).runner;
 
+  nanopynix = import sources.nanopynix { };
+
+  /*
+    The interpreter of the development shell, resolved by pyproject.nix.
+
+    **One set, and not a path of several.**  `nanopynix-testing` is the
+    oracle of `tests/differential`, and `nanopynix/settings.py:15` imports
+    `nanopynix_bindings`, so a PYTHONPATH assembled from store paths imports
+    the packages and then fails on the first attribute.  Only a set that
+    resolves the whole closure works, and mixing a package built in one set
+    into another set's environment does not resolve either.
+
+    `pythonSetWith` and not `pythonSet.overrideScope`: a set lifts its
+    nixpkgs packages once, from the roots it was seeded with, so a project
+    this repository owns has no way in afterwards.  `projectRoots` reads each
+    `pyproject.toml` beside ours and resolves its dependencies the same way.
+    nanopynix documents this as the seam for a consumer, and easykubenix uses
+    it for `ekn`.
+
+    Every root here is a real pyproject project, which is why this works at
+    all: `uml-runner` carries one at `pkgs/uml-runner`, and it is what
+    `tests/guest/run.py` imports.
+
+    **pynixd itself does not depend on any of this, and must not.**  The
+    shipped proxy is pure Python and links no C++; `nanopynix-testing`
+    carries the bindings, built against one version of Nix.  This set builds
+    the shell, and `nix/pynixd.nix` still builds the package.
+  */
+  devPythonSet = nanopynix.pythonSetWith {
+    projectRoots = [
+      ./.
+      ./nix-daemon-protocol
+      (sources.user-mode-nixos + "/pkgs/uml-runner")
+    ];
+    overlay = pySelf: _pyPrev: {
+      pynixd = pySelf.callPackage (mkProject ./.) { };
+      nix-daemon-protocol = pySelf.callPackage (mkProject ./nix-daemon-protocol) { };
+      uml-runner = pySelf.callPackage (mkProject (sources.user-mode-nixos + "/pkgs/uml-runner")) { };
+    };
+  };
+
+  mkProject =
+    projectRoot:
+    nanopynix.ps.mkProject {
+      inherit projectRoot;
+      inherit (nanopynix.pythonSet) python;
+    };
+
+  /*
+    What `nix develop` puts on the path.  The two extras come from
+    `pyproject.toml`, so the shell and the distribution read one list.
+  */
+  devEnv = devPythonSet.mkVirtualEnv "pynixd-dev-env" {
+    pynixd = [
+      "test"
+      "docs"
+    ];
+    nanopynix-testing = [ ];
+    uml-runner = [ ];
+  };
+
   pyinstance = pkgs.python3.withPackages (
     ps:
     [ library ]
@@ -55,10 +116,18 @@ let
     ++ [
       ps.pytest
       # `tests/guest/run.py` imports it, and the type gate reads that file.
-      # See nix/shell.nix, which adds it for the same reason.
+      # `devEnv` gets the same package from its own pyproject root, because
+      # the two environments resolve by different machinery: this one is
+      # nixpkgs, and that one is pyproject.nix.
       uml-runner
     ]
   );
+
+  # **The type gate does not see nanopynix, on purpose.** It reads `tests/`,
+  # and `tests/differential` imports the oracle, so the two imports there
+  # carry `pyright: ignore[reportMissingImports]`. Putting `nanopynix-testing`
+  # in this environment would tie a gate that must run everywhere to a C++
+  # closure built against one version of Nix.
 
   /*
     The fixer.  It rewrites files, so it is not named like a gate and nothing
@@ -154,11 +223,7 @@ package
 
   pynixd-docs = pkgs.python3Packages.callPackage ./nix/docs.nix { pynixd = library; };
 
-  shell = pkgs.callPackage ./nix/shell.nix {
-    pynixd = package;
-    # What `tests/guest/run.py` imports, so the shell's pyright resolves it.
-    uml-runner = (import (sources.user-mode-nixos + "/lib.nix") { inherit pkgs; }).runner;
-  };
+  shell = pkgs.callPackage ./nix/shell.nix { inherit devEnv; };
   nixosModule = import ./nix/nixos/default.nix;
 
   tests = {
