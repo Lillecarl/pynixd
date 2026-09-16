@@ -9,9 +9,9 @@ import anyio
 import structlog
 
 from nix_daemon_protocol.ids import StoreId
-from pynixd.daemon_extensions.pynixd_collect_garbage import PynixdCollectGarbageRequest
 
 from ..config import LocalSocketStoreSpec
+from ..daemon_extensions.pynixd_collect_garbage import PynixdCollectGarbageRequest
 from ..serde.protocol import PynixdGCAction
 from ..store import LocalStore as LocalSocketStore
 from .base import load_settings, setup_logging

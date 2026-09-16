@@ -9,9 +9,9 @@ import structlog
 
 from nix_daemon_protocol.add_multiple_to_store import AddMultipleToStoreRequest, AddMultipleToStoreResponse
 from nix_daemon_protocol.nar_from_path import NarFromPathRequest
-from pynixd.daemon_extensions.query_closure_with_info import QueryClosureWithInfoRequest
 
 from .. import wire
+from ..daemon_extensions.query_closure_with_info import QueryClosureWithInfoRequest
 from ..serde import StorePath
 from ..serde.context import ReadContext, WriteContext
 from ..store_path import StorePath as RealStorePath
