@@ -46,34 +46,61 @@ let
     name = "pynixd-specifictest";
     testArgs = "";
   };
-  lint =
-    let
-      pyinstance = pkgs.python3.withPackages (
-        ps:
-        [ library ]
-        ++ library.dependencies
-        ++ [
-          ps.pytest
-        ]
-      );
-    in
-    pkgs.writeShellApplication {
-      name = "pynixd-lint";
-      runtimeInputs = [
-        pyinstance
-        pkgs.pyright
-        pkgs.ruff
-      ];
-      text = ''
-        src=${toString ./pynixd}
-        echo "=== ruff fmt ==="
-        ruff format "$src" ./tests || true
-        echo "=== ruff check ==="
-        ruff check --fix "$src" ./tests || true
-        echo "=== pyright ==="
-        pyright --pythonpath ${pyinstance}/bin/python "$src" ./tests || true
-      '';
-    };
+  uml-runner = (import (sources.user-mode-nixos + "/lib.nix") { inherit pkgs; }).runner;
+
+  pyinstance = pkgs.python3.withPackages (
+    ps:
+    [ library ]
+    ++ library.dependencies
+    ++ [
+      ps.pytest
+      # `tests/guest/run.py` imports it, and the type gate reads that file.
+      # See nix/shell.nix, which adds it for the same reason.
+      uml-runner
+    ]
+  );
+
+  /*
+    The fixer.  It rewrites files, so it is not named like a gate and nothing
+    in CI runs it.
+
+    `ruff format` and `ruff check --fix` exit 0 once they have rewritten what
+    they found.  A CI step that calls them therefore passes on code that fails
+    the check, and the rewrite is thrown away with the runner.  The gates in
+    `checks` below call the non-mutating forms for that reason.
+  */
+  fix = pkgs.writeShellApplication {
+    name = "pynixd-fix";
+    runtimeInputs = [
+      pyinstance
+      pkgs.ruff
+    ];
+    text = ''
+      ruff format .
+      ruff check --fix .
+    '';
+  };
+
+  # One derivation per gate, so a failure names which one, and each fails the
+  # build rather than reporting into a log nobody reads.
+  mkCheck =
+    name: deps: text:
+    pkgs.runCommand "pynixd-check-${name}" { nativeBuildInputs = deps; } ''
+      cp -r ${lib.cleanSource ./.} src
+      chmod -R +w src
+      cd src
+      ${text}
+      touch "$out"
+    '';
+
+  checks = {
+    format = mkCheck "format" [ pkgs.ruff ] "ruff format --check .";
+    lint = mkCheck "lint" [ pkgs.ruff ] "ruff check .";
+    types = mkCheck "types" [
+      pkgs.pyright
+      pyinstance
+    ] "pyright --pythonpath ${pyinstance}/bin/python .";
+  };
 in
 package
 // {
@@ -82,7 +109,8 @@ package
     library
     daemon-protocol
     specifictest
-    lint
+    fix
+    checks
     pkgs
     ;
 
