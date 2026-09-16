@@ -1,5 +1,14 @@
-target-version = "py313"
-line-length = 120
+# The target, not a gate: 66 findings on 2026-09-16, which issue #131 works
+# down. `ruff.toml` is what CI enforces.
+#
+# `extend` and not a copy: the banned-api table, the isort groups and the
+# flake8-type-checking base class then live in `ruff.toml` alone. `select` and
+# `ignore` below replace the ones there rather than adding to them.
+#
+# The isort groups are why the count is 66 and not the 184 this file reported
+# as a standalone copy: without them ruff sorted this tree's own imports as
+# third-party and raised 118 import-order findings that were never real.
+extend = "ruff.toml"
 
 [lint]
 select = [
@@ -83,22 +92,6 @@ ignore = [
     # blind except — production code always logs before passing; AGENTS.md convention
     "BLE001",
 ]
-
-# ═══════════════════════════════════════════════════════════════
-# SHARED — keep this [lint.flake8-type-checking] section in sync
-#          between ruff.toml and ruff-strict.toml
-# ═══════════════════════════════════════════════════════════════
-#
-# WireModel.from_reader / _wire_fields / _find_reader all resolve
-# type annotations at runtime (get_type_hints + issubclass checks).
-# Without this, TC rules flag imports used only as WireModel field
-# annotations, forcing pervasive # noqa: TC001 noise.
-#
-[lint.flake8-type-checking]
-runtime-evaluated-base-classes = ["nix_daemon_protocol.wire_message.WireModel"]
-# ═══════════════════════════════════════════════════════════════
-# END SHARED
-# ═══════════════════════════════════════════════════════════════
 
 [lint.per-file-ignores]
 "tests/**" = ["ERA001", "RUF059", "F401", "T201", "ARG001"]
