@@ -26,6 +26,18 @@ client and the daemon exchange a whole path and the handshake does not
 negotiate the part in front of the hash, so a client of a store at another
 directory gets an error and not a translation.
 
+**So one process cannot proxy two stores whose store directories differ, and
+this is on purpose.** Nix keeps the live value on `StoreDirConfig`, one per
+store, and moving it there would fix this. Carl, 2026-09-16: not worth doing.
+A different store directory means `NIX_STORE_DIR`, which bootstraps
+everything from source, and nobody does it. The case people do use is a
+chroot store, which keeps `/nix/store` in the path and moves only the files --
+that is `real_store_dir` above, and it already works.
+
+`pynixd/config.py` takes a per-store `store_dir` and `pynixd/instance.py`
+writes it into the global here. With two stores the last writer wins and
+nothing says so.
+
 This module holds the values, and not `pynixd`, because `nix_daemon_protocol`
 decodes a store path and must not import `pynixd`.
 """
