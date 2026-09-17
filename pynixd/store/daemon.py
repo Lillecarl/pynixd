@@ -522,15 +522,18 @@ class DaemonStore(Store):
         ordered = sorted(candidates)
         supported: list[bool] = [False] * len(ordered)
 
+        refusals: list[str] = [""] * len(ordered)
+
         async def probe_system(index: int, system: str) -> None:
             async with limiter:
-                _, ok = await self._send_probe(
+                _, ok, reason = await self._send_probe(
                     f"probe-system-{system}",
                     system,
                     "",
                     ["-c", f"echo {system} > $out"],
                 )
             supported[index] = ok
+            refusals[index] = reason
 
         async with anyio.create_task_group() as tg:
             for index, system in enumerate(ordered):
@@ -538,6 +541,19 @@ class DaemonStore(Store):
 
         systems = {system for system, ok in zip(ordered, supported, strict=True) if ok}
         log.info("systems_probed", store_id=self.store_id, systems=sorted(systems))
+        if not systems:
+            # **A warning, and the reasons with it.** A store with no system
+            # builds nothing, and the scheduler then answers every request
+            # with `No compatible store for <system>`, which names the system
+            # the client wanted and not the store that could not take it.
+            # The reasons were at debug level, so a CI run reported 35 of that
+            # message and nothing about its cause. Issue #47.
+            log.warning(
+                "store_probed_no_system",
+                store_id=self.store_id,
+                candidates=ordered,
+                refusals={system: reason for system, reason in zip(ordered, refusals, strict=True) if reason},
+            )
         return systems
 
     async def _probe_features(
@@ -547,7 +563,7 @@ class DaemonStore(Store):
         limiter: anyio.CapacityLimiter,
     ) -> dict[str, set[str]]:
         to_probe = (system_features or set()) | KNOWN_FEATURES
-        probes: list[Callable[[], Awaitable[tuple[str, bool]]]] = []
+        probes: list[Callable[[], Awaitable[tuple[str, bool, str]]]] = []
         probe_keys: list[tuple[str, str]] = []
         for system in systems:
             for feature in to_probe:
@@ -583,9 +599,9 @@ class DaemonStore(Store):
 
         supported: list[bool] = [False] * len(probes)
 
-        async def run_probe(index: int, probe: Callable[[], Awaitable[tuple[str, bool]]]) -> None:
+        async def run_probe(index: int, probe: Callable[[], Awaitable[tuple[str, bool, str]]]) -> None:
             async with limiter:
-                _, ok = await probe()
+                _, ok, _reason = await probe()
             supported[index] = ok
 
         async with anyio.create_task_group() as tg:
@@ -612,7 +628,13 @@ class DaemonStore(Store):
         required_features: str,
         args: list[str],
         extra_env: dict[str, str] | None = None,
-    ) -> tuple[str, bool]:
+    ) -> tuple[str, bool, str]:
+        """The probe's name, whether the store took it, and why it did not.
+
+        The third part is empty when the store took it. It carries the
+        daemon's own message otherwise, so that a caller can say why a store
+        probed to nothing without a reader turning on debug logging.
+        """
         drv_hash = random_nix32_hash()
         out_path = f"{store_prefix()}{drv_hash}-{name}"
         drv_path = StorePath(path=f"{store_prefix()}{drv_hash}-{name}.drv")
@@ -651,7 +673,9 @@ class DaemonStore(Store):
             )
             if accepted:
                 log.debug("probe_accepted", store_id=self.store_id, probe=name)
+                reason = ""
             else:
+                reason = resp.result.error_msg or f"status {resp.result.status}"
                 log.debug(
                     "probe_denied",
                     store_id=self.store_id,
@@ -661,9 +685,9 @@ class DaemonStore(Store):
                 )
         except (BackendError, OSError, ConnectionError) as e:
             log.debug("probe_exception", store_id=self.store_id, probe=name, error=str(e))
-            return name, False
+            return name, False, str(e)
         else:
-            return name, accepted
+            return name, accepted, reason
 
     # ── Standard operations ──────────────────────────────────────────
 

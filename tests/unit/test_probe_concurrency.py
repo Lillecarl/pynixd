@@ -45,7 +45,7 @@ class CountingProbe:
         self.peak = 0
         self.total = 0
 
-    async def _send_probe(self, name: str, *_args: object, **_kwargs: object) -> tuple[str, bool]:
+    async def _send_probe(self, name: str, *_args: object, **_kwargs: object) -> tuple[str, bool, str]:
         self.in_flight += 1
         self.peak = max(self.peak, self.in_flight)
         self.total += 1
@@ -53,7 +53,7 @@ class CountingProbe:
         # of them leaves it. Without one the peak reads 1 whatever the bound.
         await anyio.sleep(0)
         self.in_flight -= 1
-        return name, True
+        return name, True, ""
 
 
 async def _run(
