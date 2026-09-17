@@ -199,11 +199,15 @@ let
       }
     ) supported;
 
+  # The workflow schema, the steps a job asks for by name, and the writer
+  # that turns a workflow value into YAML. It takes `lib` and nothing else,
+  # which is what lets this repository use it while pinning its own nixpkgs.
+  ghalib = import sources.ghanix { inherit lib; };
+
   # Every GitHub Actions workflow as a value, beside the file it renders to.
   # ci/workflows/*.nix hold them and say why.
   ciWorkflows =
     let
-      ghalib = import sources.ghanix { inherit lib; };
       workflow = module: committed: {
         inherit committed;
         # `nixVersion` is the Nix this repository pins, and the runner
@@ -221,12 +225,12 @@ let
 
   # Those values as the files GitHub reads.
   #
-  # `ci/to_yaml.py` and not `pkgs.formats.yaml`, which is remarshal: remarshal
-  # writes a multi-line string as one escaped double-quoted scalar, so a
-  # ten-line `run:` body arrives as a single 600-column line holding `\n`.
-  # The script writes those as literal blocks. It quotes `'on'`, which is
-  # what a workflow needs: unquoted, `on` is the boolean `true` to a YAML 1.1
-  # parser.
+  # `ghalib.toYamlScript` and not `pkgs.formats.yaml`, which is remarshal:
+  # remarshal writes a multi-line string as one escaped double-quoted scalar,
+  # so a ten-line `run:` body arrives as a single 600-column line holding
+  # `\n`. The script writes those as literal blocks. It quotes `'on'`, which
+  # is what a workflow needs: unquoted, `on` is the boolean `true` to a YAML
+  # 1.1 parser.
   #
   # No yamlfmt. nixkube runs one because treefmt formats the committed file
   # and its CI ends in `git diff --exit-code`; this repository has neither, so
@@ -249,7 +253,7 @@ let
       ''
         {
           printf '%s\n' ${lib.escapeShellArg header}
-          python3 ${./ci/to_yaml.py} "$valuePath"
+          python3 ${ghalib.toYamlScript} "$valuePath"
         } > $out
       ''
   ) ciWorkflows;
