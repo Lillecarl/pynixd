@@ -160,6 +160,25 @@ jobs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           unshare --user --mount --pid --fork true && echo "namespaces: ok" || echo "namespaces: refused"
 
+      # **Fifteen tests are about the daemon of the machine, and a runner had
+      # none.** `nix-quick-install-action` gives a single-user store that
+      # `runner` owns, with no daemon and no socket, so they answered
+      # `System Nix daemon socket does not exist` and `cannot connect to
+      # socket`. A developer machine has one, which is why they passed there.
+      #
+      # The store is ours, so the daemon needs no root. `store ping` fails the
+      # step rather than letting the tests report the absence one at a time.
+      # Issue #47.
+      - name: Start a Nix daemon where the suite expects one
+        run: |
+          mkdir -p /nix/var/nix/daemon-socket
+          nohup nix daemon > /tmp/nix-daemon.log 2>&1 &
+          for _ in $(seq 50); do
+            [ -S /nix/var/nix/daemon-socket/socket ] && break
+            sleep 0.2
+          done
+          nix store ping --store daemon
+
       - name: Generate SSH key for ssh-ng:// tests
         run: |
           mkdir -p ~/.ssh
