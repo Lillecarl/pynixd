@@ -57,6 +57,44 @@ jobs:
     - id: deployment
       name: Deploy to GitHub Pages
       uses: actions/deploy-pages@v4
+  nix-functional-tests:
+    env:
+      JOBS: '4'
+      NIXFT_WORK: /tmp/nixft
+      UMBRELLA_REV: ${{ needs.umbrella-rev.outputs.rev }}
+    needs: umbrella-rev
+    runs-on: ubuntu-latest
+    steps:
+    - timeout-minutes: 10
+      uses: actions/checkout@main
+    - timeout-minutes: 15
+      uses: cachix/install-nix-action@master
+      with:
+        extra_nix_config: |
+          access-tokens = github.com=${{ github.token }}
+          experimental-features = nix-command flakes read-only-local-store ca-derivations dynamic-derivations recursive-nix
+          substituters = https://cache.nixos.org?priority=1 https://nixkube.cachix.org?priority=2 https://lillecarl.cachix.org?priority=3
+          trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= nixkube.cachix.org-1:H8UE0jlI9pxHexK/NhDmEoLDarJXp1WTymQrsajlh7M= lillecarl.cachix.org-1:NN/LLMg7mbyvZCu32Qlo8LpSHqNw7Rr3VBCEYQvRpT0=
+          trusted-users = root runner
+    - name: Allow the unprivileged user namespaces Nix and passt need
+      run: |
+        sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+        sudo sysctl -w kernel.unprivileged_userns_clone=1
+        unshare --user --map-root-user --mount --pid --fork --mount-proc true
+      timeout-minutes: 5
+    - name: Build the suite for nix 2.34
+      run: nix build --file . nixFunctionalTests.nix_2_34 --out-link nixft --print-build-logs
+    - name: Both arms, and the comparison
+      run: ./nixft/bin/nanopynix-nixft-nix_2_34 all
+    - if: failure()
+      name: Keep the test log of a red run
+      uses: actions/upload-artifact@v4
+      with:
+        if-no-files-found: warn
+        name: nixft-logs
+        path: /tmp/nixft/build/meson-logs
+        retention-days: 7
+    timeout-minutes: 90
   test:
     env:
       UMBRELLA_REV: ${{ needs.umbrella-rev.outputs.rev }}

@@ -145,6 +145,74 @@ ghalib.evalWorkflow {
       ];
     };
 
+    /*
+      Nix's own functional suite, against a plain daemon and against pynixd.
+
+      **The verdict is the regression count, and not the failure count.** The
+      runner builds the suite twice, once against `nix daemon` and once
+      against pynixd, and `compare.py` names the tests that pynixd alone
+      fails. A test that fails in both arms is a defect of Nix or of the
+      harness, and it must not fail this job: `main:db-migration` is one, it
+      wants an older Nix, and issue #45 holds it.
+
+      `nanopynix-nixft-nix_2_34 all` already ends in that comparison and exits
+      non-zero only on a regression, so the job is the program and its exit
+      code.
+
+      Measured at pynixd fc88ad6c on a 16-core machine: 3m25s at `JOBS=4` for
+      both arms, 170 OK, 36 SKIP, 1 FAIL, 0 regressions. A runner has four
+      cores and is slower, so the cap is generous.
+
+      No `freeDiskSpace`. The whole work directory came to 228 MB, of which
+      144 MB is the stores of the 205 tests, against the 14 GB a runner
+      starts with.
+
+      **`NIXFT_WORK` must be short, and outside `$HOME`.** A store under a
+      long path gives a daemon socket over `sun_path`'s 108 bytes, and the
+      failure then blames the daemon rather than the path. `$HOME` is mode
+      700, and a sandboxed build runs as `nixbld1`, which cannot traverse it:
+      seven tests that a plain daemon passes fail there, and a broken control
+      arm hides a regression rather than reporting one.
+
+      Issues #11 and #19.
+    */
+    nix-functional-tests = {
+      needs = "umbrella-rev";
+      env = {
+        UMBRELLA_REV = umbrellaRev;
+        NIXFT_WORK = "/tmp/nixft";
+        JOBS = "4";
+      };
+      runs-on = "ubuntu-latest";
+      timeout-minutes = 90;
+      ghanix = divertedStores;
+      steps = [
+        {
+          name = "Build the suite for nix 2.34";
+          run = "nix build --file . nixFunctionalTests.nix_2_34 --out-link nixft --print-build-logs";
+        }
+        {
+          name = "Both arms, and the comparison";
+          run = "./nixft/bin/nanopynix-nixft-nix_2_34 all";
+        }
+        # The meson log holds the whole output of every test. The step output
+        # holds the tail of the failed ones, which is not enough to tell a
+        # defect of pynixd from a defect of the harness -- and the harness is
+        # the more common answer of the two.
+        {
+          name = "Keep the test log of a red run";
+          "if" = "failure()";
+          uses = "actions/upload-artifact@v4";
+          "with" = {
+            name = "nixft-logs";
+            path = "/tmp/nixft/build/meson-logs";
+            retention-days = 7;
+            if-no-files-found = "warn";
+          };
+        }
+      ];
+    };
+
     test = {
       needs = "umbrella-rev";
       env.UMBRELLA_REV = umbrellaRev;
