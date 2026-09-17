@@ -19,6 +19,7 @@ from pynixd.nix_config import NixConfig
 from pynixd.serde import NarFromPathRequest, StorePath
 from pynixd.serde.context import WriteContext
 from tests._conftest.constants import DEFAULT_NIX_CONFIG, DEFAULT_SSH_OPTS
+from tests._conftest.nix_config import host_daemon_substituters
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -115,8 +116,12 @@ async def run_subproc(
     if isinstance(nix_config, NixConfig):
         config_str = nix_config.to_nix_config_env()
     elif nix_config is not None:
+        # The host's daemon only when the host has one. See
+        # `nix_config.host_daemon_substituters`: named on a machine without
+        # that socket, it is a substituter that answers every query with
+        # `cannot connect to socket`. Issue #47.
         default_config = {
-            "substituters": "https://nixkube.cachix.org unix:///nix/var/nix/daemon-socket/socket?root=/",
+            "substituters": " ".join(("https://nixkube.cachix.org", *host_daemon_substituters())),
             "trusted-public-keys": "nixkube.cachix.org-1:H8UE0jlI9pxHexK/NhDmEoLDarJXp1WTymQrsajlh7M=",
         }
         merged = default_config | nix_config
