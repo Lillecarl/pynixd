@@ -549,13 +549,25 @@ class Scheduler:
                 await self._say_where_it_builds(build, store)
                 build_resp = await self._execute(build, store, conn)
                 if build_resp.result.status == 0:
+                    # The outputs first, and the completion after. It ran the
+                    # other way round and logged a collection failure on the
+                    # server, so a client held a successful BuildResult and
+                    # then asked the local store for a path that is not there.
+                    # The error it got named the missing path, never the copy
+                    # that failed. Issue #12.
+                    try:
+                        await self._collect_outputs(build, store, conn, build_resp)
+                    except Exception as e:
+                        log.exception("output_pull_failed", build_id=build.build_id, store_id=store.store_id)
+                        reason = f"built on {store.store_id}, but pynixd could not collect the outputs: {e}"
+                        await build.post_log_and_fanout(LogNext(text=f"pynixd: {reason}\n"))
+                        await self.queue.fail(build.build_id, reason)
+                        self.trigger()
+                        return
+
                     await self.queue.complete(build.build_id, build_resp)
                     completed = True
                     self.trigger()
-                    try:
-                        await self._collect_outputs(build, store, conn, build_resp)
-                    except Exception:
-                        log.exception("output_pull_failed_after_build_response", build_id=build.build_id)
 
         except ResourceExhaustedError as e:
             log.info(
@@ -726,8 +738,9 @@ class Scheduler:
         outputs and on the network, and not on the builder.
 
         A pull that fails also raises, and the statistics of a build that
-        already succeeded went with it. Issue #12 is the larger half of that:
-        the client is told the build succeeded before the pull runs.
+        already succeeded would go with it if this ran after the pull. Issue
+        #12, whose larger half -- the client told the build succeeded before
+        the pull ran -- is fixed in `execute_build`.
         """
         if not isinstance(self.local_store, LocalDBStore):
             return
