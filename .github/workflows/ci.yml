@@ -1,242 +1,126 @@
-name: CI
+# GENERATED FILE -- do not edit by hand.
+# Edit ci/workflows/ci.nix, then run: nix run --file . ci-workflow-update
 
-on:
-  push:
-    branches: ["**"]
-  pull_request:
-
-# UMBRELLA_GIT makes the umbrella fetch each source over the git protocol,
-# and not through api.github.com. Anonymous api.github.com allows 60 calls an
-# hour per IP, GitHub's runners share a NAT pool, and every source a job
-# resolves is one call. nanopynix issue #301.
 env:
-  UMBRELLA_GIT: "1"
-
+  UMBRELLA_GIT: '1'
 jobs:
-  # One umbrella revision for the whole run.
-  #
-  # `nix/sources.nix` resolves the umbrella from UMBRELLA_REV when it is set.
-  # Without it that reference is unlocked, so every job takes the head of the
-  # default branch at the moment it starts. `umbrella land` pushes the working
-  # copies, which starts the run, and the umbrella lock commit follows seconds
-  # later, so a run that straddles the push reads two umbrellas. Measured in
-  # nixkube run 35026926963: seven seconds apart, two store paths, and a later
-  # job asking for one nothing had built. nanopynix issue #301.
-  #
-  # **It resolves the umbrella that locks this commit, not the head of the
-  # umbrella default branch.** The head is a moving answer: it is whatever
-  # landed most recently, which for a branch nobody landed is not related to
-  # this commit at all. `ci/walkback.sh` reads
-  # `refs/umbrella/pynixd/<revision>` from the umbrella remote instead,
-  # walking HEAD backwards to the nearest revision the umbrella has locked.
-  # One `git ls-remote` and one `git rev-list`, over the git protocol, which
-  # the api.github.com limit above does not count.
-  #
-  # Every job below that runs nix reads it. docs-deploy runs none, and it
-  # already waits for docs-build.
-  umbrella-rev:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    outputs:
-      rev: ${{ steps.resolve.outputs.rev }}
-    steps:
-      # A branch nobody landed needs its branch point, so the checkout has to
-      # reach that far back.
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 100
-      - id: resolve
-        name: Resolve the umbrella revision
-        run: ci/walkback.sh https://github.com/nixidae/nixidae pynixd | sed 's/^/rev=/' >> "$GITHUB_OUTPUT"
-
   docs-build:
-    if: github.ref == 'refs/heads/develop'
-    needs: umbrella-rev
     env:
       UMBRELLA_REV: ${{ needs.umbrella-rev.outputs.rev }}
-    runs-on: ubuntu-24.04
-    # Under a minute when it works. A job with no bound waits six hours.
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: nixbuild/nix-quick-install-action@v35
-
-      - uses: cachix/cachix-action@v15
-        with:
-          name: lillecarl
-          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
-          useDaemon: false
-
-      - name: Build documentation
-        run: nix build --file . pynixd-docs --out-link result --print-build-logs --print-out-paths
-
-      - name: Verify docs closure
-        run: nix store verify --recursive --no-trust "$(readlink -f result)"
-
-      - name: Prepare Pages artifact
-        run: |
-          mkdir -p public
-          cp -r --no-preserve=mode,ownership result/. public/
-
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: public
-
-  docs-deploy:
     if: github.ref == 'refs/heads/develop'
-    needs: docs-build
+    needs: umbrella-rev
     runs-on: ubuntu-24.04
-    permissions:
-      pages: write
-      id-token: write
+    steps:
+    - timeout-minutes: 10
+      uses: actions/checkout@main
+    - timeout-minutes: 15
+      uses: cachix/install-nix-action@master
+      with:
+        extra_nix_config: |
+          access-tokens = github.com=${{ github.token }}
+          experimental-features = nix-command flakes read-only-local-store ca-derivations dynamic-derivations recursive-nix
+          substituters = https://cache.nixos.org?priority=1 https://nixkube.cachix.org?priority=2 https://lillecarl.cachix.org?priority=3
+          trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= nixkube.cachix.org-1:H8UE0jlI9pxHexK/NhDmEoLDarJXp1WTymQrsajlh7M= lillecarl.cachix.org-1:NN/LLMg7mbyvZCu32Qlo8LpSHqNw7Rr3VBCEYQvRpT0=
+          trusted-users = root runner
+    - timeout-minutes: 15
+      uses: cachix/cachix-action@master
+      with:
+        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        name: lillecarl
+        useDaemon: false
+    - name: Build documentation
+      run: nix build --file . pynixd-docs --out-link result --print-build-logs --print-out-paths
+    - name: Verify docs closure
+      run: nix store verify --recursive --no-trust "$(readlink -f result)"
+    - name: Prepare Pages artifact
+      run: |
+        mkdir -p public
+        cp -r --no-preserve=mode,ownership result/. public/
+    - uses: actions/upload-pages-artifact@v3
+      with:
+        path: public
+    timeout-minutes: 20
+  docs-deploy:
+    concurrency:
+      cancel-in-progress: false
+      group: pages
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-    concurrency:
-      group: pages
-      cancel-in-progress: false
+    if: github.ref == 'refs/heads/develop'
+    needs: docs-build
+    permissions:
+      id-token: write
+      pages: write
+    runs-on: ubuntu-24.04
     steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
-
+    - id: deployment
+      name: Deploy to GitHub Pages
+      uses: actions/deploy-pages@v4
   test:
-    needs: umbrella-rev
     env:
       UMBRELLA_REV: ${{ needs.umbrella-rev.outputs.rev }}
+    needs: umbrella-rev
     runs-on: ubuntu-latest
-    # **A hang here used to cost six hours, and the log came back empty.**
-    # pytest printed `149 errors in 11.91s` and then did not exit, and the
-    # runner killed the job at its own six-hour limit. Twenty-two runs queued
-    # behind that. The whole job takes under three minutes when it works, so
-    # this is far above a good run and far below the limit that hurt.
-    # Issue #47.
-    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Nix
-        uses: nixbuild/nix-quick-install-action@v34
-        with:
-          # **`trusted-users`, because the suite drives real builds.** A daemon
-          # refuses `BuildDerivation` to a client outside that list, with
-          # `you are not privileged to build input-addressed derivations`. A
-          # developer machine names the user in `/etc/nix/nix.conf`, a runner
-          # does not, and 149 tests failed at their fixture for that reason.
-          # Issue #47.
-          nix_conf: |
-            extra-experimental-features = nix-command flakes read-only-local-store ca-derivations dynamic-derivations recursive-nix
-            trusted-users = root runner
-
-      - name: Verify Nix
-        run: nix build --version
-
-      # **The settings the suite builds under, recorded on every run.**
-      # `sandbox`, `sandbox-shell`, `build-users-group` and `system` decide
-      # what a builder sees, and a runner sets them differently from a
-      # developer machine. The capability probe builds `/bin/sh -c 'echo
-      # $system > $out'` and that build produced no output path here, which
-      # `BuildResult.error_msg` states and does not explain. Issue #47.
-      #
-      # `|| true`, because a diagnostic must never be the thing that fails a
-      # run.
-      - name: Record the Nix settings of this runner
-        run: nix config show || true
-
-      # **The stores of this suite are diverted, and a diverted store builds
-      # only in a sandbox.** nix 2.34.8 `derivation-builder.cc:2111` turns the
-      # sandbox on for `storeDir != realStoreDir`, then `:2120` turns it back
-      # off with no message when the kernel namespaces are missing. The
-      # builder then writes to the store of the machine and Nix looks under
-      # the diverted directory, so `echo $system > $out` answered `failed to
-      # produce output path` and the capability probe found no system.
-      #
-      # Ubuntu 24.04 blocks unprivileged user namespaces with AppArmor, and
-      # the daemons pynixd spawns run as `runner`. The sysctl is what a
-      # developer machine already gives. Issue #47.
-      - name: Allow the kernel namespaces a diverted store builds in
-        run: |
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
-          unshare --user --mount --pid --fork true && echo "namespaces: ok" || echo "namespaces: refused"
-
-      # **Fifteen tests are about the daemon of the machine, and a runner had
-      # none.** `nix-quick-install-action` gives a single-user store that
-      # `runner` owns, with no daemon and no socket, so they answered
-      # `System Nix daemon socket does not exist` and `cannot connect to
-      # socket`. A developer machine has one, which is why they passed there.
-      #
-      # The store is ours, so the daemon needs no root. `store ping` fails the
-      # step rather than letting the tests report the absence one at a time.
-      # Issue #47.
-      - name: Start a Nix daemon where the suite expects one
-        run: |
-          mkdir -p /nix/var/nix/daemon-socket
-          nohup nix daemon > /tmp/nix-daemon.log 2>&1 &
-          for _ in $(seq 50); do
-            [ -S /nix/var/nix/daemon-socket/socket ] && break
-            sleep 0.2
-          done
-          nix store ping --store daemon
-
-      - name: Generate SSH key for ssh-ng:// tests
-        run: |
-          mkdir -p ~/.ssh
-          ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N "" -q
-
-      # One step per gate, so a red run names what broke without reading a log.
-      - name: Format, lint and types
-        run: nix build --file . checks.format checks.lint checks.types --no-link --print-build-logs
-
-      - name: Tests
-        run: nix develop --impure --file shell.nix --command pytest tests/functional tests/unit
-
-      # Its own process, and not a third path on the line above. `tests/unit`
-      # and this suite interfere: four of these pass alone and fail beside the
-      # pynixd suites. One process for both is how 57 failures hid behind a
-      # green run of 684, and one of them was a shipped regression. Issue #33.
-      - name: Protocol tests
-        run: nix develop --impure --file shell.nix --command pytest nix-daemon-protocol/tests
-
-      # The differential suite: pynixd's goal engine against Nix's own, which
-      # nanopynix calls in process. It ran nowhere until the umbrella supplied
-      # nanopynix to the shell, and `tests/differential/conftest.py` skips the
-      # lot rather than failing where the oracle is absent -- so a green run
-      # here is not proof on its own that it ran. 16 tests, 47 s.
-      #
-      # Its own process, like the protocol suite. It builds in two separated
-      # chroot stores and reads both directly, which the session server of the
-      # other suites has no part in.
-      - name: Differential tests
-        run: nix develop --impure --file shell.nix --command pytest tests/differential
-
-      # The parity suite: the same workload against `nix daemon` and against
-      # pynixd, byte for byte. `AGENTS.md` calls this the measure of pynixd's
-      # contract, and its own docstring lists six defects it found -- and no
-      # wired path ran it. Not CI, not `tests.pytest`, and `tests/guest`
-      # excludes it for issue #37. Issue #33 is the same hole one suite over.
-      #
-      # Its own process, like the two above. It starts daemons of its own and
-      # makes stores under /tmp/pynixd-wire-parity. 8 tests, 22 s.
-      - name: Parity tests
-        run: nix develop --impure --file shell.nix --command pytest tests/parity
-
-      # **The pytest output alone does not say why a suite went red here.**
-      # Each test writes `filtered.log`, `unfiltered.log` and
-      # `exceptions.jsonl` under this directory, and those hold the probe
-      # results, the daemon's own messages and the store each test used. The
-      # step output holds the assertion and nothing else.
-      #
-      # This repository has already published one wrong cause for a CI
-      # failure by reading the summary and not the per-test logs -- issue #37.
-      # The logs were beside it and were not uploaded.
-      #
-      # `if: failure()`, because a green run has nothing to explain.
-      - name: Keep the per-test logs of a red run
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pynixd-logs
-          path: /tmp/pynixd-logs
-          retention-days: 7
-          if-no-files-found: warn
+    - timeout-minutes: 10
+      uses: actions/checkout@main
+    - timeout-minutes: 15
+      uses: cachix/install-nix-action@master
+      with:
+        extra_nix_config: |
+          access-tokens = github.com=${{ github.token }}
+          experimental-features = nix-command flakes read-only-local-store ca-derivations dynamic-derivations recursive-nix
+          substituters = https://cache.nixos.org?priority=1 https://nixkube.cachix.org?priority=2 https://lillecarl.cachix.org?priority=3
+          trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= nixkube.cachix.org-1:H8UE0jlI9pxHexK/NhDmEoLDarJXp1WTymQrsajlh7M= lillecarl.cachix.org-1:NN/LLMg7mbyvZCu32Qlo8LpSHqNw7Rr3VBCEYQvRpT0=
+          trusted-users = root runner
+    - name: Allow the unprivileged user namespaces Nix and passt need
+      run: |
+        sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+        sudo sysctl -w kernel.unprivileged_userns_clone=1
+        unshare --user --map-root-user --mount --pid --fork --mount-proc true
+      timeout-minutes: 5
+    - name: Record the Nix settings of this runner
+      run: nix config show || true
+    - name: Generate SSH key for ssh-ng:// tests
+      run: |
+        mkdir -p ~/.ssh
+        ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N "" -q
+    - name: Format, lint, types and the workflow render
+      run: nix build --file . checks.format checks.lint checks.types checks.ciWorkflow --no-link --print-build-logs
+    - name: Tests
+      run: nix develop --impure --file shell.nix --command pytest tests/functional tests/unit
+    - name: Protocol tests
+      run: nix develop --impure --file shell.nix --command pytest nix-daemon-protocol/tests
+    - name: Differential tests
+      run: nix develop --impure --file shell.nix --command pytest tests/differential
+    - name: Parity tests
+      run: nix develop --impure --file shell.nix --command pytest tests/parity
+    - if: failure()
+      name: Keep the per-test logs of a red run
+      uses: actions/upload-artifact@v4
+      with:
+        if-no-files-found: warn
+        name: pynixd-logs
+        path: /tmp/pynixd-logs
+        retention-days: 7
+    timeout-minutes: 45
+  umbrella-rev:
+    outputs:
+      rev: ${{ steps.resolve.outputs.rev }}
+    runs-on: ubuntu-24.04
+    steps:
+    - timeout-minutes: 10
+      uses: actions/checkout@main
+      with:
+        fetch-depth: 100
+    - id: resolve
+      name: Resolve the umbrella revision
+      run: ci/walkback.sh https://github.com/nixidae/nixidae pynixd | sed 's/^/rev=/' >> "$GITHUB_OUTPUT"
+    timeout-minutes: 5
+name: CI
+'on':
+  pull_request: null
+  push:
+    branches:
+    - '**'

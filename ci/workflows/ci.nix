@@ -1,0 +1,224 @@
+# The CI workflow, as a value rather than as text.
+#
+# `.github/workflows/ci.yml` is rendered from this file. Edit this one;
+# `checks.ciWorkflow` compares the render against what is committed and fails
+# when they differ. `nix run --file . ci-workflow-update` writes the new
+# render.
+#
+# ghanix is the schema. It takes `lib` and nothing else, which is what lets
+# this repository use it while pinning its own nixpkgs.
+#
+{ lib, ghalib }:
+let
+  inherit (import ./bootstrap.nix { inherit lib; }) bootstrap divertedStores;
+
+  # Docs are published from develop only. Every other branch builds nothing
+  # here, because the Pages deployment has one destination.
+  developOnly = "github.ref == 'refs/heads/develop'";
+
+  # One umbrella revision, read by every job that runs nix.
+  umbrellaRev = "\${{ needs.umbrella-rev.outputs.rev }}";
+
+  # A gate, as one step. Each one names what broke without a reader opening a
+  # log, and each pytest suite is its own process.
+  #
+  # **`tests/unit` and `nix-daemon-protocol/tests` interfere.** Four of the
+  # protocol tests pass alone and fail beside the pynixd suites. One process
+  # for both is how 57 failures hid behind a green run of 684, and one of
+  # them was a shipped regression. Issue #33.
+  pytestSuite = name: paths: {
+    inherit name;
+    run = "nix develop --impure --file shell.nix --command pytest ${lib.concatStringsSep " " paths}";
+  };
+in
+ghalib.evalWorkflow {
+  name = "CI";
+
+  on = {
+    push.branches = [ "**" ];
+    pull_request = null;
+  };
+
+  # UMBRELLA_GIT makes the umbrella fetch each source over the git protocol,
+  # and not through api.github.com. Anonymous api.github.com allows 60 calls
+  # an hour per IP, GitHub's runners share a NAT pool, and every source a job
+  # resolves is one call. nanopynix issue #301.
+  env.UMBRELLA_GIT = "1";
+
+  jobs = {
+    /*
+      One umbrella revision for the whole run.
+
+      `nix/sources.nix` resolves the umbrella from UMBRELLA_REV when it is
+      set. Without it that reference is unlocked, so every job takes the head
+      of the default branch at the moment it starts. `umbrella land` pushes
+      the working copies, which starts the run, and the umbrella lock commit
+      follows seconds later, so a run that straddles the push reads two
+      umbrellas. Measured in nixkube run 35026926963: seven seconds apart,
+      two store paths, and a later job asking for one nothing had built.
+      nanopynix issue #301.
+
+      **It resolves the umbrella that locks this commit, not the head of the
+      umbrella default branch.** The head is a moving answer: it is whatever
+      landed most recently, which for a branch nobody landed is not related
+      to this commit at all. `ci/walkback.sh` reads
+      `refs/umbrella/pynixd/<revision>` from the umbrella remote instead,
+      walking HEAD backwards to the nearest revision the umbrella has locked.
+      One `git ls-remote` and one `git rev-list`, over the git protocol,
+      which the api.github.com limit above does not count.
+    */
+    umbrella-rev = {
+      runs-on = "ubuntu-24.04";
+      timeout-minutes = 5;
+      outputs.rev = "\${{ steps.resolve.outputs.rev }}";
+      # A branch nobody landed needs its branch point, so the checkout has to
+      # reach that far back. No Nix: the script is git and sed.
+      ghanix.checkout = {
+        enable = true;
+        fetchDepth = 100;
+      };
+      steps = [
+        {
+          id = "resolve";
+          name = "Resolve the umbrella revision";
+          run = "ci/walkback.sh https://github.com/nixidae/nixidae pynixd | sed 's/^/rev=/' >> \"$GITHUB_OUTPUT\"";
+        }
+      ];
+    };
+
+    docs-build = {
+      "if" = developOnly;
+      needs = "umbrella-rev";
+      env.UMBRELLA_REV = umbrellaRev;
+      runs-on = "ubuntu-24.04";
+      # Under a minute when it works. A job with no bound waits six hours.
+      timeout-minutes = 20;
+      ghanix = lib.mkMerge [
+        bootstrap
+        { nix.cachix.enable = true; }
+      ];
+      steps = [
+        {
+          name = "Build documentation";
+          run = "nix build --file . pynixd-docs --out-link result --print-build-logs --print-out-paths";
+        }
+        {
+          name = "Verify docs closure";
+          run = "nix store verify --recursive --no-trust \"$(readlink -f result)\"";
+        }
+        {
+          name = "Prepare Pages artifact";
+          run = ''
+            mkdir -p public
+            cp -r --no-preserve=mode,ownership result/. public/
+          '';
+        }
+        {
+          uses = "actions/upload-pages-artifact@v3";
+          "with".path = "public";
+        }
+      ];
+    };
+
+    docs-deploy = {
+      "if" = developOnly;
+      needs = "docs-build";
+      runs-on = "ubuntu-24.04";
+      permissions = {
+        pages = "write";
+        id-token = "write";
+      };
+      environment = {
+        name = "github-pages";
+        url = "\${{ steps.deployment.outputs.page_url }}";
+      };
+      concurrency = {
+        group = "pages";
+        cancel-in-progress = false;
+      };
+      steps = [
+        {
+          name = "Deploy to GitHub Pages";
+          id = "deployment";
+          uses = "actions/deploy-pages@v4";
+        }
+      ];
+    };
+
+    test = {
+      needs = "umbrella-rev";
+      env.UMBRELLA_REV = umbrellaRev;
+      runs-on = "ubuntu-latest";
+      # **A hang here used to cost six hours, and the log came back empty.**
+      # pytest printed `149 errors in 11.91s` and then did not exit, and the
+      # runner killed the job at its own six-hour limit. Twenty-two runs
+      # queued behind that. The whole job takes under fifteen minutes when it
+      # works, so this is far above a good run and far below the limit that
+      # hurt. Issue #47.
+      timeout-minutes = 45;
+      ghanix = divertedStores;
+      steps = [
+        # **The settings the suite builds under, recorded on every run.**
+        # `sandbox`, `sandbox-shell`, `build-users-group` and `system` decide
+        # what a builder sees, and a runner sets them differently from a
+        # developer machine. `|| true`, because a diagnostic must never be
+        # the thing that fails a run.
+        {
+          name = "Record the Nix settings of this runner";
+          run = "nix config show || true";
+        }
+        {
+          name = "Generate SSH key for ssh-ng:// tests";
+          run = ''
+            mkdir -p ~/.ssh
+            ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N "" -q
+          '';
+        }
+        # `checks.ciWorkflow` is here rather than in a job of its own: it
+        # costs one evaluation, and a workflow that no longer says what its
+        # source says is a defect of the same kind as a lint failure.
+        {
+          name = "Format, lint, types and the workflow render";
+          run = "nix build --file . checks.format checks.lint checks.types checks.ciWorkflow --no-link --print-build-logs";
+        }
+        (pytestSuite "Tests" [
+          "tests/functional"
+          "tests/unit"
+        ])
+        (pytestSuite "Protocol tests" [ "nix-daemon-protocol/tests" ])
+        # The differential suite: pynixd's goal engine against Nix's own,
+        # which nanopynix calls in process. It ran nowhere until the umbrella
+        # supplied nanopynix to the shell, and `tests/differential/conftest.py`
+        # skips the lot rather than failing where the oracle is absent -- so a
+        # green run here is not proof on its own that it ran. 16 tests, 47 s.
+        (pytestSuite "Differential tests" [ "tests/differential" ])
+        # The parity suite: the same workload against `nix daemon` and against
+        # pynixd, byte for byte. `AGENTS.md` calls this the measure of
+        # pynixd's contract, and its own docstring lists six defects it found
+        # -- and no wired path ran it. Issue #33 is the same hole one suite
+        # over. 8 tests, 22 s.
+        (pytestSuite "Parity tests" [ "tests/parity" ])
+        # **The pytest output alone does not say why a suite went red here.**
+        # Each test writes `filtered.log`, `unfiltered.log` and
+        # `exceptions.jsonl` under this directory, and those hold the probe
+        # results, the daemon's own messages and the store each test used.
+        # The step output holds the assertion and nothing else.
+        #
+        # This repository has already published one wrong cause for a CI
+        # failure by reading the summary and not the per-test logs -- issue
+        # #37. The logs were beside it and were not uploaded.
+        {
+          name = "Keep the per-test logs of a red run";
+          "if" = "failure()";
+          uses = "actions/upload-artifact@v4";
+          "with" = {
+            name = "pynixd-logs";
+            path = "/tmp/pynixd-logs";
+            retention-days = 7;
+            if-no-files-found = "warn";
+          };
+        }
+      ];
+    };
+  };
+}

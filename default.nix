@@ -199,6 +199,65 @@ let
       }
     ) supported;
 
+  # Every GitHub Actions workflow as a value, beside the file it renders to.
+  # ci/workflows/*.nix hold them and say why.
+  ciWorkflows =
+    let
+      ghalib = import sources.ghanix { inherit lib; };
+      workflow = module: committed: {
+        inherit committed;
+        value = import module { inherit lib ghalib; };
+      };
+    in
+    {
+      ci = workflow ./ci/workflows/ci.nix ./.github/workflows/ci.yml;
+    };
+
+  # Those values as the files GitHub reads.
+  #
+  # `ci/to_yaml.py` and not `pkgs.formats.yaml`, which is remarshal: remarshal
+  # writes a multi-line string as one escaped double-quoted scalar, so a
+  # ten-line `run:` body arrives as a single 600-column line holding `\n`.
+  # The script writes those as literal blocks. It quotes `'on'`, which is
+  # what a workflow needs: unquoted, `on` is the boolean `true` to a YAML 1.1
+  # parser.
+  #
+  # No yamlfmt. nixkube runs one because treefmt formats the committed file
+  # and its CI ends in `git diff --exit-code`; this repository has neither, so
+  # the render is the only thing that writes the file. `ciWorkflow` below
+  # compares parsed documents, so style cannot fail it either way.
+  ciWorkflowFiles = lib.mapAttrs (
+    name: wf:
+    let
+      header = ''
+        # GENERATED FILE -- do not edit by hand.
+        # Edit ci/workflows/${name}.nix, then run: nix run --file . ci-workflow-update
+      '';
+    in
+    pkgs.runCommand "${name}.yml"
+      {
+        nativeBuildInputs = [ (pkgs.python3.withPackages (ps: [ ps.pyyaml ])) ];
+        value = builtins.toJSON wf.value;
+        passAsFile = [ "value" ];
+      }
+      ''
+        {
+          printf '%s\n' ${lib.escapeShellArg header}
+          python3 ${./ci/to_yaml.py} "$valuePath"
+        } > $out
+      ''
+  ) ciWorkflows;
+
+  ci-workflow-update = pkgs.writeScriptBin "ci-workflow-update" ''
+    #! ${pkgs.runtimeShell}
+    set -euo pipefail
+    ${lib.concatStrings (
+      lib.mapAttrsToList (
+        name: file: "cp --no-preserve=mode ${file} .github/workflows/${name}.yml\n"
+      ) ciWorkflowFiles
+    )}
+  '';
+
   checks = {
     format = mkCheck "format" [ pkgs.ruff ] "ruff format --check .";
     lint = mkCheck "lint" [ pkgs.ruff ] "ruff check .";
@@ -206,6 +265,39 @@ let
       pkgs.pyright
       pyinstance
     ] "pyright --pythonpath ${pyinstance}/bin/python .";
+
+    # Does each committed workflow still say what its ci/workflows/*.nix says?
+    #
+    # Parsed, not compared as text, so key order and quoting cannot fail this.
+    # yq reads YAML 1.2, where a bare `on:` key is the string "on". A YAML 1.1
+    # parser answers the boolean `true` for it, which would compare a boolean
+    # key against a string one and fail every run.
+    #
+    # It renders with the ghanix the umbrella locks, not a working copy. So a
+    # ghanix change reaches this check only after the umbrella lock moves.
+    ciWorkflow =
+      pkgs.runCommand "ci-workflow-check"
+        {
+          nativeBuildInputs = [
+            pkgs.yq-go
+            pkgs.jq
+          ];
+        }
+        (
+          lib.concatStrings (
+            lib.mapAttrsToList (name: wf: ''
+              yq --output-format=json '.' ${wf.committed} | jq --sort-keys . > committed.json
+              jq --sort-keys . < ${pkgs.writeText "${name}-rendered.json" (builtins.toJSON wf.value)} > rendered.json
+              if ! diff --unified committed.json rendered.json; then
+                echo >&2
+                echo ".github/workflows/${name}.yml and ci/workflows/${name}.nix disagree." >&2
+                echo "Run: nix run --file . ci-workflow-update" >&2
+                exit 1
+              fi
+            '') ciWorkflows
+          )
+          + "touch $out\n"
+        );
   };
 in
 package
@@ -218,6 +310,9 @@ package
     fix
     checks
     nixFunctionalTests
+    ciWorkflows
+    ciWorkflowFiles
+    ci-workflow-update
     pkgs
     ;
 
