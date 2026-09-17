@@ -132,6 +132,18 @@ jobs:
       - name: Verify Nix
         run: nix build --version
 
+      # **The settings the suite builds under, recorded on every run.**
+      # `sandbox`, `sandbox-shell`, `build-users-group` and `system` decide
+      # what a builder sees, and a runner sets them differently from a
+      # developer machine. The capability probe builds `/bin/sh -c 'echo
+      # $system > $out'` and that build produced no output path here, which
+      # `BuildResult.error_msg` states and does not explain. Issue #47.
+      #
+      # `|| true`, because a diagnostic must never be the thing that fails a
+      # run.
+      - name: Record the Nix settings of this runner
+        run: nix config show || true
+
       - name: Generate SSH key for ssh-ng:// tests
         run: |
           mkdir -p ~/.ssh
