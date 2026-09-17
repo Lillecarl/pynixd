@@ -164,6 +164,11 @@ def nix_env() -> dict[str, str]:
 @pytest.fixture(scope="session", autouse=True)
 async def pynixd_server(
     anyio_backend,
+    # **Named to order the two, not to use it.** Both are session-scoped and
+    # autouse, and pytest then orders them by collection. This store spawns
+    # daemons and runs the capability probe, and with the wrong order none of
+    # that reaches a log file at all. Issue #47.
+    session_logging,  # noqa: ARG001
     request: pytest.FixtureRequest,
     tmp_path_factory: pytest.TempPathFactory,
 ) -> AsyncGenerator[Server]:

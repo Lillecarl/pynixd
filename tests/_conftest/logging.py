@@ -374,7 +374,12 @@ def _teardown_test_logging(
 
     root.removeHandler(file_handler)
     root.removeHandler(stderr_handler)
-    root.setLevel(logging.WARNING)
+    # **The level that was in effect before the test, and not a literal.**
+    # This reset was `WARNING`, so every INFO record between two tests was
+    # dropped by the logger before any handler saw it -- including the whole
+    # startup of the session server. `session_logging` raises this to INFO
+    # for exactly that window. Issue #47.
+    root.setLevel(_root_level_outside_tests)
     file_handler.close()
     stderr_handler.close()
 
@@ -405,6 +410,74 @@ def _write_stats(events: list[dict[str, Any]], path: Path) -> None:
 
 # ── Single autouse fixture ───────────────────────────────────────
 
+_in_test: bool = False
+"""True while a per-test handler is attached. `session_logging` reads it."""
+
+_root_level_outside_tests: int = logging.WARNING
+"""What the root logger goes back to when a test ends.
+
+`session_logging` raises it, so that what happens between two tests is
+recorded rather than filtered away before a handler sees it."""
+
+
+@pytest.fixture(scope="session", autouse=True)
+def session_logging(test_log_dir: Path) -> Generator[Path, Any, Any]:
+    """Capture what happens outside any test, under `_session/`.
+
+    **The store every scheduling test builds on is the one store whose
+    startup nothing recorded.** `test_logging` below is function-scoped, and
+    pytest sets a session fixture up before it, so the pynixd server of
+    `tests/_conftest/config.py` spawns its daemons and runs its capability
+    probe with no file handler attached. Nothing it logs reaches a per-test
+    folder, and nothing reaches the CI artifact.
+
+    Measured on CI run 35191328467: across 773 test folders, every
+    `spawning_managed_daemon` belongs to a per-test store and not one belongs
+    to the session `local` or `builder`. Reading that absence as "the session
+    stores do not probe" is a mistake this directory should not make twice.
+    Issue #47.
+
+    INFO and not DEBUG, because a test's own events already go to its own
+    folder and this would otherwise copy all of them. What is wanted here is
+    the startup, the probe verdicts and the warnings.
+    """
+    log_dir = test_log_dir / "_session"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    handler = logging.FileHandler(log_dir / "filtered.log")
+    handler.setLevel(logging.INFO)
+    # Only what happens outside a test. A test's own events already have a
+    # folder, and copying them here doubles the artifact for nothing.
+    handler.addFilter(lambda _record: not _in_test)
+    handler.setFormatter(
+        structlog.stdlib.ProcessorFormatter(
+            processors=[
+                structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+                structlog.processors.JSONRenderer(),
+            ],
+            foreign_pre_chain=[
+                _stdlib_to_event_dict,
+                _abs_time_stamper,
+                _relative_time_stamper,
+            ],
+        ),
+    )
+    root = logging.getLogger()
+    root.addHandler(handler)
+    # **The logger filters before the handler does.** Outside a test the root
+    # sits at WARNING, so an INFO record is dropped before it can reach this
+    # handler at all -- which is why the session server's startup produced two
+    # warnings and nothing else on the first attempt at this.
+    global _root_level_outside_tests
+    previous, _root_level_outside_tests = _root_level_outside_tests, logging.INFO
+    root.setLevel(logging.INFO)
+    try:
+        yield log_dir
+    finally:
+        _root_level_outside_tests = previous
+        root.removeHandler(handler)
+        handler.close()
+
 
 @pytest.fixture(autouse=True)
 def test_logging(request: pytest.FixtureRequest, test_log_dir: Path) -> Generator[Path, Any, Any]:
@@ -428,7 +501,12 @@ def test_logging(request: pytest.FixtureRequest, test_log_dir: Path) -> Generato
     file_handler, stderr_handler = _setup_test_logging(log_dir)
     structlog.contextvars.bind_contextvars(test_start_time=time.monotonic())
 
-    yield log_dir  # yield the folder path for other fixtures to use
+    global _in_test
+    _in_test = True
+    try:
+        yield log_dir  # yield the folder path for other fixtures to use
+    finally:
+        _in_test = False
 
     _teardown_test_logging(file_handler, stderr_handler, events, log_dir)
     _captured_events = []
