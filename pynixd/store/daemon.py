@@ -51,6 +51,15 @@ log = structlog.get_logger(__name__)
 _CB_THRESHOLD: int = 3
 _CB_MAX_COOLDOWN: float = 300.0
 
+SSHD_DEFAULT_MAX_SESSIONS: Final[int] = 10
+"""`MaxSessions` in `sshd_config(5)`, which a client cannot read.
+
+It counts "open shell, login or subsystem sessions permitted per network
+connection", and the same page says setting it to 0 "will prevent all shell,
+login and subsystem sessions **while still permitting forwarding**". So a
+forwarded channel does not count against it and a session channel does. That
+is why `SSHSubprocessStore` and `SSHSocketStore` take different bounds."""
+
 PROBE_CONCURRENCY: Final[int] = 5
 """Probes in flight at once, over every system and every feature.
 
@@ -92,6 +101,14 @@ class DaemonStore(Store):
     circuit breaking, and reconnect logic on top of the Store ABC.
     """
 
+    MAX_CONNECTIONS: int = 64
+    """How many connections the pool may hold at once.
+
+    A connection to a Unix-socket daemon costs a process on this machine and
+    nothing on a far one, so 64 is a bound on memory rather than a limit
+    somebody else imposes. A subclass whose transport has its own ceiling
+    lowers this; `SSHSubprocessStore` does. Issue #43."""
+
     def __init__(self, spec: StoreSpecBase) -> None:
         """Initialize daemon store with pool, probing state, circuit breaker, and reconnect loop."""
         super().__init__(spec)
@@ -130,6 +147,7 @@ class DaemonStore(Store):
             gate=self.gate,
             idle_ttl=self.idle_ttl,
             max_lifetime=self.max_lifetime,
+            max_connections=self.MAX_CONNECTIONS,
             on_connection_created=self._on_connection_created,
             on_pool_empty=self._on_pool_empty,
         )

@@ -23,7 +23,7 @@ from ..config import (
 from ..connection import Connection
 from ..monitor import DummyResourceMonitor, GenericResourcePoller, ResourceMonitor
 from ..wire import SSHNixReader, SSHNixWriter
-from .daemon import DaemonStore
+from .daemon import SSHD_DEFAULT_MAX_SESSIONS, DaemonStore
 
 if TYPE_CHECKING:
     from nix_daemon_protocol.ids import StoreId
@@ -299,6 +299,20 @@ class SSHSubprocessStore(SSHStore):
     Otherwise runs ``nix-daemon --stdio`` (default store, nixbuild.net compat).
     """
 
+    MAX_CONNECTIONS: int = SSHD_DEFAULT_MAX_SESSIONS - 2
+    """Every connection here is `create_process`, which is an SSH **session**
+    channel, and `sshd` permits ten of those per network connection.
+
+    The inherited 64 let six times that through, and `sshd` does not queue the
+    extra ones -- it refuses them with `OPEN_REQUEST_SESSION_FAILED`, which
+    `_send_probe` does not catch, so the store goes into a 300 second
+    cooldown. Issue #43, found while bounding the probe in #15.
+
+    Two below the ceiling, so a session somebody else opens on the same
+    connection still fits. It stays above `PROBE_CONCURRENCY`: the probe's
+    builds are pool connections too, and a pool no wider than the probe would
+    let a probe block every other caller."""
+
     def __init__(self, spec: SSHSubprocessStoreSpec) -> None:
         """Configure SSH subprocess with host, port, and client key settings."""
         super().__init__(spec)
@@ -364,7 +378,13 @@ _DAEMON_SOCKET_PATH = Path("/nix/var/nix/daemon-socket/socket")
 
 
 class SSHSocketStore(SSHStore):
-    """Persistent SSH connection, tunnels to remote Unix socket."""
+    """Persistent SSH connection, tunnels to remote Unix socket.
+
+    Keeps the inherited `MAX_CONNECTIONS`. `open_unix_connection` is a
+    forwarded channel, not a session, and `sshd_config(5)` says `MaxSessions`
+    at 0 still permits forwarding. So the ceiling that bounds
+    `SSHSubprocessStore` does not apply here. Issue #43.
+    """
 
     def __init__(self, spec: SSHSocketStoreSpec) -> None:
         """Configure SSH socket tunnel store with host, port, and remote socket path."""
