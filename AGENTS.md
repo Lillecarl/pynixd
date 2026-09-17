@@ -42,12 +42,13 @@ Pynixd will adversise 1.38 support even if local_store is 1.35 and translate whe
 - **Transparency**: No-op or cached operations MUST inject a `StderrNext` message (e.g., `"pynixd: IsValidPath (SQLite hit)"`) into the buffer for transparency.
 
 ## 4. Engineering Standards
-- **Validation**: before committing, run all four:
+- **Validation**: before committing, run all five:
 
       nix build --file . checks.format checks.lint checks.types --no-link
       nix develop --impure --file shell.nix --command pytest tests/functional tests/unit
       nix develop --impure --file shell.nix --command pytest nix-daemon-protocol/tests
       nix develop --impure --file shell.nix --command pytest tests/differential
+      nix develop --impure --file shell.nix --command pytest tests/parity
 
   The `checks.*` derivations are gates: non-mutating, and each fails the
   build. `nix run --file . fix` is the rewriter — never a gate.

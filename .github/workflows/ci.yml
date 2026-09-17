@@ -146,3 +146,14 @@ jobs:
       # other suites has no part in.
       - name: Differential tests
         run: nix develop --impure --file shell.nix --command pytest tests/differential
+
+      # The parity suite: the same workload against `nix daemon` and against
+      # pynixd, byte for byte. `AGENTS.md` calls this the measure of pynixd's
+      # contract, and its own docstring lists six defects it found -- and no
+      # wired path ran it. Not CI, not `tests.pytest`, and `tests/guest`
+      # excludes it for issue #37. Issue #33 is the same hole one suite over.
+      #
+      # Its own process, like the two above. It starts daemons of its own and
+      # makes stores under /tmp/pynixd-wire-parity. 8 tests, 22 s.
+      - name: Parity tests
+        run: nix develop --impure --file shell.nix --command pytest tests/parity
