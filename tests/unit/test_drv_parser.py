@@ -34,6 +34,21 @@ _PROBES_NIX = Path(__file__).parent.parent.parent / "tests" / "nix" / "drv-probe
 # ── Session-scoped fixture: evaluate drv-probes.nix once ───────────────────
 
 
+class _ProbesUnavailable(Exception):
+    """`nix eval` named a `.drv` and the store does not hold it.
+
+    A build sandbox without the `recursive-nix` feature has no daemon socket,
+    so an evaluation computes a derivation path and writes nothing. Issue #38.
+    """
+
+    def __init__(self, drv_path: str) -> None:
+        super().__init__(
+            f"no store holds {drv_path}, so no probe can be read. "
+            "A build sandbox needs the recursive-nix feature for that, and "
+            "tests/derivations/pytest/default.nix does not ask for it.",
+        )
+
+
 @pytest.fixture(scope="session")
 def drv_probes_path() -> Path:
     return _PROBES_NIX
@@ -47,10 +62,19 @@ def probes(drv_probes_path: Path) -> dict[str, tuple[str, str, dict[str, Any]]]:
     Evaluated once per test session.
     """
 
-    # `checks.pynixd` runs this suite in a build sandbox, which holds no Nix
-    # binary, no store daemon and no network. Every test that reads a real
-    # `.drv` therefore skips there, and the manufactured edge cases below
-    # still run. Without this, 21 tests errored with `FileNotFoundError`.
+    # **A Nix binary is not the thing these need.** `tests.pytest` puts
+    # `pkgs.nix` in the builder and exports `NIX_BIN`, so this check passed
+    # there and the 21 tests it was written to skip errored anyway, with
+    # `FileNotFoundError: /nix/store/...-ca-fixed.drv`. Issue #38.
+    #
+    # What they need is a store that `nix eval` can write a `.drv` into.
+    # `tests/derivations/pytest/default.nix` dropped
+    # `requiredSystemFeatures = [ "recursive-nix" ]`, because nothing here
+    # advertises that feature and Nix waits rather than failing -- one build
+    # sat 5h41m on a second of CPU. So the builder has no daemon socket,
+    # `drvPath` still evaluates to a path, and nothing puts the file there.
+    #
+    # The check is therefore the operation itself, asked once. Issue #38.
     if shutil.which(str(NIX_BIN)) is None:
         pytest.skip(f"{NIX_BIN} is not on PATH, so no probe can be evaluated")
 
@@ -90,7 +114,10 @@ def probes(drv_probes_path: Path) -> dict[str, tuple[str, str, dict[str, Any]]]:
             if proc.returncode != 0:
                 raise RuntimeError(f"eval {name}.drvPath failed: {stderr.decode()}")
             drv_path = stdout.decode().strip()
-            drv_content = await anyio.Path(drv_path).read_text()
+            try:
+                drv_content = await anyio.Path(drv_path).read_text()
+            except FileNotFoundError as ex:
+                raise _ProbesUnavailable(drv_path) from ex
 
             proc = await asyncio.create_subprocess_exec(
                 NIX_BIN,
@@ -108,7 +135,10 @@ def probes(drv_probes_path: Path) -> dict[str, tuple[str, str, dict[str, Any]]]:
             result[name] = (drv_path, drv_content, canonical)
         return result
 
-    return asyncio.run(_eval_all())
+    try:
+        return asyncio.run(_eval_all())
+    except _ProbesUnavailable as ex:
+        pytest.skip(str(ex))
 
 
 # ── Helpers for extracting data from canonical JSON ────────────────────────
