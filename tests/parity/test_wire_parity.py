@@ -537,17 +537,20 @@ async def _end(recorder: Process) -> None:
     with anyio.move_on_after(GRACE) as scope:
         await recorder.wait()
 
-    if scope.cancelled_caught:
-        # Before the wait, so the recorder is still unreaped. That keeps its
-        # pid allocated, so the group id still names this group.
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(group, signal.SIGKILL)
-        await recorder.wait()
-        return
-
-    # The recorder is gone, so anything left in its group outlived it.
+    # Anything still here outlived the recorder, or is the recorder itself
+    # refusing SIGTERM.
+    #
+    # `wait` above has reaped the recorder on the path where it answered, so
+    # the group id is a pid the kernel could hand out again. The window is the
+    # microseconds to the next line, Linux allocates pids in order up to
+    # `pid_max`, and a new owner would have to be a group leader as well.
+    # Named rather than closed: not reaping means not waiting, and then the
+    # recorder's own teardown never gets the grace period it needs.
     with contextlib.suppress(ProcessLookupError):
         os.killpg(group, signal.SIGKILL)
+
+    if scope.cancelled_caught:
+        await recorder.wait()
 
 
 @pytest.fixture
