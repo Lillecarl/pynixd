@@ -381,11 +381,25 @@ class LocalStore(DaemonStore):
         await self._kill_daemon()
 
     async def _kill_daemon(self) -> None:
-        """Terminate the managed daemon process and all its children.
+        """Terminate the managed daemon process and the group it leads.
 
-        The daemon is spawned with `start_new_session=True`, making it a
-        session leader. Its PID equals the process group ID, so we can
-        kill the entire group with `os.killpg`.
+        The daemon is spawned with `start_new_session=True`, so its pid is
+        its process group id and `os.killpg` reaches that group.
+
+        **It does not reach the daemon's connection workers, and it cannot.**
+        `nix/unix/daemon.cc` forks one worker for each accepted connection,
+        and the first thing that worker does is `setsid()`. It is its own
+        session leader from then on, in a group nothing here owns. The same
+        call site sets `options.dieWithParent = false`, so Nix means the
+        worker to outlive the daemon.
+
+        Measured in the guest census: one `nix` worker with `ppid 1` after a
+        run, holding a store under `/tmp`. Its argv[1] is the *client's* pid,
+        which `daemon.cc` writes there for debugging, so it names a process
+        that is already gone. Issue #36 carries the reproduction.
+
+        A worker exits when it finishes what it is doing and reads EOF from
+        its client. Nothing below makes that happen sooner.
         """
         # Unregister atexit handler so we don't double-kill
         with contextlib.suppress(ValueError):
@@ -396,7 +410,8 @@ class LocalStore(DaemonStore):
         pid = self.daemon_proc.pid
         log.info("terminating_daemon_process_group", pid=pid)
 
-        # SIGTERM the entire process group (daemon + any children)
+        # The daemon's group. Its connection workers are not in it -- see
+        # the docstring.
         with contextlib.suppress(ProcessLookupError):
             os.killpg(pid, signal.SIGTERM)
 
