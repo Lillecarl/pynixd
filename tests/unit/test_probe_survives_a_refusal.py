@@ -26,9 +26,11 @@ import pytest
 
 from nix_daemon_protocol.constants import STDERR_ERROR, STDERR_LAST
 from nix_daemon_protocol.io import BytesReader, BytesWriter
+from nix_daemon_protocol.logs import ActivityField, LogNext, LogResult
+from nix_daemon_protocol.protocol import FieldType, ResultType
 from pynixd.exceptions import BackendError
 from pynixd.serde import BuildDerivationResponse, ReadContext
-from pynixd.store.daemon import DaemonStore, _refusal_with_builder_output
+from pynixd.store.daemon import PROBE_SYSTEM_SCRIPT, DaemonStore, _refusal_with_builder_output
 
 REFUSAL = "you are not privileged to build input-addressed derivations"
 
@@ -177,3 +179,77 @@ def test_only_the_tail_travels() -> None:
     reason = _refusal_with_builder_output(_Refused([f"line {i}\n" for i in range(50)]))
     assert "line 49" in reason
     assert "line 0" not in reason
+
+
+def _build_log_result(text: str) -> LogResult:
+    """One `STDERR_RESULT` of the shape nix 2.34.8 sends for a line of build output."""
+    return LogResult(
+        result_type=ResultType.BUILD_LOG_LINE,
+        fields=[ActivityField(type=FieldType.STRING, valstr=text)],
+    )
+
+
+class _RefusedWithRealLogs:
+    """A response whose log stream holds the message types the daemon sends."""
+
+    class _Result:
+        status = 5
+        error_msg = "failed to produce output path for output 'out'"
+
+    class _Logs:
+        def __init__(self, messages: list[object]) -> None:
+            self.messages = messages
+
+    def __init__(self, messages: list[object]) -> None:
+        self.result = self._Result()
+        self.logs = self._Logs(messages)
+
+
+def test_the_builders_own_lines_are_the_ones_that_travel() -> None:
+    """Measured against nix 2.34.8, not assumed.
+
+    A builder that printed one line to stderr and produced no output path
+    answered with one `LogResult` of type `BUILD_LOG_LINE`. `LogResult` has no
+    `text` attribute, so the reader that asked for `message.text` kept Nix's
+    progress chatter and dropped that line. Issue #47.
+    """
+    reason = _refusal_with_builder_output(
+        _RefusedWithRealLogs(
+            [
+                LogNext(text="building '/nix/store/...-probe-system-x86_64-linux.drv'..."),
+                _build_log_result("probe wrote no /nix/store/xxx-probe-system-x86_64-linux"),
+            ],
+        ),
+    )
+    assert "probe wrote no" in reason, "the builder's line is the one that names the cause"
+    assert "building '" not in reason, "Nix's progress chatter gives way to it"
+
+
+def test_progress_results_are_not_build_output() -> None:
+    """`STDERR_RESULT` carries progress counters far more often than build lines."""
+    reason = _refusal_with_builder_output(
+        _RefusedWithRealLogs(
+            [
+                LogResult(
+                    result_type=ResultType.PROGRESS,
+                    fields=[ActivityField(type=FieldType.INT, valint=3)],
+                ),
+                LogNext(text="waiting for a machine to build it"),
+            ],
+        ),
+    )
+    assert "waiting for a machine" in reason
+    assert "3" not in reason.removeprefix(_RefusedWithRealLogs._Result.error_msg)
+
+
+def test_the_probe_script_reports_the_path_it_wrote() -> None:
+    """The builder says where it wrote, so a refusal can be compared against it.
+
+    Nix names the path it checked in `failed to produce output path ... at
+    "<path>"`. A builder that names the path it saw turns that message from a
+    symptom into a comparison. Issue #47.
+    """
+    script = PROBE_SYSTEM_SCRIPT.format(system="x86_64-linux")
+    assert 'echo x86_64-linux > "$out"' in script
+    assert script.count('"$out"') >= 2, "it reports the path the builder saw, not a literal"
+    assert ">&2" in script, "on stderr, which is what BUILD_LOG_LINE carries"

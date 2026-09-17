@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Final
 import anyio
 import structlog
 
+from nix_daemon_protocol.protocol import ResultType
 from nix_daemon_protocol.store_dir import store_prefix
 from nix_daemon_protocol.wire_ops import WireRequest
 
@@ -94,6 +95,42 @@ build log of a probe is six lines of `nix` chatter at most, because the
 derivation is one `echo`."""
 
 
+PROBE_SYSTEM_SCRIPT: Final[str] = (
+    'echo {system} > "$out"; test -e "$out" && echo "probe wrote $out" >&2 || echo "probe wrote no $out" >&2'
+)
+"""The shell a system probe runs, and the one line it says about the result.
+
+**A silent builder tells a refusal nothing.** `echo <system> > $out` alone
+exits 0 and prints nothing, so a store that answered `failed to produce output
+path` carried no evidence of where the builder had written. The report names
+the path the builder saw, which a reader compares against the path Nix names
+in that message. Issue #47."""
+
+
+_BUILD_LOG_RESULTS: Final[frozenset[int]] = frozenset(
+    {ResultType.BUILD_LOG_LINE, ResultType.POST_BUILD_LOG_LINE},
+)
+
+
+def _builder_lines(logs: Any) -> list[str]:
+    """Every line the builder wrote, taken from the log stream of a response.
+
+    **Build output is an activity result, not a log line.** The daemon sends
+    it as `STDERR_RESULT` with type `BUILD_LOG_LINE`, and the text sits in
+    `fields[0].valstr`. `LogResult` carries no `text` attribute at all, so
+    reading `message.text` collected Nix's own progress chatter and dropped
+    every line the builder wrote. Measured against nix 2.34.8: a builder that
+    printed one line to stderr and produced no output path answered with
+    exactly one `BUILD_LOG_LINE` result holding that line. Issue #47.
+    """
+    lines: list[str] = []
+    for message in getattr(logs, "messages", []):
+        if getattr(message, "result_type", None) not in _BUILD_LOG_RESULTS:
+            continue
+        lines.extend(field.valstr.rstrip("\n") for field in message.fields if field.valstr and field.valstr.strip())
+    return lines
+
+
 def _refusal_with_builder_output(resp: Any) -> str:
     """Why a store refused a probe, with what its builder said.
 
@@ -105,11 +142,11 @@ def _refusal_with_builder_output(resp: Any) -> str:
     the trail ended. pynixd issue #47.
 
     The daemon already sent the builder's output, and the response buffers it.
-    This reads the tail of that buffer, so the next such refusal carries what
-    the shell said rather than only that Nix was unhappy with it.
+    Nix's progress lines are the fallback, because a store that refuses before
+    it starts a builder says why there and only there.
     """
     error_msg = resp.result.error_msg or f"status {resp.result.status}"
-    lines = [
+    lines = _builder_lines(resp.logs) or [
         text.rstrip("\n")
         for message in getattr(resp.logs, "messages", [])
         if (text := getattr(message, "text", "")).strip()
@@ -564,7 +601,7 @@ class DaemonStore(Store):
                     f"probe-system-{system}",
                     system,
                     "",
-                    ["-c", f"echo {system} > $out"],
+                    ["-c", PROBE_SYSTEM_SCRIPT.format(system=system)],
                 )
             supported[index] = ok
             refusals[index] = reason
