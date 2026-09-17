@@ -46,6 +46,7 @@
   git,
   bash,
   busybox,
+  busybox-sandbox-shell,
   coreutils,
   findutils,
   gnugrep,
@@ -101,6 +102,23 @@ let
     gnutar
     xz
     util-linux
+    # **Before `busybox`, and this is what `build-remote` needs.** meson runs
+    # `find_program('busybox')` and writes the answer into `$busybox`, which
+    # `build-remote.sh:35` hands to a derivation as its `builder`. That
+    # derivation is built in a chroot store of the test's own making, and Nix
+    # copies the builder there and nothing else.
+    #
+    # The plain `busybox` is `dynamically linked, interpreter
+    # /nix/store/...-glibc-2.42-84/lib/ld-linux-x86-64.so.2`. The interpreter
+    # is not in that store, so `execve` answers ENOENT for a file that is
+    # there, and the message reads `executing '/nix/store/...-busybox': No
+    # such file or directory`. Eight tests failed that way, on both arms.
+    #
+    # `busybox-sandbox-shell` is the same busybox built static, which is why
+    # nixpkgs carries it and why Nix's own package uses it for
+    # `sandbox_shell`. It holds `ash`, `busybox` and `sh` and no `ls`, so it
+    # cannot take the coreutils lookup that the note below is about.
+    busybox-sandbox-shell
     busybox
     # `fetchGitVerification.sh:6` looks for `ssh-keygen` and skips the whole
     # test when it finds none. It used to find the one of the caller, so the
@@ -165,6 +183,24 @@ writeShellApplication {
     # under a symbolic link, and `setup.sh` resolves this path for that reason.
     WORK=''${NIXFT_WORK:-/tmp/nanopynix-nixft/$NIXFT_VERSION}
     export WORK
+
+    # **A long `$WORK` makes the suite lie.** A Unix socket path takes 107
+    # bytes and pynixd's upstream socket sits under `$WORK/socks`, so a work
+    # directory past this budget gives a socket nothing can connect to. Nix
+    # binds such a path with a helper that chdirs, so the file appears and the
+    # failure names the daemon rather than the path -- issue #44. Measured:
+    # `NIXFT_WORK` under a scratch directory failed `simple` four times out of
+    # four and none of it was about Nix.
+    #
+    # 60 leaves room for `/socks/` and ten digits of `cksum`, and for the
+    # `$TEST_ROOT/store/...` paths that are longer than a socket but bounded
+    # the same way.
+    if [ ''${#WORK} -gt 60 ]; then
+      echo "nanopynix-nixft: NIXFT_WORK is ''${#WORK} characters and 60 is the limit:" >&2
+      echo "  $WORK" >&2
+      echo "A Unix socket path takes 107 bytes, and a store under this directory needs one." >&2
+      exit 1
+    fi
 
     CONTROL_LOG=$WORK/control.testlog.json
     PYNIXD_LOG=$WORK/pynixd.testlog.json

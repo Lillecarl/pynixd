@@ -93,6 +93,20 @@ state_dir=$(readlink -f "$NIX_STATE_DIR")
 # `TEST_ROOT` is what `vars.sh` builds both directories from.
 work=${TEST_ROOT:-$(dirname "$(dirname "$state_dir")")}
 
+# **The upstream socket goes under $WORK and not under $TEST_ROOT.** A Unix
+# socket path takes 107 bytes, and `$TEST_ROOT` carries the name of the test:
+# `build-remote-content-addressed-floating` made
+# `$TEST_ROOT/pynixd-upstream.socket` 110 bytes, and that test could not run
+# through pynixd at all. Nix binds such a path with a helper that chdirs and
+# pynixd cannot connect to it -- issue #44.
+#
+# A checksum of `$TEST_ROOT` keeps two tests apart in ten digits at most,
+# whatever they are called. `$WORK/socks` is short by construction: the
+# wrapper refuses a `$WORK` longer than 60 characters.
+socks=${WORK:?}/socks
+mkdir -p "$socks"
+upstream=$socks/$(printf '%s' "$work" | cksum | cut -d' ' -f1).socket
+
 config=$work/pynixd-test-config.json
 cat > "$config" <<JSON
 {
@@ -101,7 +115,7 @@ cat > "$config" <<JSON
       "type": "local-socket",
       "store_dir": "$store_dir",
       "state_dir": "$state_dir",
-      "socket_path": "$work/pynixd-upstream.socket",
+      "socket_path": "$upstream",
       "nix_bin": "$REAL_NIX",
       "use_db": true,
       "monitor": false,
