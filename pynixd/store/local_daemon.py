@@ -58,6 +58,42 @@ once, and not after the whole budget.
 _DAEMON_POLL_INTERVAL = 0.05
 """Seconds between two checks. It is the granularity, and not the budget."""
 
+_SUN_PATH_MAX = 107
+"""Bytes of a Unix socket path, without the terminating NUL.
+
+`sockaddr_un.sun_path` is 108 bytes on Linux and 104 on darwin, and the
+shorter of the two is the safe bound for a store that a darwin client may
+reach. This is 107 because Linux is where the managed daemon runs, and the
+error below names the number it measured.
+
+**Nix binds a longer path and pynixd cannot connect to it.** Nix forks a
+helper that `chdir`s into the directory and binds the base name
+(`bindConnectProcHelper` in `src/libutil/unix/unix-domain-socket.cc`), so a
+store under a long path gets a working socket. Python has no such helper, and
+`socket.connect()` with the absolute path answers `OSError: AF_UNIX path too
+long`. Measured: a 129 byte path binds through `chdir` and refuses an
+absolute `connect`.
+
+So the failure had no visible cause. The socket file existed, `_probe_socket`
+could not reach it, and pynixd waited the whole budget and then reported
+`(the daemon wrote nothing)` -- which was true of the daemon and said nothing
+about the fault. Issue #44."""
+
+
+def _refuse_a_socket_path_python_cannot_reach(socket_path: Path) -> None:
+    """Fail now, with the number, rather than after the start-up budget.
+
+    Checked before the spawn and for the system daemon as well: the limit is
+    a property of the path, and both cases connect to one.
+    """
+    measured = len(os.fsencode(str(socket_path)))
+    if measured > _SUN_PATH_MAX:
+        raise RuntimeError(
+            f"The socket path is {measured} bytes and a Unix socket takes {_SUN_PATH_MAX}: "
+            f"{socket_path}. Nix binds such a path with a helper that chdirs, so the socket "
+            "may exist and still be unreachable from here. Put the store somewhere shorter.",
+        )
+
 
 class LocalStore(DaemonStore):
     """Connects to a local nix-daemon via Unix socket.
@@ -143,6 +179,8 @@ class LocalStore(DaemonStore):
             if self.daemon_ready is not None:
                 await self.daemon_ready.wait()
             return
+
+        _refuse_a_socket_path_python_cannot_reach(self.socket_path)
 
         if not self.managed:
             if not self.socket_path.exists():

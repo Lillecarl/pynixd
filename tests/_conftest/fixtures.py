@@ -13,6 +13,7 @@ import anyio.to_thread
 import pytest
 import structlog
 
+from pynixd.store.local_daemon import _SUN_PATH_MAX
 from pynixd.testing import clear_test_stash
 from tests._conftest.constants import (
     HAS_PYINSTRUMENT,
@@ -135,6 +136,29 @@ def anyio_backend() -> tuple[str, dict[str, bool]]:
     return ("asyncio", {"use_uvloop": True})
 
 
+TMP_PREFIX = "/tmp/pynixd-test-"
+_RANDOM_SUFFIX = len("-xxxxxxxx")
+_SOCKET_UNDER_A_TEST_STORE = "/store/nix/var/nix/daemon-socket/pynixd-nix"
+
+NAME_BUDGET = _SUN_PATH_MAX - len(TMP_PREFIX) - _RANDOM_SUFFIX - len(_SOCKET_UNDER_A_TEST_STORE)
+"""Characters of a test's own name that reach its directory.
+
+Derived and not written down, because every part of it is a fact somewhere
+else and an arithmetic slip here is a socket nobody can reach. A Unix socket
+path takes 107 bytes, and a store of a test puts its daemon socket at
+`<tmp_path>/store/nix/var/nix/daemon-socket/pynixd-nix`.
+
+Measured: `test_a_daemon_that_dies_reports_what_the_daemon_said` is 51
+characters and made a 121 byte socket path. That test only passed because it
+kills the daemon and never connects to it; a test of the same name that did
+connect would have failed with no stated cause. pynixd issue #44 is the error
+that now names it.
+
+The random suffix is what keeps two runs apart, so truncating the name costs
+readability and not uniqueness.
+"""
+
+
 @pytest.fixture
 def tmp_path(request: pytest.FixtureRequest) -> Generator[Path]:
     """Override pytest's tmp_path to use rmtree_robust for teardown.
@@ -142,8 +166,8 @@ def tmp_path(request: pytest.FixtureRequest) -> Generator[Path]:
     Uses a dedicated prefix to avoid pytest's shutil.rmtree which
     fails on read-only Nix store files.
     """
-    suffix = f"{request.node.name}-{random.getrandbits(32):08x}"
-    path = Path(f"/tmp/pynixd-test-{suffix}")
+    suffix = f"{request.node.name[:NAME_BUDGET]}-{random.getrandbits(32):08x}"
+    path = Path(f"{TMP_PREFIX}{suffix}")
     path.mkdir(parents=True, exist_ok=True)
     yield path
     with suppress(Exception):
