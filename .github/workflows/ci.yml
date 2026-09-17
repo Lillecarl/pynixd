@@ -127,8 +127,8 @@ jobs:
       run: |
         mkdir -p ~/.ssh
         ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N "" -q
-    - name: Format, lint, types and the workflow render
-      run: nix build --file . checks.format checks.lint checks.types checks.ciWorkflow --no-link --print-build-logs
+    - name: Format, lint and types
+      run: nix build --file . checks.format checks.lint checks.types --no-link --print-build-logs
     - name: Tests
       run: nix develop --impure --file shell.nix --command pytest tests/functional tests/unit
     - name: Protocol tests
@@ -137,6 +137,8 @@ jobs:
       run: nix develop --impure --file shell.nix --command pytest tests/differential
     - name: Parity tests
       run: nix develop --impure --file shell.nix --command pytest tests/parity
+    - name: The workflow render
+      run: nix build --file . checks.ciWorkflow --no-link --print-build-logs
     - if: failure()
       name: Keep the per-test logs of a red run
       uses: actions/upload-artifact@v4

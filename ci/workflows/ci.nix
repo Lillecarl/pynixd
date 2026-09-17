@@ -242,12 +242,9 @@ ghalib.evalWorkflow {
             ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N "" -q
           '';
         }
-        # `checks.ciWorkflow` is here rather than in a job of its own: it
-        # costs one evaluation, and a workflow that no longer says what its
-        # source says is a defect of the same kind as a lint failure.
         {
-          name = "Format, lint, types and the workflow render";
-          run = "nix build --file . checks.format checks.lint checks.types checks.ciWorkflow --no-link --print-build-logs";
+          name = "Format, lint and types";
+          run = "nix build --file . checks.format checks.lint checks.types --no-link --print-build-logs";
         }
         (pytestSuite "Tests" [
           "tests/functional"
@@ -266,6 +263,16 @@ ghalib.evalWorkflow {
         # -- and no wired path ran it. Issue #33 is the same hole one suite
         # over. 8 tests, 22 s.
         (pytestSuite "Parity tests" [ "tests/parity" ])
+        # **After the suites, because this one can be wrong about itself.**
+        # It renders with the ghanix the umbrella locks, and `walkback.sh`
+        # runs before `umbrella mark` has published the mapping for this
+        # commit -- so the first run after a land that changes ghanix renders
+        # with the previous one and reports a drift that is not there. Ahead
+        # of the suites it hid all four of them behind that. Issue #49.
+        {
+          name = "The workflow render";
+          run = "nix build --file . checks.ciWorkflow --no-link --print-build-logs";
+        }
         # **The pytest output alone does not say why a suite went red here.**
         # Each test writes `filtered.log`, `unfiltered.log` and
         # `exceptions.jsonl` under this directory, and those hold the probe
