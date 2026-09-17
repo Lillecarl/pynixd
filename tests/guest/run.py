@@ -34,6 +34,7 @@ written for a machine rather than a machine inside one. Measured:
 SUITES = [
     ("unit", "tests/unit", [f"--async-test-timeout={PER_TEST_TIMEOUT}"]),
     ("protocol", "nix-daemon-protocol/tests", []),
+    ("parity", "tests/parity", [f"--async-test-timeout={PER_TEST_TIMEOUT}"]),
 ]
 """Name, what to hand pytest, and the flags only that suite takes.
 
@@ -41,18 +42,27 @@ Per suite, because `nix-daemon-protocol/tests` is its own project with
 its own `pytest.ini`: it does not know `--async-test-timeout`, and pytest
 answers an unknown option with exit 4 before collecting anything.
 
-Missing on purpose: `tests/parity`, which takes 35 minutes to fail in a
-guest the way it does not on a machine (issue #37), and
-`tests/functional`, which wants a daemon it may build with (issue #29)."""
+`tests/parity` was missing for 35 minutes of failure that the guest's own
+configuration caused: it took cache.nixos.org from the NixOS default and
+had no route to it, so every substituter query waited 15 seconds and
+retried five times. `substituters = lib.mkForce [ ]` in the guest
+derivation is what put it back -- 2120.92s and 5 failures became 121.20s
+and none. Issue #37.
+
+Missing on purpose: `tests/functional`, which wants a daemon it may build
+with (issue #29)."""
 
 TIMEOUT = 2400
-"""Seconds for one suite. `tests/unit` takes 11 in a QEMU guest and 87
-under UML, measured on an idle host; the rest is for a loaded builder."""
+"""Seconds for one suite. Measured in a QEMU guest on an idle host:
+`tests/unit` 27.2s, `nix-daemon-protocol/tests` 4.8s, `tests/parity`
+122.2s. `tests/unit` takes 87s under UML. The rest is for a loaded
+builder."""
 
 ALLOWED_LEAKS = 0
-"""The one leak this check has found belongs to `tests/parity` (issue
-#36), which the suites above no longer run. Raise it only with an issue
-number beside it, never to make a run pass."""
+"""The one leak this check has found belongs to `tests/parity`: a
+per-connection worker of a managed daemon, which `daemon.cc` gives its own
+session, so no group signal at either end reaches it. Issue #36. Raise this
+only with an issue number beside it, never to make a run pass."""
 
 LEAK_MARKERS = ("/tmp/pynixd-", "pynixd")
 """A test store, or pynixd itself. Matched against the command line and

@@ -95,6 +95,25 @@ uml.mkTest {
         "root"
         "tester"
       ];
+      # The guest has no route out, and NixOS defaults this to
+      # `https://cache.nixos.org/`. So every substituter query resolved
+      # nowhere, waited 15 seconds and retried five times.
+      #
+      # Measured: `tests/parity` took 2120.92s in the guest and 18.21s on
+      # the host, and four of its five failures were recordings that agreed
+      # on every wire answer and disagreed only on which operation the retry
+      # warnings landed under. Issue #37.
+      #
+      # `[substitute]` is the one case that needs a cache. It makes its own
+      # and names it with `--substituters`, so an empty list here does not
+      # reach it -- that case passed in the run that measured this.
+      #
+      # `mkForce`, because `nix.settings` holds lists and the module system
+      # merges lists by concatenation. A plain `[ ]` adds nothing and
+      # removes nothing: the rendered `/etc/nix/nix.conf` still read
+      # `substituters = https://cache.nixos.org/`, measured on the etc
+      # derivation before this line said `mkForce`.
+      substituters = lib.mkForce [ ];
     };
 
     # `tests/nix/drv-probes.nix` imports <nixpkgs>. Without this, the 22
