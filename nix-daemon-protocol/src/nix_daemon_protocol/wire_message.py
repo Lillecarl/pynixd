@@ -14,6 +14,7 @@ import functools
 import types
 from collections.abc import Callable, Iterable  # noqa: TC003
 from dataclasses import dataclass
+from dataclasses import replace as dataclasses_replace
 from enum import IntEnum
 from typing import Any, ClassVar, Self, get_args, get_origin, get_type_hints
 
@@ -29,33 +30,74 @@ from .wire_scalar import is_wire_scalar
 # ── Helpers ──
 
 
+def _nested_context(ctx: ReadContext) -> ReadContext:
+    """The context a nested `WireModel` reads under.
+
+    **`error_factory` and `logger` cross over. The three log settings do
+    not.** `WireResponse.logs` is a `WireLogs`, so every response of the
+    protocol reads its stderr stream through here, and `WireLogs.from_reader`
+    is the one reader that acts on all five settings. A nested read built a
+    bare context, so none of the five reached it, and a daemon error came
+    back as `DaemonProtocolError` although the caller asked for its own
+    class.
+
+    The three that stay behind, each measured:
+
+    `log_sink` would deliver every message twice. `proxy.py` writes the whole
+    response back to the client, buffered messages included, so the client
+    would read the log of an operation once live and once inside the answer.
+
+    `buffer_logs` follows `log_sink`: with nothing streaming, an unbuffered
+    stream is a lost one.
+
+    `raise_on_error` would turn a daemon error into a silent success.
+    `DaemonStore.call` declares `raise_on_error=False` as its default, and
+    every operation of pynixd goes through it. Honouring that flag here made
+    `_try_substitute_upstream` read a failed `EnsurePath` as a hit, and
+    `nix build` then waited 112 s for a substitution that never came.
+
+    Issue #46 holds all three.
+    """
+    return dataclasses_replace(ctx, log_sink=None, buffer_logs=True, raise_on_error=True)
+
+
 @functools.lru_cache(maxsize=256)
 def _find_reader(ann: type, version: int = 0, features: frozenset[str] = frozenset()) -> Any:
-    """Look up a reader for a wire type."""
+    """Look up a reader for a wire type.
+
+    **Each reader takes the whole `ReadContext`, and not the `NixReader`
+    alone.** A nested `WireModel` needs the settings of the read that
+    contains it, and `WireLogs` is nested in every response, so a reader that
+    took the reader alone had no way to reach them. See `_read_nested`.
+
+    The cache keys on the annotation, the version and the feature set. The
+    context is an argument of the reader for that reason: it holds the
+    reader, which is one connection and not one type.
+    """
     from .wire_string import WireString  # lazy: break circular import
 
     # Primitives
     if ann is int:
-        return lambda r: r.read_uint64()
+        return lambda ctx: ctx.reader.read_uint64()
     if isinstance(ann, type) and issubclass(ann, WireUInt64):
 
-        async def _read_uint64_model(r):
-            return ann(await r.read_uint64())
+        async def _read_uint64_model(ctx):
+            return ann(await ctx.reader.read_uint64())
 
         return _read_uint64_model
     # IntEnum — read uint64, convert to enum member
     if isinstance(ann, type) and issubclass(ann, IntEnum):
 
-        async def _read_enum(r):
-            return ann(await r.read_uint64())
+        async def _read_enum(ctx):
+            return ann(await ctx.reader.read_uint64())
 
         return _read_enum
     if ann is str:
-        return lambda r: r.read_string(str)
+        return lambda ctx: ctx.reader.read_string(str)
     if ann is bool:
-        return lambda r: r.read_bool()
+        return lambda ctx: ctx.reader.read_bool()
     if ann is bytes:
-        return lambda r: r.read_bytes()
+        return lambda ctx: ctx.reader.read_bytes()
 
     origin = get_origin(ann)
     args = get_args(ann)
@@ -71,8 +113,8 @@ def _find_reader(ann: type, version: int = 0, features: frozenset[str] = frozens
                 # value comes back as the empty scalar rather than as `None`,
                 # so a caller that tests `is None` never takes that branch.
                 # The bytes do not move; only the Python value does. Issue Lillecarl/nanopynix#194.
-                async def _read_optional_scalar(r: Any) -> Any:
-                    value = await inner(r)
+                async def _read_optional_scalar(ctx: Any) -> Any:
+                    value = await inner(ctx)
                     # `not value` and not `value == ""`. A scalar that keeps
                     # its own type does not compare equal to a string, so the
                     # equality silently stopped matching and an absent
@@ -88,9 +130,9 @@ def _find_reader(ann: type, version: int = 0, features: frozenset[str] = frozens
     if origin is list:
         elem = _find_reader(args[0], version, features)
 
-        async def _read_list(r):
-            n = await r.read_uint64()
-            return [await elem(r) for _ in range(n)]
+        async def _read_list(ctx):
+            n = await ctx.reader.read_uint64()
+            return [await elem(ctx) for _ in range(n)]
 
         return _read_list
 
@@ -98,9 +140,9 @@ def _find_reader(ann: type, version: int = 0, features: frozenset[str] = frozens
     if origin is set:
         elem = _find_reader(args[0], version, features)
 
-        async def _read_set(r):
-            n = await r.read_uint64()
-            return {await elem(r) for _ in range(n)}
+        async def _read_set(ctx):
+            n = await ctx.reader.read_uint64()
+            return {await elem(ctx) for _ in range(n)}
 
         return _read_set
 
@@ -109,12 +151,12 @@ def _find_reader(ann: type, version: int = 0, features: frozenset[str] = frozens
         k_reader = _find_reader(args[0], version, features)
         v_reader = _find_reader(args[1], version, features)
 
-        async def _read_dict(r):
-            n = await r.read_uint64()
+        async def _read_dict(ctx):
+            n = await ctx.reader.read_uint64()
             d = {}
             for _ in range(n):
-                key = await k_reader(r)
-                val = await v_reader(r)
+                key = await k_reader(ctx)
+                val = await v_reader(ctx)
                 d[key] = val
             return d
 
@@ -126,8 +168,8 @@ def _find_reader(ann: type, version: int = 0, features: frozenset[str] = frozens
         if n_fields == 1:
             _field_name: str = next(iter(ann.model_fields.keys()))
 
-            async def _read_string(r):
-                raw = await r.read_string(str)
+            async def _read_string(ctx):
+                raw = await ctx.reader.read_string(str)
                 obj = ann.__new__(ann)
                 object.__setattr__(obj, "__pydantic_extra__", None)
                 object.__setattr__(obj, "__pydantic_private__", None)
@@ -136,8 +178,8 @@ def _find_reader(ann: type, version: int = 0, features: frozenset[str] = frozens
                 return obj
         else:
 
-            async def _read_string(r):
-                raw = await r.read_string(str)
+            async def _read_string(ctx):
+                raw = await ctx.reader.read_string(str)
                 data = ann.from_str(raw)
                 if not isinstance(data, dict):
                     raise TypeError(f"from_str returned {type(data).__name__}, expected dict")
@@ -156,24 +198,24 @@ def _find_reader(ann: type, version: int = 0, features: frozenset[str] = frozens
     # base class, so a scalar that stops being a `str` still reads here.
     if is_wire_scalar(ann):
 
-        async def _read_scalar(r):
-            return ann.from_wire(await r.read_string(str))
+        async def _read_scalar(ctx):
+            return ann.from_wire(await ctx.reader.read_string(str))
 
         return _read_scalar
 
     # WireModel subclass
     if isinstance(ann, type) and issubclass(ann, WireModel):
 
-        async def _read_nested(r):
-            return await ann.from_reader(ReadContext(reader=r, version=version, features=features))
+        async def _read_nested(ctx):
+            return await ann.from_reader(_nested_context(ctx))
 
         return _read_nested
 
     # IntEnum — read uint64, construct via enum
     if isinstance(ann, type) and issubclass(ann, IntEnum):
 
-        async def _read_enum(r):
-            return ann(await r.read_uint64())
+        async def _read_enum(ctx):
+            return ann(await ctx.reader.read_uint64())
 
         return _read_enum
 
@@ -466,7 +508,7 @@ class WireModel(BaseModel):
                     continue
 
                 reader = _find_reader(ann, version=ctx.version, features=ctx.features)
-                object.__setattr__(obj, name, await reader(ctx.reader))
+                object.__setattr__(obj, name, await reader(ctx))
                 obj.__pydantic_fields_set__.add(name)
 
             return obj

@@ -51,7 +51,7 @@ class WireString(WireModel):
     async def from_reader(cls, ctx: ReadContext):
         with deserialization_scope(ctx, cls):
             reader = _find_reader(cls, version=ctx.version)
-            return await reader(ctx.reader)
+            return await reader(ctx)
 
     @model_serializer
     def to_str(self) -> str:

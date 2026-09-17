@@ -13,6 +13,7 @@ from nix_daemon_protocol.exceptions import DaemonProtocolError
 from ..derived_path import DerivedPath, OutputsNames
 from ..drv_hash import output_hashes
 from ..drv_parser import ChildMapNode, to_basic_derivation
+from ..exceptions import BackendError
 from ..serde import (
     BuildDerivationRequest,
     BuildPathsRequest,
@@ -726,7 +727,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
                 ),
                 client=client,
             )
-        except (DaemonProtocolError, OSError, EOFError) as ex:
+        except (BackendError, DaemonProtocolError, OSError, EOFError) as ex:
             # A miss is the ordinary answer for a derivation that the client
             # must build. The build road is still there.
             log.debug("resolved_realise_miss", drv_path=str(build_drv_path), reason=str(ex))
@@ -812,7 +813,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         )
         try:
             await self.engine.ctx.local_store.execute(request, client=client)
-        except (DaemonProtocolError, OSError, EOFError) as ex:
+        except (BackendError, DaemonProtocolError, OSError, EOFError) as ex:
             # An upstream miss is the normal answer for a derivation that the
             # client must build, and a broken upstream connection must not end
             # the goal either: the build road is still there. Issue Lillecarl/nanopynix#195 holds
@@ -1372,7 +1373,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         wire_path = StorePath(path=str(path))
         try:
             await self.engine.ctx.local_store.execute(EnsurePathRequest(path=wire_path), client=client)
-        except DaemonProtocolError as ex:
+        except (BackendError, DaemonProtocolError) as ex:
             log.debug("upstream_substitute_miss", path=str(path), reason=str(ex))
             return None
         response = await self.engine.ctx.local_store.execute(IsValidPathRequest(path=wire_path))

@@ -11,6 +11,7 @@ import structlog
 from nix_daemon_protocol.exceptions import DaemonProtocolError
 
 from ..derived_path import DerivedPath
+from ..exceptions import BackendError
 from ..serde import (
     ContentAddress,
     DerivedPath as SerdeDerivedPath,
@@ -324,7 +325,7 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
                 QueryMissingRequest(derived_paths={wire_path}),
                 client=self.client,
             )
-        except (DaemonProtocolError, OSError, EOFError) as ex:
+        except (BackendError, DaemonProtocolError, OSError, EOFError) as ex:
             # The plan is a question, and a question that fails is not a
             # failure of the request. The build road stays open.
             log.debug("upstream_plan_miss", derived_path=str(derived_path), reason=str(ex))
