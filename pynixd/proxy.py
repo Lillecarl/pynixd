@@ -86,6 +86,19 @@ def _error_text(ex: BaseException) -> str:
 
 
 NIX_VERSION: str = "pynixd-0.1.0"
+"""What pynixd answers when it has no upstream daemon to name.
+
+**The field is a version a client compares, and not a name.** `store-info.sh`
+of the Nix functional suite reads it with `nix store info` and greps for the
+version of the daemon, and `isDaemonNewer` in `common/functions.sh:138-142`
+feeds it to `builtins.compareVersions`. `pynixd-0.1.0` compared against
+`2.7.0pre20220126` answers nothing useful, and no client can tell that it
+failed to. So `_version_for_the_client` below answers the upstream version
+where there is one, and this only where there is not.
+
+pynixd says what it is in `client_handshake_complete` and in the log it
+writes for every build. It does not need this field to do it.
+"""
 
 
 class DaemonProxy:
@@ -121,6 +134,22 @@ class DaemonProxy:
     def local_store(self) -> LocalStore:
         """The local Nix store for direct store operations."""
         return self.ctx.local_store
+
+    def _version_for_the_client(self) -> str:
+        """The version of the daemon that answers behind pynixd.
+
+        `store-info.sh:69` of the Nix functional suite asserts that `nix store
+        info` reports the version of the daemon it is talking to. pynixd
+        answered `pynixd-0.1.0` and failed that assertion -- the one test the
+        suite failed against pynixd and not against `nix-daemon`.
+
+        The field decides what a client believes the daemon can do, so the
+        upstream version is the true answer: pynixd forwards to that daemon
+        and cannot do more than it can. A name in this field is not merely
+        cosmetic, because `compareVersions` takes it and answers rubbish
+        quietly.
+        """
+        return self.local_store.nix_version or NIX_VERSION
 
     @property
     def scheduler(self) -> Scheduler | None:
@@ -292,7 +321,7 @@ class DaemonProxy:
 
         # Server conditions these on clientVersion
         if client_version >= wire.proto(1, 33):
-            self.w.write_string(NIX_VERSION)
+            self.w.write_string(self._version_for_the_client())
             if client_version >= wire.proto(1, 35):
                 self.w.write_uint64(OptTrusted.TRUSTED)
         self.w.write_uint64(wire.STDERR_LAST)
