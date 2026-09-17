@@ -7,7 +7,7 @@ import contextlib
 import functools
 import time
 from enum import IntEnum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 import anyio
 import structlog
@@ -50,6 +50,19 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 _CB_THRESHOLD: int = 3
 _CB_MAX_COOLDOWN: float = 300.0
+
+PROBE_CONCURRENCY: Final[int] = 5
+"""Probes in flight at once, over every system and every feature.
+
+Each probe is one build, and over SSH each build takes a channel. `sshd`
+permits ten sessions by default, and `nix` assumes the same ten for its own
+channels, so half of that leaves room for a build running beside a probe.
+
+Measured on issue #15: eighteen probes at once -- two systems by nine
+features -- failed eight of them with `OPEN_REQUEST_SESSION_FAILED`, which
+is eighteen minus the ten `sshd` allows. The store then sat in a 300 second
+cooldown, so the failure was not transient from the caller's side. A client
+cannot read `MaxSessions`, so this is a constant and not a negotiation."""
 
 # **The asyncssh half is read at the moment of the `except`, and not here.**
 # A `try: import asyncssh` at module level loads the library for every store,
@@ -466,8 +479,13 @@ class DaemonStore(Store):
         candidate_systems = existing_systems or set(PROBE_SYSTEMS)
         candidate_features = existing_features or set(KNOWN_FEATURES)
 
-        systems = await self._probe_systems(candidate_systems)
-        self._feature_matrix = await self._probe_features(systems, candidate_features)
+        # One limiter for both halves, because they run one after the other.
+        # Built here and not in `__init__`: `anyio.CapacityLimiter` reads the
+        # running backend with sniffio at construction, and `__init__` is sync.
+        limiter = anyio.CapacityLimiter(PROBE_CONCURRENCY)
+
+        systems = await self._probe_systems(candidate_systems, limiter)
+        self._feature_matrix = await self._probe_features(systems, candidate_features, limiter)
 
         log.info(
             "store_probed",
@@ -479,7 +497,7 @@ class DaemonStore(Store):
         self.probe_state = ProbeState.PROBED
         self._probe_event.set()
 
-    async def _probe_systems(self, candidates: set[str]) -> set[str]:
+    async def _probe_systems(self, candidates: set[str], limiter: anyio.CapacityLimiter) -> set[str]:
         # An anyio task group hands back no task object, so each child records
         # its answer at its own index. `candidates` becomes a list first,
         # because the zip below needs the same order twice.
@@ -487,12 +505,13 @@ class DaemonStore(Store):
         supported: list[bool] = [False] * len(ordered)
 
         async def probe_system(index: int, system: str) -> None:
-            _, ok = await self._send_probe(
-                f"probe-system-{system}",
-                system,
-                "",
-                ["-c", f"echo {system} > $out"],
-            )
+            async with limiter:
+                _, ok = await self._send_probe(
+                    f"probe-system-{system}",
+                    system,
+                    "",
+                    ["-c", f"echo {system} > $out"],
+                )
             supported[index] = ok
 
         async with anyio.create_task_group() as tg:
@@ -503,7 +522,12 @@ class DaemonStore(Store):
         log.info("systems_probed", store_id=self.store_id, systems=sorted(systems))
         return systems
 
-    async def _probe_features(self, systems: set[str], system_features: set[str]) -> dict[str, set[str]]:
+    async def _probe_features(
+        self,
+        systems: set[str],
+        system_features: set[str],
+        limiter: anyio.CapacityLimiter,
+    ) -> dict[str, set[str]]:
         to_probe = (system_features or set()) | KNOWN_FEATURES
         probes: list[Callable[[], Awaitable[tuple[str, bool]]]] = []
         probe_keys: list[tuple[str, str]] = []
@@ -542,7 +566,8 @@ class DaemonStore(Store):
         supported: list[bool] = [False] * len(probes)
 
         async def run_probe(index: int, probe: Callable[[], Awaitable[tuple[str, bool]]]) -> None:
-            _, ok = await probe()
+            async with limiter:
+                _, ok = await probe()
             supported[index] = ok
 
         async with anyio.create_task_group() as tg:
