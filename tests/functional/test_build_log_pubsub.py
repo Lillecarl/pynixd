@@ -175,15 +175,19 @@ async def test_build_log_pubsub_late_subscriber_gets_full_history():
     # Subscribe client2 after all logs are posted.
     await build.add_subscriber(client2)
 
-    # Both should have identical output.
-    assert buf1.get_bytes() == buf2.get_bytes()
+    # The late client reads everything the early one did, after a
+    # BUILD_WAITING activity that says it joined a build it did not ask for.
+    # Issue #25 and `tests/unit/test_build_waiting_activity.py`.
+    assert buf2.get_bytes().endswith(buf1.get_bytes())
+    assert len(buf2.get_bytes()) > len(buf1.get_bytes())
 
     # Post one more message — only client1 should get it (client2 was added
     # after the last fan-out, but both are now subscribed).
     await build.post_log_and_fanout(LogNext(text="done\n"))
 
-    # Now both should still be identical (both got "done\n").
-    assert buf1.get_bytes() == buf2.get_bytes()
+    # Both got "done\n", so the late client is still the early one plus its
+    # activity.
+    assert buf2.get_bytes().endswith(buf1.get_bytes())
 
 
 async def test_client_bound_build_cancels_after_last_unsubscribe():

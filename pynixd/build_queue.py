@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
+import os
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -11,10 +13,13 @@ import anyio
 import structlog
 
 from nix_daemon_protocol.ids import BuildId, RequestId, StoreId
+from nix_daemon_protocol.logs import LogStartActivity, LogStopActivity
+from nix_daemon_protocol.protocol import ActivityType, Verbosity
 
 from . import metrics, wire
 from .serde import BuildDerivationResponse, BuildMode, BuildResult, BuildResultStatus
 from .serde.context import WriteContext
+from .store_path import StorePath
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -27,6 +32,26 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 MAX_STORE_RETRIES = 3
+
+_act_counter = itertools.count()
+
+
+def _next_activity_id() -> int:
+    """An activity id that cannot collide with the ones a backend sends.
+
+    pynixd forwards a backend daemon's log messages with their activity ids
+    unchanged, so an id pynixd makes for itself has to miss that space.
+    `src/libutil/logging.cc:208` is where Nix answers the same question:
+
+        id(nextId++ + (((uint64_t) getPid()) << 32))
+
+    Same scheme here. Two daemons on one machine have different pids, so the
+    high half separates them. Two on different machines can share a pid, and
+    that is a collision Nix has as well with a remote builder -- copying the
+    scheme copies its limit, and inventing a different one would not remove
+    it.
+    """
+    return next(_act_counter) + (os.getpid() << 32)
 
 
 @dataclass
@@ -141,6 +166,10 @@ class QueuedBuild:
         self.subscribers: list[ClientConn] = []
         self._subscriber_refs: dict[ClientConn, int] = {}
         self.cancel_when_unsubscribed = False
+        self._waiting_acts: dict[ClientConn, int] = {}
+        """The BUILD_WAITING activity open for each client that joined a build
+        somebody else asked for. Per client, because the client that asked for
+        the build reads no such activity. Issue #25."""
 
         # The number of goal systems that wait for this build. One request
         # holds one reference, whatever number of its goals want the same
@@ -305,6 +334,25 @@ class QueuedBuild:
         the whole log again, so the client printed the error of one build two
         or three times. `build.sh:167` of the functional suite counts the
         `error:` lines. Issue Lillecarl/nanopynix#196.
+
+        NIX-DEVIATION (#27): `DerivationBuildingGoal` at
+        `derivation-building-goal.cc:421-426` opens an `actBuildWaiting` and
+        polls `outputLocks.lockPaths` until the other builder is done. It
+        gives the message and nothing else, because that builder is another
+        process and Nix has no channel to it. pynixd dedupes rather than
+        locks, so both builds are in one process and one log, and the second
+        client reads the first builder's whole output. The difference is worth
+        its cost because a user who waits on a build wants to see it, and the
+        cost is nothing on the wire that a client does not already handle: it
+        is the same `STDERR_NEXT` stream, and the activity below is the same
+        type and level Nix sends. To reverse the decision, measure a run where
+        the replay confuses the reader about which build wrote a line -- the
+        one measured risk, `build.sh:167` counting `error:` twice, is what
+        `_subscriber_refs` above already answers.
+
+        **This is not a `NIX-DEFECT (#23)`.** Nix is not wrong here. Its
+        process model denies it the other builder's log; it did not decide
+        against carrying it.
         """
         async with self._sub_lock:
             if cancel_on_unsubscribe:
@@ -312,6 +360,8 @@ class QueuedBuild:
             if client in self._subscriber_refs:
                 self._subscriber_refs[client] += 1
                 return
+            if self._waits_for_somebody_elses_build():
+                await self._say_it_is_waiting(client)
             if self._log_writer.tell():
                 try:
                     # One line for each replay, so a run can count them. A
@@ -324,6 +374,66 @@ class QueuedBuild:
                     return
             self.subscribers.append(client)
             self._subscriber_refs[client] = 1
+
+    def _waits_for_somebody_elses_build(self) -> bool:
+        """Whether a client subscribing now joins a build it did not ask for.
+
+        Another subscriber is the common case. `started_at` covers the one
+        where the client that asked for the build has gone: the build is still
+        running and this client still did not start it.
+        """
+        return bool(self.subscribers) or self.started_at is not None
+
+    def _what_it_is_waiting_on(self) -> str:
+        """The paths Nix would name, in the order Nix names them.
+
+        `derivation-building-goal.cc:409-418` locks an output path where it
+        knows one, and `<drv>.<outputName>` where it does not -- a floating
+        content-addressed output has no path until it is built. Then
+        `:421-426` writes `waiting for lock on` and that list.
+
+        Same rule here, and the paths cost nothing: `request.derivation` is
+        already in hand, so this is not the `drv_path`-only message that issue
+        #25 expected to be necessary.
+        """
+        outputs = self.request.derivation.output_paths()
+        named = sorted(
+            str(path) if path != StorePath("") else f"{self.request.drv_path}.{name}" for name, path in outputs.items()
+        )
+        # A derivation with no outputs at all reaches no lock file in Nix
+        # either, so there is nothing to copy. The drv path is what pynixd
+        # deduped on, which is the true answer to "waiting on what".
+        return ", ".join(f"'{one}'" for one in named or [str(self.request.drv_path)])
+
+    async def _say_it_is_waiting(self, client: ClientConn) -> None:
+        """Open a BUILD_WAITING activity for one client.
+
+        Not through `post_log`: that writes to the shared log, which every
+        later subscriber replays. This activity belongs to one client, and the
+        client that asked for the build must not read it.
+        """
+        act_id = _next_activity_id()
+        message = LogStartActivity(
+            act_id=act_id,
+            level=Verbosity.WARN,
+            type=ActivityType.BUILD_WAITING,
+            text=f"waiting for lock on {self._what_it_is_waiting_on()}",
+        )
+        if await self._send_one(client, message) is None:
+            self._waiting_acts[client] = act_id
+
+    async def stop_waiting_activities(self) -> None:
+        """Close every BUILD_WAITING this build opened. Called once it ends."""
+        async with self._sub_lock:
+            waiting = list(self._waiting_acts.items())
+            self._waiting_acts.clear()
+        for client, act_id in waiting:
+            await self._send_one(client, LogStopActivity(act_id=act_id))
+
+    async def _send_one(self, client: ClientConn, msg: LogMessage) -> ClientConn | None:
+        writer = wire.BytesWriter()
+        await msg.to_writer(WriteContext(writer=writer, version=wire.PROTOCOL_VERSION))
+        return await self._send_raw_safe(client, writer.get_bytes())
 
     async def remove_subscriber(self, client: ClientConn) -> bool:
         """Remove one subscription reference for a client.
@@ -598,6 +708,7 @@ class BuildQueue:
         response: BuildDerivationResponse,
     ) -> None:
         """Mark build as completed, resolve the future."""
+        await self._stop_waiting(build_id)
         async with self.lock:
             for b in self._queue:
                 if b.build_id == build_id:
@@ -618,8 +729,21 @@ class BuildQueue:
                     return
         raise ValueError(f"Build {build_id} not found")
 
+    async def _stop_waiting(self, build_id: BuildId) -> None:
+        """Close the BUILD_WAITING activities of a build that is ending.
+
+        Before `self.lock` and not under it: it sends to clients, and a client
+        that has gone away takes the removal path, which takes `_sub_lock`.
+        Holding the queue lock across a write to a socket also holds every
+        other build up for as long as that write takes.
+        """
+        build = self._by_id.get(build_id)
+        if build is not None:
+            await build.stop_waiting_activities()
+
     async def fail(self, build_id: BuildId, error_msg: str) -> None:
         """Mark build as failed, resolve future with an error response."""
+        await self._stop_waiting(build_id)
         async with self.lock:
             for b in self._queue:
                 if b.build_id == build_id:

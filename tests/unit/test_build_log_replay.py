@@ -37,10 +37,23 @@ class FakeClient:
         self.blocks.append(raw)
 
 
+class _Derivation:
+    def output_paths(self) -> dict[str, str]:
+        return {}
+
+
+class _Request:
+    """`add_subscriber` reads the derivation to name what a second client is
+    waiting on (issue #25), so `object()` is no longer enough here."""
+
+    drv_path = "/nix/store/00000000000000000000000000000000-foo.drv"
+    derivation = _Derivation()
+
+
 def _build() -> QueuedBuild:
     return QueuedBuild(
         build_id=BuildId(1),
-        request=cast("BuildDerivationRequest", object()),
+        request=cast("BuildDerivationRequest", _Request()),
         future=asyncio.get_running_loop().create_future(),
     )
 
@@ -132,4 +145,9 @@ async def test_a_second_client_gets_its_own_replay() -> None:
     await build.add_subscriber(cast("ClientConn", second))
 
     assert first.blocks == [b"building\n"]
-    assert second.blocks == [b"building\n"]
+    # The second client also reads a BUILD_WAITING activity, because it joined
+    # a build the first client asked for. Issue #25 and
+    # `tests/unit/test_build_waiting_activity.py`. Its replay is what this
+    # test is about, and it is the last block.
+    assert second.blocks[-1] == b"building\n"
+    assert len(second.blocks) == 2
