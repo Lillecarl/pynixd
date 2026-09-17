@@ -3,7 +3,7 @@
 **This is the third copy of this file.** nanopynix and nixkube hold the other
 two. ghanix says rendering belongs to the caller because its two consumers
 disagree about it, and they do -- about the gate and the formatter, not about
-the writer. ghanix issue #3 holds the question of whether the writer should
+the writer. ghanix issue #1 holds the question of whether the writer should
 move there.
 
 `pkgs.formats.yaml` is remarshal, which writes a multi-line string as one
