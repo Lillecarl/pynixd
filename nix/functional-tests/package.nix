@@ -55,6 +55,9 @@
   procps,
   python3,
   openssh,
+  gnutar,
+  xz,
+  util-linux,
 }:
 let
   scripts = lib.fileset.toSource {
@@ -83,6 +86,21 @@ let
     git
     python3
     bash
+    # Three tests failed against a plain `nix daemon` because busybox carried
+    # the only copy of each of these, and a busybox applet is not the tool the
+    # script wants:
+    #
+    #   fetchurl.sh:79   xz --keep         busybox xz has -d -c -f -k and no
+    #                                      long options at all
+    #   tarball          tar               busybox tar answered with its usage
+    #   json             script -e         busybox script has -a -c -q -t
+    #
+    # They are before busybox for the same reason coreutils is. Each one is
+    # tiny, and a test that fails on the tool rather than on the daemon
+    # measures nothing.
+    gnutar
+    xz
+    util-linux
     busybox
     # `fetchGitVerification.sh:6` looks for `ssh-keygen` and skips the whole
     # test when it finds none. It used to find the one of the caller, so the
