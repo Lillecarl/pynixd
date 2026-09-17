@@ -160,8 +160,10 @@ ghalib.evalWorkflow {
       code.
 
       Measured at pynixd fc88ad6c on a 16-core machine: 3m25s at `JOBS=4` for
-      both arms, 170 OK, 36 SKIP, 1 FAIL, 0 regressions. A runner has four
-      cores and is slower, so the cap is generous.
+      both arms, 170 OK, 36 SKIP, 1 FAIL, 0 regressions. On a runner, in run
+      35200463822: **5m07s for the whole job** -- 26 s to build the suite and
+      4m30s for both arms. So the cap is a backstop against a hang and not a
+      bound on the work, which is what a cap is for.
 
       No `freeDiskSpace`. The whole work directory came to 228 MB, of which
       144 MB is the stores of the 205 tests, against the 14 GB a runner
