@@ -59,9 +59,11 @@ Issue Lillecarl/nanopynix#175.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
+import signal
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -74,6 +76,8 @@ from nix_daemon_protocol.wirelog.diff import report
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
+
+    from anyio.abc import Process
 
     Runner = Callable[[list[str]], Awaitable[str]]
     """Run one command against the recorder, and answer its last line."""
@@ -95,6 +99,8 @@ pytestmark = pytest.mark.skipif(
 TEMP_ROOT = Path("/private/tmp") if Path("/private/tmp").is_dir() else Path("/tmp")
 BASE = TEMP_ROOT / "pynixd-wire-parity"
 SOCKET_WAIT = 30.0
+# How long the group gets to end on SIGTERM before SIGKILL.
+GRACE = 30.0
 
 # Each derivation builds anywhere. `/bin/sh` is the builder, so the store needs
 # no `bash` in it and the workload needs no channel.
@@ -484,6 +490,10 @@ async def _record(role: str, root: Path, workload: Workload) -> Path:
             *command,
         ],
         env=env,
+        # A session of its own, so the teardown below can signal the whole
+        # tree. The recorder starts a daemon, and a nix daemon forks a worker
+        # for each connection. Issue #36.
+        start_new_session=True,
     )
     try:
         await _wait_for(work / "outer.sock")
@@ -498,10 +508,46 @@ async def _record(role: str, root: Path, workload: Workload) -> Path:
 
         await workload(run, root, work)
     finally:
-        recorder.terminate()
-        with anyio.move_on_after(30):
-            await recorder.wait()
+        await _end(recorder)
     return out
+
+
+async def _end(recorder: Process) -> None:
+    """Take down the recorder and everything it started.
+
+    `recorder.terminate()` signals one process. The recorder starts a daemon,
+    and a nix daemon forks `nix <fd>` for every connection, so those workers
+    were signalled by nothing: a run left one behind with `ppid 1`, holding a
+    store under `/tmp` open. Issue #36.
+
+    **The recorder is signalled alone, and the group only afterwards.** The
+    recorder has a shielded teardown that signals its backend and waits for
+    it, and a backend answers that. `pynixd daemon` in particular kills its own
+    managed `nix daemon` there, which lives in a session of its own and no
+    `killpg` of this group can reach. Signalling the whole group instead of the
+    recorder took pynixd down before that teardown ran, and a run then left six
+    managed daemons behind where it had left none.
+
+    The sweep afterwards is for what the recorder does not own: the recorder
+    has a session of its own, so its pid is the process group, and a `nix <fd>`
+    worker still in it outlived its daemon.
+    """
+    group = recorder.pid
+    recorder.terminate()
+    with anyio.move_on_after(GRACE) as scope:
+        await recorder.wait()
+
+    if scope.cancelled_caught:
+        # Before the wait, so the recorder is still unreaped. That keeps its
+        # pid allocated, so the group id still names this group.
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(group, signal.SIGKILL)
+        await recorder.wait()
+        return
+
+    # The recorder is gone, so anything left in its group outlived it.
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(group, signal.SIGKILL)
 
 
 @pytest.fixture
@@ -560,3 +606,63 @@ async def test_the_two_daemons_answer_the_same_bytes(workload: Workload) -> None
         assert two.problem is None, two.problem
         differences = compare(one, two)
         assert differences == [], f"{name}\n{report(differences)}"
+
+
+class TestTeardown:
+    """`_end` takes down everything the recorder started.
+
+    **Issue #36 is not reproducible here.** The leak it reports is a `nix <fd>`
+    worker, found by the guest census while that census still ran
+    `tests/parity`; the guest stopped running this suite for issue #37, and
+    this machine leaves nothing either way. So these state what the teardown
+    does rather than that the reported leak is gone.
+    """
+
+    async def test_a_process_the_recorder_left_behind_is_swept(self, tmp_path: Path) -> None:
+        """A nix daemon forks a worker for each connection, and those workers
+        outlive it. The recorder's own teardown never signalled them: it
+        signals its backend and nothing below."""
+        marker = tmp_path / "stray.pid"
+        recorder = await anyio.open_process(
+            ["sh", "-c", f"sleep 300 & echo $! > {marker}; exec sleep 0.1"],
+            start_new_session=True,
+        )
+        with anyio.fail_after(10):
+            while not await anyio.Path(marker).exists():
+                await anyio.sleep(0.02)
+        stray = int((await anyio.Path(marker).read_text()).strip())
+        os.kill(stray, 0)  # It is running, or this test proves nothing.
+
+        await _end(recorder)
+
+        # Polled, not asserted at once. The stray's parent is gone, so it is a
+        # zombie until init reaps it, and a zombie still answers `kill(pid, 0)`.
+        with anyio.fail_after(10):
+            while True:
+                try:
+                    os.kill(stray, 0)
+                except ProcessLookupError:
+                    return
+                await anyio.sleep(0.02)
+
+    async def test_the_recorder_is_signalled_before_its_group(self, tmp_path: Path) -> None:
+        """**Not `killpg(SIGTERM)` first.** The recorder has a shielded
+        teardown that signals its backend and waits, and `pynixd daemon` kills
+        its own managed `nix daemon` there -- which lives in a session of its
+        own, where no `killpg` of this group reaches it. Signalling the group
+        instead took pynixd down before that ran, and one run then left six
+        managed daemons behind where it had left none.
+
+        So the recorder must see SIGTERM and get its grace period.
+        """
+        seen = tmp_path / "sigterm"
+        recorder = await anyio.open_process(
+            ["sh", "-c", f"trap 'echo caught > {seen}; exit 0' TERM; while :; do sleep 0.05; done"],
+            start_new_session=True,
+        )
+        # Let the trap be installed before anything is sent.
+        await anyio.sleep(0.5)
+
+        await _end(recorder)
+
+        assert await anyio.Path(seen).exists(), "the recorder never saw SIGTERM"
