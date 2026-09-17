@@ -5,7 +5,18 @@ All tests in this file are subprocess execution tests that don't trigger Store o
 
 from __future__ import annotations
 
+from tests._conftest.nix_config import host_daemon_substituters
 from tests.conftest import run_subproc
+
+DEFAULT_SUBSTITUTER_LINE = "substituters = " + " ".join(
+    ("https://nixkube.cachix.org", *host_daemon_substituters()),
+)
+"""The line `run_subproc` writes when the caller names no substituters.
+
+Built from the same function rather than spelled out: the host's daemon is
+named only on a machine that has one, so the literal held on a developer
+machine and failed on a GitHub runner. Issue #47.
+"""
 
 
 class TestRunSubproc:
@@ -50,7 +61,7 @@ class TestRunSubproc:
         )
         assert "foo = bar" in stdout
         assert "baz = qux" in stdout
-        assert ("substituters = https://nixkube.cachix.org unix:///nix/var/nix/daemon-socket/socket?root=/") in stdout
+        assert DEFAULT_SUBSTITUTER_LINE in stdout
 
     async def test_nix_config_override(self):
         """Test NIX_CONFIG override behavior.
@@ -63,7 +74,7 @@ class TestRunSubproc:
             nix_config={"substituters": "https://example.org"},
         )
         assert "substituters = https://example.org" in stdout
-        assert "substituters = https://nixkube.cachix.org unix:///nix/var/nix/daemon-socket/socket?root=/" not in stdout
+        assert DEFAULT_SUBSTITUTER_LINE not in stdout
 
     async def test_nix_config_merge(self):
         """Test NIX_CONFIG merging with environment variable.
@@ -78,4 +89,4 @@ class TestRunSubproc:
         )
         assert "existing = true" in stdout
         assert "foo = bar" in stdout
-        assert "substituters = https://nixkube.cachix.org unix:///nix/var/nix/daemon-socket/socket?root=/" in stdout
+        assert DEFAULT_SUBSTITUTER_LINE in stdout
