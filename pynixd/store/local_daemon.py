@@ -167,7 +167,18 @@ class LocalStore(DaemonStore):
     async def start(self, sync_paths: bool = True) -> None:
         """Spawn managed daemon and initialize the store."""
         await self.ensure_daemon()
-        await super().start(sync_paths=sync_paths)
+        try:
+            await super().start(sync_paths=sync_paths)
+        except BaseException:
+            # **A daemon spawned here has no other owner until `start` ends.**
+            # `Server.__aenter__` calls this, so a raise means `__aexit__`
+            # never runs and `close()` never reaps what `ensure_daemon` left.
+            # Measured in CI: `probe()` raised on a daemon that refused it,
+            # 149 fixtures failed at setup, and one leftover `nix` kept pytest
+            # from exiting for six hours after it had printed its summary.
+            # Issue #47.
+            await self._kill_daemon()
+            raise
 
     async def ensure_daemon(self) -> None:
         """Ensure a daemon is reachable, spawning one if needed.
