@@ -173,3 +173,23 @@ jobs:
       # makes stores under /tmp/pynixd-wire-parity. 8 tests, 22 s.
       - name: Parity tests
         run: nix develop --impure --file shell.nix --command pytest tests/parity
+
+      # **The pytest output alone does not say why a suite went red here.**
+      # Each test writes `filtered.log`, `unfiltered.log` and
+      # `exceptions.jsonl` under this directory, and those hold the probe
+      # results, the daemon's own messages and the store each test used. The
+      # step output holds the assertion and nothing else.
+      #
+      # This repository has already published one wrong cause for a CI
+      # failure by reading the summary and not the per-test logs -- issue #37.
+      # The logs were beside it and were not uploaded.
+      #
+      # `if: failure()`, because a green run has nothing to explain.
+      - name: Keep the per-test logs of a red run
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pynixd-logs
+          path: /tmp/pynixd-logs
+          retention-days: 7
+          if-no-files-found: warn
