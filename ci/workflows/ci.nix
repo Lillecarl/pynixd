@@ -8,9 +8,9 @@
 # ghanix is the schema. It takes `lib` and nothing else, which is what lets
 # this repository use it while pinning its own nixpkgs.
 #
-{ lib, ghalib }:
+{ lib, ghalib, nixVersion }:
 let
-  inherit (import ./bootstrap.nix { inherit lib; }) bootstrap divertedStores;
+  inherit (import ./bootstrap.nix { inherit lib nixVersion; }) bootstrap divertedStores;
 
   # Docs are published from develop only. Every other branch builds nothing
   # here, because the Pages deployment has one destination.

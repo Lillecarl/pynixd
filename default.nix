@@ -206,7 +206,13 @@ let
       ghalib = import sources.ghanix { inherit lib; };
       workflow = module: committed: {
         inherit committed;
-        value = import module { inherit lib ghalib; };
+        # `nixVersion` is the Nix this repository pins, and the runner
+        # installs that one. ci/workflows/bootstrap.nix says what a second
+        # version on the machine cost.
+        value = import module {
+          inherit lib ghalib;
+          nixVersion = pkgs.nix.version;
+        };
       };
     in
     {

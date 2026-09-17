@@ -5,7 +5,7 @@
 # issue #33 was two workflows carrying two copies of the substituters, and
 # nothing that made them agree. pynixd has one workflow today. The file is
 # here so that the second one cannot start the same way.
-{ lib }:
+{ lib, nixVersion }:
 rec {
   /*
     The Nix every job runs with.
@@ -25,6 +25,20 @@ rec {
     `BuildDerivation` to a client outside that list, with `you are not
     privileged to build input-addressed derivations`, and 149 tests failed
     at their fixture for that reason. Issue #47.
+
+    **And it installs the Nix this repository pins, not the newest one.**
+    The suite assumes one version of Nix on the machine: the client is
+    `NIX_BIN`, the daemons the tests spawn are `NIX_BIN`, and an
+    `ssh-ng://` peer is whatever `nix-daemon --stdio` the login PATH
+    starts. Those agree on a developer machine by construction. The action
+    installed 2.35.2 beside a 2.34.8 client, and sixteen tests answered
+
+        error: the daemon is missing the 'realisation-with-path-not-hash'
+        protocol feature, needed to support content-addressing derivations
+
+    which `RemoteStore::queryRealisation` raises at
+    `remote-store.cc:528` and which exists in no 2.34 source. It reads as a
+    defect of pynixd and it is a fact about two versions of Nix.
   */
   experimentalFeatures = [
     "nix-command"
@@ -63,6 +77,7 @@ rec {
     checkout.enable = true;
     nix.install = {
       enable = true;
+      version = nixVersion;
       inherit experimentalFeatures settings;
     };
   };
