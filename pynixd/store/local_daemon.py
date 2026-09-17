@@ -31,6 +31,7 @@ from .daemon import DaemonStore
 if TYPE_CHECKING:
     from ..drv_parser import Derivation
     from ..monitor import ResourceMonitor
+    from ..store_layout import StoreLayout
 
 log = structlog.get_logger(__name__)
 
@@ -93,6 +94,31 @@ def _refuse_a_socket_path_python_cannot_reach(socket_path: Path) -> None:
             f"{socket_path}. Nix binds such a path with a helper that chdirs, so the socket "
             "may exist and still be unreachable from here. Put the store somewhere shorter.",
         )
+
+
+def _sandbox_fallback_arguments(layout: StoreLayout) -> list[str]:
+    """Refuse the silent sandbox fallback for a store Nix has diverted.
+
+    **A diverted store that falls back to no sandbox cannot build anything.**
+    nix 2.34.8 `derivation-builder.cc:2111` forces the sandbox on when
+    `storeDir != realStoreDir`, because only the chroot puts the real
+    directory at the store path the builder writes to. Twelve lines later, at
+    `:2120`, a system without mount and PID namespaces turns it back off with
+    `debug()` and `sandbox-fallback` left at its default of true. The builder
+    then writes to `/nix/store/<hash>-<name>`, which is the store of the
+    machine, and Nix looks for the output under the real directory and finds
+    nothing.
+
+    That is how a GitHub runner answered `failed to produce output path` for
+    `echo x86_64-linux > $out`. The runner blocks unprivileged user
+    namespaces, so `mountAndPidNamespacesSupported()` is false there and true
+    on every developer machine. The fallback is right for a store at
+    `/nix/store` and wrong for every store pynixd relocates, so it goes off
+    here and stays on there. Issue #47.
+    """
+    if layout.store_dir == layout.real_store_dir:
+        return []
+    return ["--option", "sandbox-fallback", "false"]
 
 
 class LocalStore(DaemonStore):
@@ -216,6 +242,7 @@ class LocalStore(DaemonStore):
             str(self.layout.build_dir),
             "--log-format",
             "internal-json",
+            *_sandbox_fallback_arguments(self.layout),
         ]
         cmd.extend(self.extra_args)
 
