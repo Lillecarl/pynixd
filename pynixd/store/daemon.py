@@ -86,6 +86,40 @@ _TRANSPORT_ERRORS: tuple[type[BaseException], ...] = (
 )
 
 
+_BUILDER_OUTPUT_LINES: Final[int] = 6
+"""How many lines of a refused probe's build log travel with its reason.
+
+Enough to carry what the builder said and not enough to fill a log line. The
+build log of a probe is six lines of `nix` chatter at most, because the
+derivation is one `echo`."""
+
+
+def _refusal_with_builder_output(resp: Any) -> str:
+    """Why a store refused a probe, with what its builder said.
+
+    **`BuildResult.error_msg` alone does not say why a build produced no
+    output.** On a GitHub runner the x86_64-linux probe answered `builder for
+    '...-probe-system-x86_64-linux.drv' failed to produce output path for
+    output 'out'`, which states the symptom and nothing else: the builder ran,
+    so it is not a missing `/bin/sh` and not a permission refusal, and there
+    the trail ended. pynixd issue #47.
+
+    The daemon already sent the builder's output, and the response buffers it.
+    This reads the tail of that buffer, so the next such refusal carries what
+    the shell said rather than only that Nix was unhappy with it.
+    """
+    error_msg = resp.result.error_msg or f"status {resp.result.status}"
+    lines = [
+        text.rstrip("\n")
+        for message in getattr(resp.logs, "messages", [])
+        if (text := getattr(message, "text", "")).strip()
+    ]
+    if not lines:
+        return error_msg
+    tail = " | ".join(lines[-_BUILDER_OUTPUT_LINES:])
+    return f"{error_msg} [builder said: {tail}]"
+
+
 class ProbeState(IntEnum):
     """Tracks the protocol probing state of a DaemonStore connection."""
 
@@ -675,7 +709,7 @@ class DaemonStore(Store):
                 log.debug("probe_accepted", store_id=self.store_id, probe=name)
                 reason = ""
             else:
-                reason = resp.result.error_msg or f"status {resp.result.status}"
+                reason = _refusal_with_builder_output(resp)
                 log.debug(
                     "probe_denied",
                     store_id=self.store_id,
