@@ -144,6 +144,22 @@ jobs:
       - name: Record the Nix settings of this runner
         run: nix config show || true
 
+      # **The stores of this suite are diverted, and a diverted store builds
+      # only in a sandbox.** nix 2.34.8 `derivation-builder.cc:2111` turns the
+      # sandbox on for `storeDir != realStoreDir`, then `:2120` turns it back
+      # off with no message when the kernel namespaces are missing. The
+      # builder then writes to the store of the machine and Nix looks under
+      # the diverted directory, so `echo $system > $out` answered `failed to
+      # produce output path` and the capability probe found no system.
+      #
+      # Ubuntu 24.04 blocks unprivileged user namespaces with AppArmor, and
+      # the daemons pynixd spawns run as `runner`. The sysctl is what a
+      # developer machine already gives. Issue #47.
+      - name: Allow the kernel namespaces a diverted store builds in
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          unshare --user --mount --pid --fork true && echo "namespaces: ok" || echo "namespaces: refused"
+
       - name: Generate SSH key for ssh-ng:// tests
         run: |
           mkdir -p ~/.ssh
