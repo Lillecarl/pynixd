@@ -16,6 +16,18 @@
 mkShell {
   packages = [
     devEnv
+    # **The client of the tests and their backend must be one version of Nix.**
+    # `NIX_BIN` below pins the daemon the tests spawn, and the `nix` a test
+    # runs as a client came off the PATH of the machine. Both are 2.34.8 on a
+    # developer machine, so they agreed by accident.
+    #
+    # A GitHub runner installs 2.35.2, which asks for
+    # `realisation-with-path-not-hash`. pynixd refuses it correctly, because
+    # `honourable_features` claims nothing its backend cannot read, and 16
+    # content-addressed tests then failed against a proxy that was right.
+    # A message about the machine, not about pynixd -- the same class as the
+    # `NIX_PATH` note below.
+    nix
     pyright
     ruff
     sqlite
