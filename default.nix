@@ -223,7 +223,10 @@ package
 
   pynixd-docs = pkgs.python3Packages.callPackage ./nix/docs.nix { pynixd = library; };
 
-  shell = pkgs.callPackage ./nix/shell.nix { inherit devEnv; };
+  shell = pkgs.callPackage ./nix/shell.nix {
+    inherit devEnv;
+    nixpkgsPath = pkgs.path;
+  };
   nixosModule = import ./nix/nixos/default.nix;
 
   tests = {
