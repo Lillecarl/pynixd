@@ -119,8 +119,15 @@ jobs:
       - name: Install Nix
         uses: nixbuild/nix-quick-install-action@v34
         with:
+          # **`trusted-users`, because the suite drives real builds.** A daemon
+          # refuses `BuildDerivation` to a client outside that list, with
+          # `you are not privileged to build input-addressed derivations`. A
+          # developer machine names the user in `/etc/nix/nix.conf`, a runner
+          # does not, and 149 tests failed at their fixture for that reason.
+          # Issue #47.
           nix_conf: |
             extra-experimental-features = nix-command flakes read-only-local-store ca-derivations dynamic-derivations recursive-nix
+            trusted-users = root runner
 
       - name: Verify Nix
         run: nix build --version
