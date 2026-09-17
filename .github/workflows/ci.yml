@@ -55,6 +55,8 @@ jobs:
     env:
       UMBRELLA_REV: ${{ needs.umbrella-rev.outputs.rev }}
     runs-on: ubuntu-24.04
+    # Under a minute when it works. A job with no bound waits six hours.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -104,6 +106,13 @@ jobs:
     env:
       UMBRELLA_REV: ${{ needs.umbrella-rev.outputs.rev }}
     runs-on: ubuntu-latest
+    # **A hang here used to cost six hours, and the log came back empty.**
+    # pytest printed `149 errors in 11.91s` and then did not exit, and the
+    # runner killed the job at its own six-hour limit. Twenty-two runs queued
+    # behind that. The whole job takes under three minutes when it works, so
+    # this is far above a good run and far below the limit that hurt.
+    # Issue #47.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
