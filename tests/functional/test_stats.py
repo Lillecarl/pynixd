@@ -26,17 +26,12 @@ from pynixd.serde import (
     BuildMode,
     BuildResult,
     BuildResultStatus,
-    ContentAddress,
     DerivationOutput,
-    NARHash,
     QueryAllValidPathsRequest,
     QueryAllValidPathsResponse,
     QueryClosureWithInfoRequest,
     QueryClosureWithInfoResponse,
     SetOptionsRequest,
-    Time,
-    UnkeyedValidPathInfo,
-    ValidPathInfo,
 )
 from pynixd.store import LocalDBStore
 from pynixd.store_layout import StoreLayout
@@ -112,24 +107,20 @@ class StatsTestStore(LocalDBStore):
             return QueryAllValidPathsResponse(paths=set())
 
         if isinstance(request, QueryClosureWithInfoRequest):
-            # Mock closure response so "pulling paths" succeeds
-            infos = [
-                ValidPathInfo(
-                    path=serde_path(p),
-                    info=UnkeyedValidPathInfo(
-                        deriver=None,
-                        nar_hash=NARHash(hash="0000000000000000000000000000000000000000000000000000000000000000"),
-                        references=set(),
-                        registration_time=Time(ts=1),
-                        nar_size=0,
-                        ultimate=True,
-                        sigs=set(),
-                        ca=ContentAddress(value=""),
-                    ),
-                )
-                for p in request.paths
-            ]
-            return QueryClosureWithInfoResponse(infos=infos)
+            # **An empty closure, because this store has no NAR to give.**
+            # It answered with one `ValidPathInfo` for each path asked and a
+            # `nar_size` of 0. A size of zero means unknown, not empty, so
+            # `stream_paths_store_to_store` wrote a frame holding no NAR and
+            # the destination daemon answered `reached end of FramedSource`.
+            #
+            # It looked like a flake because the destination usually had the
+            # path already, from the state an earlier run left under
+            # `STORE_PREFIX`: a fresh store transferred, a reused one did
+            # not. Issue #48.
+            #
+            # Nothing to pull is what this store means, and `_pull_outputs`
+            # returns at once for it. The test measures the stats row.
+            return QueryClosureWithInfoResponse(infos=[])
         return await super().execute(
             request,
             client,

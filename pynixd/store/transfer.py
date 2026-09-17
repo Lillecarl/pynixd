@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 import anyio
 import structlog
@@ -12,6 +12,7 @@ from nix_daemon_protocol.nar_from_path import NarFromPathRequest
 
 from .. import wire
 from ..daemon_extensions.query_closure_with_info import QueryClosureWithInfoRequest
+from ..exceptions import BackendError
 from ..serde.context import ReadContext, WriteContext
 from ..store_path import StorePath
 
@@ -24,6 +25,11 @@ if TYPE_CHECKING:
 
 
 log = structlog.get_logger(__name__)
+
+_UNSIZED_PATHS_NAMED: Final[int] = 3
+"""How many paths of an unsized closure the error names.
+
+Enough to see a pattern, and not the whole closure in one log line."""
 
 
 async def stream_paths_store_to_store(
@@ -82,6 +88,22 @@ async def stream_paths_store_to_store(
     )
     if not to_transfer:
         return
+
+    # **A NAR size of zero means unknown, and not empty.** Nix leaves
+    # `ValidPathInfo::narSize` at 0 where it has no answer, and the shortest
+    # NAR is 96 bytes: the magic string and the shape around it. Streaming
+    # zero bytes for such a path writes a frame the destination cannot read,
+    # and its daemon then answers `reached end of FramedSource`, which names
+    # the frame and neither the path nor the store that described it.
+    # Issue #48.
+    unsized = [info for info in to_transfer if info.info.nar_size == 0]
+    if unsized:
+        raise BackendError(
+            f"{src.store_id} gave no NAR size for "
+            f"{', '.join(str(info.path) for info in unsized[:_UNSIZED_PATHS_NAMED])}"
+            f"{'...' if len(unsized) > _UNSIZED_PATHS_NAMED else ''}, "
+            f"so {dst.store_id} cannot be told how much to read. A size of zero means unknown.",
+        )
 
     # 3. Stream the missing paths
     log.debug("stream_paths_acquire_src", src=src.store_id, dst=dst.store_id)
