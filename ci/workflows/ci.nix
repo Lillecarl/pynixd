@@ -165,9 +165,11 @@ ghalib.evalWorkflow {
       4m30s for both arms. So the cap is a backstop against a hang and not a
       bound on the work, which is what a cap is for.
 
-      No `freeDiskSpace`. The whole work directory came to 228 MB, of which
-      144 MB is the stores of the 205 tests, against the 14 GB a runner
-      starts with.
+      `freeDiskSpace` is not needed for room here: the whole work directory
+      came to 228 MB, of which 144 MB is the stores of the 205 tests, against
+      the 14 GB a runner starts with. ghanix runs it anyway, because a job
+      that builds Nix derivations never wants the runner's bundled
+      toolchains.
 
       **`NIXFT_WORK` must be short, and outside `$HOME`.** A store under a
       long path gives a daemon socket over `sun_path`'s 108 bytes, and the
