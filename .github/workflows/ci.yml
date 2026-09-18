@@ -13,6 +13,14 @@ jobs:
     steps:
     - timeout-minutes: 10
       uses: actions/checkout@main
+    - name: Make room on the runner
+      run: |
+        df -h /
+        sudo rm -rf /usr/lib/jvm /usr/share/dotnet /usr/share/swift /usr/local/.ghcup /usr/local/julia* /usr/local/lib/android /opt/az /usr/local/share/powershell /opt/hostedtoolcache /usr/local/share/chromium /opt/microsoft /opt/google /usr/lib/firefox
+        docker system prune --all --force
+        docker builder prune --all --force
+        df -h /
+      timeout-minutes: 10
     - timeout-minutes: 15
       uses: cachix/install-nix-action@master
       with:
@@ -55,6 +63,14 @@ jobs:
       pages: write
     runs-on: ubuntu-24.04
     steps:
+    - name: Make room on the runner
+      run: |
+        df -h /
+        sudo rm -rf /usr/lib/jvm /usr/share/dotnet /usr/share/swift /usr/local/.ghcup /usr/local/julia* /usr/local/lib/android /opt/az /usr/local/share/powershell /opt/hostedtoolcache /usr/local/share/chromium /opt/microsoft /opt/google /usr/lib/firefox
+        docker system prune --all --force
+        docker builder prune --all --force
+        df -h /
+      timeout-minutes: 10
     - id: deployment
       name: Deploy to GitHub Pages
       uses: actions/deploy-pages@v4
@@ -68,6 +84,14 @@ jobs:
     steps:
     - timeout-minutes: 10
       uses: actions/checkout@main
+    - name: Make room on the runner
+      run: |
+        df -h /
+        sudo rm -rf /usr/lib/jvm /usr/share/dotnet /usr/share/swift /usr/local/.ghcup /usr/local/julia* /usr/local/lib/android /opt/az /usr/local/share/powershell /opt/hostedtoolcache /usr/local/share/chromium /opt/microsoft /opt/google /usr/lib/firefox
+        docker system prune --all --force
+        docker builder prune --all --force
+        df -h /
+      timeout-minutes: 10
     - timeout-minutes: 15
       uses: cachix/install-nix-action@master
       with:
@@ -105,6 +129,14 @@ jobs:
     steps:
     - timeout-minutes: 10
       uses: actions/checkout@main
+    - name: Make room on the runner
+      run: |
+        df -h /
+        sudo rm -rf /usr/lib/jvm /usr/share/dotnet /usr/share/swift /usr/local/.ghcup /usr/local/julia* /usr/local/lib/android /opt/az /usr/local/share/powershell /opt/hostedtoolcache /usr/local/share/chromium /opt/microsoft /opt/google /usr/lib/firefox
+        docker system prune --all --force
+        docker builder prune --all --force
+        df -h /
+      timeout-minutes: 10
     - timeout-minutes: 15
       uses: cachix/install-nix-action@master
       with:
@@ -157,6 +189,14 @@ jobs:
       uses: actions/checkout@main
       with:
         fetch-depth: 100
+    - name: Make room on the runner
+      run: |
+        df -h /
+        sudo rm -rf /usr/lib/jvm /usr/share/dotnet /usr/share/swift /usr/local/.ghcup /usr/local/julia* /usr/local/lib/android /opt/az /usr/local/share/powershell /opt/hostedtoolcache /usr/local/share/chromium /opt/microsoft /opt/google /usr/lib/firefox
+        docker system prune --all --force
+        docker builder prune --all --force
+        df -h /
+      timeout-minutes: 10
     - id: resolve
       name: Resolve the umbrella revision
       run: ci/walkback.sh https://github.com/nixidae/nixidae pynixd | sed 's/^/rev=/' >> "$GITHUB_OUTPUT"
