@@ -26,12 +26,14 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from test_pool_lifetime import FakeConnection, make_pool
 
 from pynixd.daemon_extensions.protocol import PynixdGCAction
 from pynixd.daemon_extensions.pynixd_collect_garbage import PynixdCollectGarbageRequest
+from pynixd.gc import Collector
 from pynixd.handlers.collect_garbage import CollectGarbageHandler
 from pynixd.handlers.pynixd_collect_garbage import PynixdCollectGarbageHandler
 from pynixd.serde import CollectGarbageRequest
@@ -110,6 +112,8 @@ class FakeProxy:
         self.standard_features: frozenset[str] = frozenset()
         self.local_store = FakeStore()
         self.errors: list[str] = []
+        self.ctx: Any = None
+        """What `Collector` is built from. The collector itself is patched."""
 
     async def send_error(self, message: str) -> None:
         self.errors.append(message)
@@ -193,8 +197,24 @@ async def test_a_query_of_the_roots_retires_them_as_well():
 
 
 @pytest.mark.anyio
-async def test_the_pynixd_operation_retires_them_as_well():
+async def test_the_pynixd_operation_reaches_the_collector():
+    """Op 101 is pynixd's own, and the `nix daemon` under the local store
+    answers `invalid operation 101` (`daemon.cc:1110`). The handler runs the
+    collector, which retires the idle connections before it deletes."""
     request = PynixdCollectGarbageRequest(action=PynixdGCAction.EXECUTE)
-    proxy = await _handle(PynixdCollectGarbageHandler(), request, Role.ADMIN)
+    proxy = FakeProxy(await _body(request))
+    seen: list[PynixdGCAction] = []
 
-    assert proxy.local_store.calls == ["retire", "call:PynixdCollectGarbageRequest"]
+    async def run(self: Any, action: PynixdGCAction) -> str:
+        del self
+        seen.append(action)
+        return "collected"
+
+    with patch.object(Collector, "run", run):
+        answer = await PynixdCollectGarbageHandler().handle(
+            FakeContext(proxy=proxy, role=Role.ADMIN),  # type: ignore[arg-type] -- a fake context
+        )
+
+    assert answer == "collected"
+    assert seen == [PynixdGCAction.EXECUTE]
+    assert proxy.local_store.calls == []

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, ClassVar
 
+from ..gc import Collector
 from ..serde import PynixdCollectGarbageRequest
 from ..serde.auth import Role
 from ..serde.context import ReadContext
@@ -19,7 +20,7 @@ class PynixdCollectGarbageHandler(Handler):
     op: ClassVar[int] = 101
 
     async def handle(self, ctx: RequestContext) -> object | None:
-        """Decode PynixdCollectGarbage request, verify admin auth, execute via daemon, return response."""
+        """Decode PynixdCollectGarbage request, verify admin auth, run the collector."""
         req = await PynixdCollectGarbageRequest.from_reader(
             ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version, features=ctx.proxy.standard_features),
         )
@@ -30,7 +31,6 @@ class PynixdCollectGarbageHandler(Handler):
             )
             return None
 
-        # The same reason as `CollectGarbageHandler`: an idle connection holds
-        # the temporary roots of the worker under it.
-        await ctx.proxy.local_store.retire_idle_connections()
-        return await ctx.proxy.local_store.call(req)
+        # The collector, and not the local store: op 101 is pynixd's own, and
+        # the `nix daemon` under it answers `invalid operation 101`.
+        return await Collector(ctx.proxy.ctx).run(req.action)

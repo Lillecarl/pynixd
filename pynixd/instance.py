@@ -19,8 +19,8 @@ from nix_daemon_protocol.store_dir import set_real_store_dir, set_store_dir
 from . import _optional, wire
 from .config import ExternalUnixStoreSpec, HTTPBinaryCacheSpec, LocalSocketStoreSpec, PynixdSettings
 from .context import PynixdContext
+from .gc import Collector
 from .scheduler import Scheduler
-from .serde import PynixdCollectGarbageRequest
 from .serde.protocol import PynixdGCAction
 from .store import DaemonStore, ExternalUnixStore, LocalDBStore, LocalStore, Store, is_http_binary_cache
 from .store_layout import DEFAULT_STORE_DIR
@@ -321,7 +321,7 @@ class Server:
         while True:
             await anyio.sleep(self.ctx.settings.gc_interval)
             try:
-                await self.local_store.execute(PynixdCollectGarbageRequest(action=PynixdGCAction.EXECUTE))
+                await Collector(self.ctx).run(PynixdGCAction.EXECUTE)
             except anyio.get_cancelled_exc_class():
                 return
             except Exception:

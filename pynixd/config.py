@@ -110,6 +110,16 @@ class StoreSpecBase(BaseModel):
     score_penalty: int = 0
     gc_enabled: bool = True
     gc_max_age: int | None = None
+    gc_defer: bool = False
+    """Whether a path this store holds may leave the local store.
+
+    Off everywhere, so a store that nothing declares drops nothing. An
+    air-gapped lab therefore keeps every path until somebody names a
+    substituter to defer to. The flag sits on the spec and not in a list of
+    settings, because a substituter that `Server.__init__` reads out of
+    `nix.conf` has no spec: naming one of those would need a second naming
+    scheme over the generated store ids.
+    """
     no_schedule: bool = False
     probe: bool | None = None
     store_path: Path = Path("/")

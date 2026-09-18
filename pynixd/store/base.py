@@ -54,6 +54,9 @@ class Store(ABC):
         self.store_id: StoreId = spec.store_id
         self.priority = spec.priority
         self.no_schedule = spec.no_schedule
+        self.gc_defer = spec.gc_defer
+        """Here and not in `DaemonStore`: an HTTP binary cache is the store
+        this flag exists for, and it speaks no worker protocol."""
         self._feature_matrix: dict[str, set[str]] | None = spec._effective_feature_matrix()
         self._signing_keys: dict[str, SecretKey] = {}
         self.path_info_cache = cast(
