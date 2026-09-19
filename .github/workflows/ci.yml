@@ -14,12 +14,7 @@ jobs:
     - timeout-minutes: 10
       uses: actions/checkout@main
     - name: Make room on the runner
-      run: |
-        df -h /
-        sudo rm -rf /usr/lib/jvm /usr/share/dotnet /usr/share/swift /usr/local/.ghcup /usr/local/julia* /usr/local/lib/android /opt/az /usr/local/share/powershell /opt/hostedtoolcache /usr/local/share/chromium /opt/microsoft /opt/google /usr/lib/firefox
-        docker system prune --all --force
-        docker builder prune --all --force
-        df -h /
+      run: df -h /; sudo rm -rf /usr/lib/jvm /usr/share/dotnet /usr/share/swift /usr/local/.ghcup /usr/local/julia* /usr/local/lib/android /opt/az /usr/local/share/powershell /opt/hostedtoolcache /usr/local/share/chromium /opt/microsoft /opt/google /usr/lib/firefox; docker system prune --all --force; docker builder prune --all --force; df -h /
       timeout-minutes: 10
     - timeout-minutes: 15
       uses: cachix/install-nix-action@master
@@ -77,12 +72,7 @@ jobs:
     - timeout-minutes: 10
       uses: actions/checkout@main
     - name: Make room on the runner
-      run: |
-        df -h /
-        sudo rm -rf /usr/lib/jvm /usr/share/dotnet /usr/share/swift /usr/local/.ghcup /usr/local/julia* /usr/local/lib/android /opt/az /usr/local/share/powershell /opt/hostedtoolcache /usr/local/share/chromium /opt/microsoft /opt/google /usr/lib/firefox
-        docker system prune --all --force
-        docker builder prune --all --force
-        df -h /
+      run: df -h /; sudo rm -rf /usr/lib/jvm /usr/share/dotnet /usr/share/swift /usr/local/.ghcup /usr/local/julia* /usr/local/lib/android /opt/az /usr/local/share/powershell /opt/hostedtoolcache /usr/local/share/chromium /opt/microsoft /opt/google /usr/lib/firefox; docker system prune --all --force; docker builder prune --all --force; df -h /
       timeout-minutes: 10
     - timeout-minutes: 15
       uses: cachix/install-nix-action@master
@@ -95,10 +85,7 @@ jobs:
           trusted-users = root runner
         install_url: https://releases.nixos.org/nix/nix-2.34.8/install
     - name: Allow the unprivileged user namespaces Nix and passt need
-      run: |
-        sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-        sudo sysctl -w kernel.unprivileged_userns_clone=1
-        unshare --user --map-root-user --mount --pid --fork --mount-proc true
+      run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0; sudo sysctl -w kernel.unprivileged_userns_clone=1; unshare --user --map-root-user --mount --pid --fork --mount-proc true
       timeout-minutes: 5
     - name: Build the suite for nix 2.34
       run: nix build --file . nixFunctionalTests.nix_2_34 --out-link nixft --print-build-logs
@@ -122,12 +109,7 @@ jobs:
     - timeout-minutes: 10
       uses: actions/checkout@main
     - name: Make room on the runner
-      run: |
-        df -h /
-        sudo rm -rf /usr/lib/jvm /usr/share/dotnet /usr/share/swift /usr/local/.ghcup /usr/local/julia* /usr/local/lib/android /opt/az /usr/local/share/powershell /opt/hostedtoolcache /usr/local/share/chromium /opt/microsoft /opt/google /usr/lib/firefox
-        docker system prune --all --force
-        docker builder prune --all --force
-        df -h /
+      run: df -h /; sudo rm -rf /usr/lib/jvm /usr/share/dotnet /usr/share/swift /usr/local/.ghcup /usr/local/julia* /usr/local/lib/android /opt/az /usr/local/share/powershell /opt/hostedtoolcache /usr/local/share/chromium /opt/microsoft /opt/google /usr/lib/firefox; docker system prune --all --force; docker builder prune --all --force; df -h /
       timeout-minutes: 10
     - timeout-minutes: 15
       uses: cachix/install-nix-action@master
@@ -140,10 +122,7 @@ jobs:
           trusted-users = root runner
         install_url: https://releases.nixos.org/nix/nix-2.34.8/install
     - name: Allow the unprivileged user namespaces Nix and passt need
-      run: |
-        sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-        sudo sysctl -w kernel.unprivileged_userns_clone=1
-        unshare --user --map-root-user --mount --pid --fork --mount-proc true
+      run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0; sudo sysctl -w kernel.unprivileged_userns_clone=1; unshare --user --map-root-user --mount --pid --fork --mount-proc true
       timeout-minutes: 5
     - name: Record the Nix settings of this runner
       run: nix config show || true
