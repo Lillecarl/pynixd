@@ -109,6 +109,11 @@ class AddMultipleToStoreHandler(Handler):
                 read = min(info.info.nar_size - sent_bytes, 1024 * 1024)
                 data = await fsrc.readexactly(read)
                 fdst.write(data)
+                # Backpressure. `write` hands the chunk to the transport and
+                # returns, so without this the buffer holds the whole
+                # payload: measured peak/sent of 0.979 over 128 MiB, which is
+                # a node's closure in RAM.
+                await dst.drain()
                 sent_bytes += len(data)
 
         await fdst.finalize()
