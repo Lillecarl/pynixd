@@ -77,6 +77,10 @@ ghalib.evalWorkflow {
         enable = true;
         fetchDepth = 100;
       };
+      # Nothing to make room for, and the step is not free: it deletes tens
+      # of gigabytes and prunes every Docker image, which is minutes. The cap
+      # above is five, and it was set for a job that takes seconds.
+      ghanix.freeDiskSpace.enable = false;
       steps = [
         {
           id = "resolve";
@@ -124,6 +128,9 @@ ghalib.evalWorkflow {
       "if" = developOnly;
       needs = "docs-build";
       runs-on = "ubuntu-24.04";
+      # It deploys an artifact `docs-build` made, and installs no Nix, so it
+      # has nothing to make room for.
+      ghanix.freeDiskSpace.enable = false;
       permissions = {
         pages = "write";
         id-token = "write";
