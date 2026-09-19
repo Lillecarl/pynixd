@@ -25,6 +25,23 @@ that carries the diagnosis and it is unaffected.
 Every test here is also sampled by the autouse `profiler` fixture, which writes
 `pyinstrument.txt` beside the test's log directory. That is where the attributed
 hotspot is.
+
+What it attributed, on the few-large shape, 128 MiB, 3.435s of CPU:
+
+    3.073  AddMultipleToStoreHandler._forward_stream
+    2.992    FramedReader.readexactly          <- 97% of the handler
+    1.450      SSHNixReader.readexactly
+    1.172      SSHNixReader.read_uint64        <- one 8-byte read per frame
+
+**The cost is on the read side, not the write side.** `FramedReader.readexactly`
+copies each byte three to four times: `_buf.extend(data)` into the accumulator,
+then a slice and a `bytes()` out of it, then `_compact`'s `del _buf[:pos]`. Over
+128 MiB that is about half a gigabyte of memcpy. `read_uint64` is the frame
+length prefix, taken as its own socket read per frame.
+
+Adding backpressure to the write loop moved `peak_over_sent` on few-large from
+0.979 to 0.267 and left CPU unchanged at 3.07s, which is the same conclusion
+from the other direction.
 """
 
 from __future__ import annotations
