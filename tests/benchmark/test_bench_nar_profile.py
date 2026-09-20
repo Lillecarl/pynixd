@@ -76,10 +76,14 @@ log line is the class that actually ran rather than the one asked for. One run:
 
 uvloop is about 1.6-1.7x on CPU and wall, on every shape.
 
-**Read `max_lag_ms` as a tail, not as a measurement.** It is one maximum from
-one run, and the same uvloop/many-small cell measured 54.4 ms on the run
-before. Throughput and CPU repeat; this does not. Take a median of several runs
-before concluding anything about a loop from it.
+**Read `max_lag_ms` as a tail, not as a measurement.** The uvloop/many-small
+cell above is 328.2 ms; the same cell measured 54.4 ms and 44.7 ms on the runs
+either side of it. uvloop is not the slower loop for latency -- that one figure
+is noise, and taking it at face value would have been a wrong conclusion drawn
+from a real number. CPU and wall repeat to within a few percent across runs.
+
+Take a median of several runs before concluding anything about a loop from the
+tail.
 """
 
 from __future__ import annotations

@@ -20,6 +20,7 @@ from . import _optional, wire
 from .config import ExternalUnixStoreSpec, HTTPBinaryCacheSpec, LocalSocketStoreSpec, PynixdSettings
 from .context import PynixdContext
 from .gc import Collector
+from .health import HealthReport, LoopLagMonitor
 from .scheduler import Scheduler
 from .serde.protocol import PynixdGCAction
 from .store import DaemonStore, ExternalUnixStore, LocalDBStore, LocalStore, Store, is_http_binary_cache
@@ -196,6 +197,7 @@ class Server:
         self.unix_server: asyncio.Server | None = None
         self.reverse_acceptor: asyncssh.SSHAcceptor | None = None
         self.http_server: web.AppRunner | None = None
+        self.loop_lag = LoopLagMonitor()
         self.http_bound_port: int | None = None
         self.https_server: web.AppRunner | None = None
         self.https_bound_port: int | None = None
@@ -348,6 +350,45 @@ class Server:
         """ssh-ng:// URI for --store."""
         return f"ssh-ng://{self.username}@{self.host}:{self.port}"
 
+    # A stall longer than this means the loop is not answering, so nothing this
+    # process serves is being served. It is well under a probe's own timeout on
+    # purpose: the point is to fail before the probe does, with a reason.
+    LOOP_LAG_UNHEALTHY_S = 5.0
+
+    def health(self) -> HealthReport:
+        """Is the loop running, and is every configured interface serving?
+
+        Both halves are invisible from outside. A TCP probe on the data port
+        passes against a wedged process, because the kernel completes
+        `connect()` from the listen backlog with no help from this code, and it
+        says nothing at all about the other interfaces.
+
+        An interface that was never configured is not reported. Only one that
+        was asked for and is not there counts as a fault.
+        """
+        s = self.settings
+        checks: dict[str, str] = {}
+
+        def listener(name: str, configured: bool, obj: object | None) -> None:
+            if not configured:
+                return
+            checks[name] = "serving" if obj is not None else "configured but not serving"
+
+        listener("ssh", s.ssh_port is not None, self.ssh_server)
+        listener("reverse_acceptor", s.reverse_acceptor.enabled, self.reverse_acceptor)
+        listener("unix", bool(s.unix_path), self.unix_server)
+        listener("http", s.http_port is not None, self.http_server)
+        listener("https", s.https_port is not None, self.https_server)
+
+        lag = self.loop_lag.window_max
+        lag_ok = lag < self.LOOP_LAG_UNHEALTHY_S
+        checks["event_loop"] = (
+            f"lag {lag:.3f}s" if lag_ok else f"stalled, lag {lag:.3f}s over {self.LOOP_LAG_UNHEALTHY_S}s"
+        )
+
+        ok = lag_ok and all(state == "serving" for name, state in checks.items() if name != "event_loop")
+        return HealthReport(ok=ok, checks=checks)
+
     async def __aenter__(self) -> Server:
         await self.start()
         return self
@@ -411,6 +452,9 @@ class Server:
         if self.ctx.db and self.ctx.settings.gc_enabled:
             self.background_tasks.append(asyncio.create_task(self._gc_tick()))
 
+        # Before the listeners, so a stall during their startup is recorded.
+        self.background_tasks.append(asyncio.create_task(self.loop_lag.run()))
+
         s = self.settings
         if s.ssh_port is not None:
             self.ssh_server = await _optional.ssh_server.start_ssh_server(
@@ -454,6 +498,7 @@ class Server:
                 htpasswd_path=s.http_htpasswd,
                 priority=s.http_priority,
                 upload_dir=s.http_upload_dir,
+                health_check=self.health,
             )
             if s.http_port is not None:
                 runner, port = await cache.start(

@@ -48,6 +48,7 @@ from .store_path import StorePath
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
+    from .health import HealthReport
     from .store import LocalStore
     from .wire import NixWriter
 
@@ -73,6 +74,7 @@ class PynixdHttpServer:
         htpasswd_path: str | Path | None = None,
         priority: int = 30,
         upload_dir: str | Path | None = None,
+        health_check: Callable[[], HealthReport] | None = None,
     ) -> None:
         """Initialize the HTTP server and register route handlers.
 
@@ -86,7 +88,11 @@ class PynixdHttpServer:
             htpasswd_path: Path to an htpasswd file (overrides username/password).
             priority: Cache priority advertised in ``/nix-cache-info``.
             upload_dir: Directory for staging NAR uploads (``None`` disables uploads).
+            health_check: Returns the server's own verdict for ``/healthz``.
+                ``None`` leaves the endpoint answering 200 unconditionally,
+                which is what a cache started without a Server does.
         """
+        self._health_check = health_check
         self.store = local_store
         self.enable_cache = enable_cache
         self.enable_metrics = enable_metrics
@@ -172,8 +178,19 @@ class PynixdHttpServer:
     # ── Handlers ──────────────────────────────────────────────────────
 
     async def handle_healthz(self, request: web.Request) -> web.Response:
-        """Kubernetes health check endpoint."""
-        return web.Response(status=HTTPStatus.OK, text="ok\n")
+        """Kubernetes health check endpoint.
+
+        Answers 503 with the failing check named, so a probe's own response
+        body says why rather than sending the reader to a log. With no health
+        callback wired it reports 200 and says so, because a server that cannot
+        assess itself must not claim the interfaces are up.
+        """
+        if self._health_check is None:
+            return web.Response(status=HTTPStatus.OK, text="ok\nhealth: not assessed\n")
+
+        report = self._health_check()
+        status = HTTPStatus.OK if report.ok else HTTPStatus.SERVICE_UNAVAILABLE
+        return web.Response(status=status, text=report.as_text())
 
     async def handle_metrics(self, request: web.Request) -> web.Response:
         """Expose Prometheus metrics."""

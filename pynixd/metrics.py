@@ -65,6 +65,26 @@ STORE_HEALTHY = Gauge(
     ["store_id"],
 )
 
+# --- Event loop metrics ---
+
+# How long the loop goes between running ready callbacks. Everything pynixd
+# serves is answered by the loop, so this is the one number that says whether
+# it can answer at all -- a transfer that does not yield stalls the loop, and a
+# stalled loop accepts no connection and runs no probe handler.
+#
+# A TCP probe cannot see this. `connect()` is completed by the kernel from the
+# listen backlog whether or not the application ever accepts, so it passes
+# against a wedged process and fails only on a timeout. That is nixkube#53.
+EVENT_LOOP_LAG = Gauge(
+    "pynixd_event_loop_lag_seconds",
+    "Seconds the event loop went without running a ready callback, over the last window",
+)
+
+EVENT_LOOP_LAG_MAX = Gauge(
+    "pynixd_event_loop_lag_max_seconds",
+    "Largest event loop stall seen since the process started",
+)
+
 
 class StoreSpaceCollector:
     """How much room the store has, read when a scrape asks for it.
