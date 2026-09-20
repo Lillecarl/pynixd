@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 import anyio
 import structlog
+from anyio.lowlevel import checkpoint
 
 from nix_daemon_protocol.add_multiple_to_store import (
     AddMultipleToStoreRequest,
@@ -101,6 +102,11 @@ class AddMultipleToStoreHandler(Handler):
 
         infos: list[ValidPathInfo] = []
         for _ in range(expected):
+            # Per path as well as per chunk. A transfer of many small paths
+            # spends its time in this metadata read rather than in the byte
+            # loop below, and measured the worst loop stall of the three
+            # shapes in tests/benchmark/test_bench_nar_profile.py.
+            await checkpoint()
             info = await ValidPathInfo.from_reader(ReadContext(reader=fsrc, version=1))
             infos.append(info)
             fdst.write(await info.bytes_wire())
@@ -114,6 +120,12 @@ class AddMultipleToStoreHandler(Handler):
                 # payload: measured peak/sent of 0.979 over 128 MiB, which is
                 # a node's closure in RAM.
                 await dst.drain()
+                # A guaranteed suspension. `drain` returns without reaching the
+                # loop below the high-water mark, and a buffered read returns
+                # without reaching it at all, so this loop can run to the end
+                # of a NAR while the loop schedules nothing else -- including
+                # accepting the connection a TCP liveness probe opens.
+                await checkpoint()
                 sent_bytes += len(data)
 
         await fdst.finalize()

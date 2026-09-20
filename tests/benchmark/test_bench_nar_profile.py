@@ -8,10 +8,13 @@ is the one that pegged a cluster at 999 millicores and 1850 MB.
 `stream_paths_store_to_store`, which is pynixd acting as a *client* against
 another store -- a different loop, with a different drain pattern.
 
-Two shapes, because they fail differently. Many small paths put the cost in
+Three shapes, because they fail differently. Many small paths put the cost in
 per-path Python work, so read `cpu_ms_per_path`. Few large paths put it in the
 byte loop, so read `peak_mib` against `sent_mib`: a streaming forward holds
-roughly one chunk, and a buffering one holds the whole payload.
+roughly one chunk, and a buffering one holds the whole payload. One path of
+many files varies what is *inside* a NAR, which the forward never parses -- it
+measured about twice the per-byte cost of few-large, so it does not explain
+nixkube#53's core-pegged-with-no-progress.
 
 The metrics are reported, not asserted. Bounds belong here once the numbers are
 known -- a guessed threshold either passes forever or fails on a slower runner.
@@ -42,10 +45,28 @@ length prefix, taken as its own socket read per frame.
 Adding backpressure to the write loop moved `peak_over_sent` on few-large from
 0.979 to 0.267 and left CPU unchanged at 3.07s, which is the same conclusion
 from the other direction.
+
+**`max_loop_lag_ms` is the number nixkube#37 and #53 turn on**, because a TCP
+liveness probe is answered by the loop accepting a connection. `checkpoint()`
+in the two transfer loops took the worst shape from 214.6 ms to 54.4 ms for no
+measurable CPU.
+
+What the residual 45-90 ms is *not*, both measured rather than reasoned:
+
+    subprocess spawn   ~9 ms   (scratch probe, /bin/true on this loop)
+    gc pause           ~2 ms   (`max_gc_pause_ms` below, all three shapes)
+
+A gen-2 collection *can* stall this loop for 503 ms with two million live
+objects, so the collector stays worth watching as allocation grows even though
+it is not what these runs hit. The untested candidate for the floor is the SSH
+handshake: every `nix copy` opens a connection and the key exchange is
+CPU-bound crypto on this loop.
 """
 
 from __future__ import annotations
 
+import asyncio
+import gc
 import os
 import resource
 import time
@@ -54,6 +75,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import anyio
 import pytest
 import structlog
 
@@ -76,6 +98,9 @@ log = structlog.get_logger(__name__)
 # number can be quoted in an issue.
 _MANY_SMALL = (200, 64)
 _FEW_LARGE = (2, 64 * 1024)
+# Files inside one path, not paths. nixkube#53 reports 8871 in a single 49 MiB
+# path; 4000 of 8 KiB is the same shape at a size a test can afford.
+_ONE_PATH_MANY_FILES = (4000, 8)
 
 _SRC_STORE = STORE_PREFIX / "nar-profile-src"
 _CONTENT_DIR = STORE_PREFIX / "nar-profile-content"
@@ -93,6 +118,35 @@ def src_store() -> Iterator[Path]:
     yield _SRC_STORE
     rmtree_robust(_SRC_STORE)
     rmtree_robust(_CONTENT_DIR)
+
+
+async def _add_tree(src: Path, files: int, size_kib: int) -> list[str]:
+    """Add ONE path holding `files` files, and return it.
+
+    A different axis from `_add_paths`. That one varies how many paths a
+    transfer names; this varies how many files one NAR contains. The forward
+    loop moves bytes and never looks inside a NAR, so its cost should not
+    depend on this at all -- which is exactly what makes it worth measuring.
+
+    A cluster reported 999m of CPU and no progress pushing 8871 files inside a
+    single 49 MiB path (nixkube#53). The forward path cannot explain that, so
+    either the cost is elsewhere or this shape is cheap and the search moves on.
+    """
+    tree = _CONTENT_DIR / f"tree-{files}x{size_kib}k"
+    tree.mkdir(parents=True, exist_ok=True)
+    blob = os.urandom(size_kib * 1024)
+    for i in range(files):
+        # Fan out, because one directory of several thousand entries measures
+        # the filesystem as much as it measures the NAR.
+        sub = tree / f"d{i // 256:04d}"
+        sub.mkdir(exist_ok=True)
+        (sub / f"f{i:05d}").write_bytes(blob)
+
+    rc, stdout, stderr, _ = await run_subproc(
+        [str(CLIENT_BIN), "store", "add-path", "--store", str(src), str(tree)],
+    )
+    assert rc == 0, f"add-path failed:\n{stderr}"
+    return [stdout.strip()]
 
 
 async def _add_paths(src: Path, count: int, size_kib: int) -> list[str]:
@@ -114,21 +168,94 @@ async def _add_paths(src: Path, count: int, size_kib: int) -> list[str]:
     return paths
 
 
+class _LoopLag:
+    """Record how long the event loop goes without running a ready callback.
+
+    A TCP liveness probe is answered by the loop accepting a connection. If a
+    handler runs a stretch of work without suspending, nothing is accepted and
+    the probe times out against a process that is busy rather than wedged --
+    nixkube#37 and #53.
+
+    `await` alone does not suspend. A coroutine that returns from a buffer
+    finishes without reaching the loop, and `drain` returns straight away below
+    the high-water mark, so a read-and-write loop can spin indefinitely while
+    looking like it awaits on every line.
+
+    `max_lag_ms` is what a probe sees. `SAMPLE_S` bounds the resolution: a stall
+    shorter than it can be missed.
+    """
+
+    SAMPLE_S = 0.005
+
+    def __init__(self) -> None:
+        self.max_lag_s = 0.0
+        self.samples = 0
+        self._stop = False
+
+    async def run(self) -> None:
+        while not self._stop:
+            t0 = time.perf_counter()
+            await anyio.sleep(self.SAMPLE_S)
+            lag = time.perf_counter() - t0 - self.SAMPLE_S
+            self.max_lag_s = max(self.max_lag_s, lag)
+            self.samples += 1
+
+    def stop(self) -> None:
+        self._stop = True
+
+
+class _GCPauses:
+    """Time every garbage collection that runs inside the block.
+
+    A collection is stop-the-world, so it blocks the event loop exactly the way
+    a synchronous stretch of work does, and nothing in the handler can yield
+    during one. Measured on this machine, a gen-2 pass over two million live
+    objects stalls the loop for 503 ms -- against 9 ms for spawning a process.
+
+    That is the link between allocation churn and a failing liveness probe:
+    every copy in the read path is an allocation, and allocations are what
+    schedule the next collection.
+    """
+
+    def __init__(self) -> None:
+        self.max_pause_s = 0.0
+        self.total_s = 0.0
+        self.collections = 0
+        self._start: float | None = None
+
+    def __call__(self, phase: str, info: dict[str, int]) -> None:
+        if phase == "start":
+            self._start = time.perf_counter()
+            return
+        if self._start is None:
+            return
+        elapsed = time.perf_counter() - self._start
+        self._start = None
+        self.max_pause_s = max(self.max_pause_s, elapsed)
+        self.total_s += elapsed
+        self.collections += 1
+
+
 @contextmanager
-def _measure(label: str, *, count: int, sent_bytes: int) -> Iterator[None]:
+def _measure(label: str, *, count: int, sent_bytes: int, lag: _LoopLag | None = None) -> Iterator[None]:
     """Report wall time, CPU and peak allocation for the block.
 
     CPU is split. `RUSAGE_SELF` is pynixd, because the server runs in this
     process; `RUSAGE_CHILDREN` is the `nix` client, which is a subprocess. A
     single total would hide which side burns the core.
     """
+    pauses = _GCPauses()
+    gc.callbacks.append(pauses)
     tracemalloc.start()
     tracemalloc.reset_peak()
     self0 = resource.getrusage(resource.RUSAGE_SELF)
     kids0 = resource.getrusage(resource.RUSAGE_CHILDREN)
     wall0 = time.perf_counter()
 
-    yield
+    try:
+        yield
+    finally:
+        gc.callbacks.remove(pauses)
 
     wall = time.perf_counter() - wall0
     self1 = resource.getrusage(resource.RUSAGE_SELF)
@@ -154,6 +281,18 @@ def _measure(label: str, *, count: int, sent_bytes: int) -> Iterator[None]:
         peak_mib=round(peak / _MIB, 2),
         # Streaming keeps this near zero; buffering drives it towards 1.
         peak_over_sent=round(peak / sent_bytes, 3) if sent_bytes else None,
+        # What a TCP liveness probe sees. The live default is
+        # periodSeconds 10, failureThreshold 6, so 60s of silence restarts the
+        # pod -- but a probe also fails on a much shorter stall if it lands in
+        # one, and the restart then destroys the evidence.
+        max_loop_lag_ms=round(lag.max_lag_s * 1000, 1) if lag else None,
+        loop_samples=lag.samples if lag else None,
+        # A collection is stop-the-world, so it blocks the loop whatever the
+        # handler does. Compare `max_gc_pause_ms` with `max_loop_lag_ms`: when
+        # they agree, the stall is the collector and not the transfer.
+        max_gc_pause_ms=round(pauses.max_pause_s * 1000, 1),
+        gc_total_ms=round(pauses.total_s * 1000, 1),
+        gc_collections=pauses.collections,
     )
 
 
@@ -165,21 +304,42 @@ async def _copy_and_measure(
     size_kib: int,
 ) -> None:
     paths = await _add_paths(src, count, size_kib)
-    sent_bytes = count * size_kib * 1024
+    await _copy_paths_and_measure(
+        server,
+        paths,
+        label,
+        count=count,
+        sent_bytes=count * size_kib * 1024,
+    )
 
+
+async def _copy_paths_and_measure(
+    server: Server,
+    paths: list[str],
+    label: str,
+    *,
+    count: int,
+    sent_bytes: int,
+) -> None:
     cmd = [
         str(CLIENT_BIN),
         "copy",
         "--no-check-sigs",
         "--from",
-        str(src),
+        str(_SRC_STORE),
         "--to",
         ssh_admin_uri(server),
         *paths,
     ]
 
-    with _measure(label, count=count, sent_bytes=sent_bytes):
-        rc, _, stderr, _ = await run_subproc(cmd)
+    lag = _LoopLag()
+    lag_task = asyncio.create_task(lag.run())
+    try:
+        with _measure(label, count=count, sent_bytes=sent_bytes, lag=lag):
+            rc, _, stderr, _ = await run_subproc(cmd)
+    finally:
+        lag.stop()
+        await lag_task
 
     assert rc == 0, f"nix copy failed:\n{stderr}"
 
@@ -188,7 +348,9 @@ async def _copy_and_measure(
         [str(CLIENT_BIN), "path-info", "--store", ssh_admin_uri(server), *paths],
     )
     assert rc_check == 0, f"path-info failed:\n{stderr_check}"
-    assert len(stdout_check.split()) >= count
+    # Every path named, not `count` -- `count` is the unit the shape varies,
+    # which is paths for some shapes and files inside one path for others.
+    assert len(stdout_check.split()) >= len(paths)
 
 
 @pytest.mark.benchmark
@@ -210,3 +372,26 @@ async def test_profile_nar_forward_few_large(pynixd_server: Server, src_store: P
     """
     count, size_kib = _FEW_LARGE
     await _copy_and_measure(pynixd_server, src_store, "few-large", count, size_kib)
+
+
+@pytest.mark.benchmark
+async def test_profile_nar_forward_one_path_many_files(pynixd_server: Server, src_store: Path) -> None:
+    """One path holding many files: does the forward care what is inside a NAR?
+
+    4000 files of 8 KiB in a single store path, about 31 MiB. Read
+    `cpu_ms_per_mib` against the few-large shape. The forward loop moves bytes
+    and never parses the NAR, so the two should agree; a large gap says the
+    cost is somewhere that does look inside.
+
+    This exists for nixkube#53, where a cluster pegged a core with no progress
+    pushing 8871 files inside one 49 MiB path.
+    """
+    files, size_kib = _ONE_PATH_MANY_FILES
+    paths = await _add_tree(src_store, files, size_kib)
+    await _copy_paths_and_measure(
+        pynixd_server,
+        paths,
+        "one-path-many-files",
+        count=files,
+        sent_bytes=files * size_kib * 1024,
+    )

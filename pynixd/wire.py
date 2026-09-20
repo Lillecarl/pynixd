@@ -14,6 +14,8 @@ import os
 import struct
 from typing import TYPE_CHECKING, Protocol
 
+from anyio.lowlevel import checkpoint
+
 from nix_daemon_protocol.logs import LogMessage, drain as drain_log_stream, read_stream as read_log_stream
 
 from ._lazy import ssh_connection_lost
@@ -546,6 +548,14 @@ class FramedWriter(NixWriter):
         self._dst.write_uint64(len(data))
         self._dst.write(data)
 
+    async def drain(self) -> None:
+        """Drain the writer underneath, which is the one holding the bytes.
+
+        `NixWriter.drain` would call this object's own `_drain_transport`, and
+        a FramedWriter has no transport -- it writes through `_dst`.
+        """
+        await self._dst.drain()
+
     async def finalize(self) -> None:
         self._dst.write_uint64(0)  # terminator
         await self._dst.drain()
@@ -650,4 +660,15 @@ async def pipe_raw_to_framed_writer(
         to_read = min(remaining, chunk_size)
         chunk = await src.readexactly(to_read)
         fw.write(chunk)
+        # Backpressure. `write` returns straight away, so without this the
+        # transport buffer holds the whole NAR.
+        await fw.drain()
+        # And a guaranteed suspension, which `drain` is not: it returns without
+        # reaching the loop below the high-water mark, and a buffered read
+        # returns without reaching it at all. A loop where every line has an
+        # `await` can therefore run to completion without the loop scheduling
+        # anything else -- and a loop that is not scheduled does not accept
+        # connections, which is what makes a TCP liveness probe fail against a
+        # process that is busy rather than wedged.
+        await checkpoint()
         remaining -= to_read
