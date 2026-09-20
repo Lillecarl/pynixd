@@ -177,6 +177,40 @@ class TestThePoolCollector:
         assert self._series("test-pool-dropped")["pynixd_store_pool_connections"] == 0
 
 
+class TestSubstitution:
+    """A substituter that answers slowly and one that answers "no" cost a
+    build the same wall clock and are a different fault."""
+
+    def test_a_timeout_is_counted_apart_from_an_error(self) -> None:
+        metrics.SUBSTITUTER_QUERIES.labels(store_id="cache", result="timeout").inc()
+        metrics.SUBSTITUTER_QUERIES.labels(store_id="cache", result="error").inc()
+
+        timed_out = _value("pynixd_substituter_queries_total", {"store_id": "cache", "result": "timeout"})
+        errored = _value("pynixd_substituter_queries_total", {"store_id": "cache", "result": "error"})
+        assert timed_out >= 1
+        assert errored >= 1
+
+    def test_a_miss_is_counted_apart_from_a_hit(self) -> None:
+        """A cache that answers 404 for everything and one that cannot be
+        reached look the same to a build."""
+        before = _value("pynixd_binary_cache_narinfo_total", {"store_id": "c", "result": "miss"})
+        metrics.BINARY_CACHE_NARINFO.labels(store_id="c", result="miss").inc()
+
+        assert _value("pynixd_binary_cache_narinfo_total", {"store_id": "c", "result": "miss"}) - before == 1
+
+    def test_the_label_never_carries_a_path(self) -> None:
+        """Cardinality. A substituter query is made per store path, so a path
+        in the label is one series per path in the closure."""
+        names = {
+            name
+            for metric in REGISTRY.collect()
+            if metric.name in {"pynixd_substituter_queries", "pynixd_binary_cache_narinfo"}
+            for sample in metric.samples
+            for name in sample.labels.values()
+        }
+        assert not any("/nix/store/" in name for name in names)
+
+
 class TestNarForwarding:
     def test_the_forward_series_exist_unlabelled(self) -> None:
         """`AddMultipleToStore` is the path a `nix copy` into pynixd takes, and

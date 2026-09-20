@@ -19,6 +19,7 @@ import zstandard as zstd
 from nix_daemon_protocol.store_dir import store_dir
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
 
+from .. import metrics
 from ..exceptions import OpNotImplementedError
 from ..serde import (
     IsValidPathRequest,
@@ -270,17 +271,25 @@ class HTTPBinaryCacheStore(Store):
             try:
                 async with session.get(url, raise_for_status=False, timeout=aiohttp.ClientTimeout(total=5)) as response:
                     if response.status == 404:
+                        # A miss, and not a fault. Counted apart from an error
+                        # because a cache that answers 404 for everything and
+                        # one that cannot be reached look the same to a build
+                        # and are a different thing to fix.
+                        metrics.BINARY_CACHE_NARINFO.labels(store_id=self.store_id, result="miss").inc()
                         return None
                     if response.status != 200:
+                        metrics.BINARY_CACHE_NARINFO.labels(store_id=self.store_id, result="error").inc()
                         log.debug("http_cache_narinfo_status", store_id=self.store_id, url=url, status=response.status)
                         self._record_result(False)
                         return None
                     text = await response.text()
             except (TimeoutError, aiohttp.ClientError, OSError):
+                metrics.BINARY_CACHE_NARINFO.labels(store_id=self.store_id, result="error").inc()
                 log.debug("http_cache_narinfo_failed", store_id=self.store_id, url=url, exc_info=True)
                 self._record_result(False)
                 return None
 
+        metrics.BINARY_CACHE_NARINFO.labels(store_id=self.store_id, result="hit").inc()
         self._record_result(True)
         return text
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from collections import deque
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
@@ -15,6 +16,7 @@ from cachetools import TTLCache
 from nix_daemon_protocol.ids import LOCAL_STORE_ID
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
 
+from . import metrics
 from .exceptions import OpNotImplementedError
 from .serde import AddToStoreNarRequest, NarFromPathRequest, QueryPathInfoRequest, StorePath
 from .serde.context import ReadContext, WriteContext
@@ -212,7 +214,9 @@ class SubstitutionQueue:
         return log
 
     def should_wait_for(self, store_id: StoreId) -> bool:
-        return self.health_for(store_id).is_healthy
+        healthy = self.health_for(store_id).is_healthy
+        metrics.SUBSTITUTER_WAITED_FOR.labels(store_id=store_id).set(1 if healthy else 0)
+        return healthy
 
     def substituter_stores(self) -> Iterable[Store]:
         return (
@@ -222,20 +226,37 @@ class SubstitutionQueue:
         )
 
     async def _query_store(self, path: StorePath, store: Store) -> SubstitutionQueryResult:
+        # `store_id` is a label, and it comes from the configuration, so the
+        # series count is the number of substituters. The path does not appear.
+        def counted(result: str) -> None:
+            metrics.SUBSTITUTER_QUERIES.labels(store_id=store.store_id, result=result).inc()
+
+        started = time.monotonic()
         try:
             with anyio.fail_after(self.ctx.settings.substitution_query_timeout):
                 response = await store.execute(QueryPathInfoRequest(path=StorePath(path=str(path))))
         except OpNotImplementedError:
+            counted("unsupported")
             return SubstitutionQueryResult(store_id=store.store_id, path_info=None, query_succeeded=False)
         except TimeoutError:
+            # Timed out and refused are both "no" to the caller and a
+            # different fault to an operator. A store that times out on every
+            # query costs each selection the whole timeout.
+            counted("timeout")
             log.warning("substitution_query_timeout", store_id=store.store_id, path=str(path))
             return SubstitutionQueryResult(store_id=store.store_id, path_info=None, query_succeeded=False)
         except Exception:
+            counted("error")
             log.warning("substitution_query_failed", store_id=store.store_id, path=str(path), exc_info=True)
             return SubstitutionQueryResult(store_id=store.store_id, path_info=None, query_succeeded=False)
+        finally:
+            metrics.SUBSTITUTER_QUERY_DURATION.labels(store_id=store.store_id).observe(time.monotonic() - started)
 
         if not response.valid or response.info is None:
+            counted("miss")
             return SubstitutionQueryResult(store_id=store.store_id, path_info=None, query_succeeded=True)
+
+        counted("hit")
 
         path_info = ValidPathInfo(path=StorePath(path=str(path)), info=response.info)
         return SubstitutionQueryResult(store_id=store.store_id, path_info=path_info, query_succeeded=True)
@@ -255,16 +276,28 @@ class SubstitutionQueue:
             self._track_probe_task(asyncio.create_task(query_and_record(store)))
 
     async def _substitute_uncached(self, path: StorePath) -> SubstitutionImportResult:
+        started = time.monotonic()
         candidate = await self.get_substituter(path)
         if candidate is None:
+            metrics.SUBSTITUTIONS.labels(result="no_candidate").inc()
+            metrics.SUBSTITUTION_DURATION.observe(time.monotonic() - started)
             return SubstitutionImportResult(substituted=False, path=path, error=f"no substituter has path: {path}")
 
         try:
             await self._import_nar(path, candidate)
         except Exception as exc:
+            metrics.SUBSTITUTIONS.labels(result="error").inc()
             log.warning("substitution_import_failed", store_id=candidate.store.store_id, path=str(path), exc_info=True)
             return SubstitutionImportResult(substituted=False, path=path, candidate=candidate, error=str(exc))
-        return SubstitutionImportResult(substituted=True, path=path, candidate=candidate)
+        else:
+            metrics.SUBSTITUTIONS.labels(result="ok").inc()
+            metrics.SUBSTITUTED_BYTES.inc(candidate.path_info.info.nar_size)
+            return SubstitutionImportResult(substituted=True, path=path, candidate=candidate)
+        finally:
+            # The whole attempt, the query for a candidate included. That
+            # query is where a slow substituter costs a build its time, and
+            # timing the import alone would hide it.
+            metrics.SUBSTITUTION_DURATION.observe(time.monotonic() - started)
 
     async def _import_nar(self, path: StorePath, candidate: SubstitutionCandidate) -> None:
         async with self.ctx.local_store.transfer_conn() as conn:

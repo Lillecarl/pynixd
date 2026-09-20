@@ -186,6 +186,59 @@ POOL_EMPTIED = Counter(
     ["store_id"],
 )
 
+# --- Substitution ---
+#
+# What a build waits on before it decides to build anything. A substituter
+# that answers slowly and a substituter that answers "no" cost a client the
+# same wall clock and are a different fault, and nothing here said which.
+
+SUBSTITUTER_QUERIES = Counter(
+    "pynixd_substituter_queries_total",
+    "QueryPathInfo calls made to a substituter while choosing one",
+    ["store_id", "result"],  # hit, miss, timeout, error, unsupported
+)
+
+SUBSTITUTER_QUERY_DURATION = Histogram(
+    "pynixd_substituter_query_duration_seconds",
+    "Time one substituter took to answer whether it has a path",
+    ["store_id"],
+    buckets=(0.01, 0.05, 0.25, 1, 5, 15, 60),
+)
+
+SUBSTITUTIONS = Counter(
+    "pynixd_substitutions_total",
+    "Paths pynixd tried to fetch from a substituter",
+    ["result"],  # ok, error, no_candidate
+)
+
+SUBSTITUTION_DURATION = Histogram(
+    "pynixd_substitution_duration_seconds",
+    "Time spent importing one substituted path, the query for a candidate included",
+    buckets=(0.05, 0.25, 1, 5, 15, 60, 300, 900),
+)
+
+SUBSTITUTED_BYTES = Counter(
+    "pynixd_substituted_bytes_total",
+    "NAR bytes imported from substituters",
+)
+
+# The queue's own health record, and not `STORE_HEALTHY`. That one is about a
+# build store the scheduler dispatches to; this is about a substituter the
+# queue decides whether to wait for, and a store can be both.
+SUBSTITUTER_WAITED_FOR = Gauge(
+    "pynixd_substituter_waited_for",
+    "Whether the queue still blocks a selection on this substituter (1 = yes)",
+    ["store_id"],
+)
+
+# --- HTTP binary cache clients ---
+
+BINARY_CACHE_NARINFO = Counter(
+    "pynixd_binary_cache_narinfo_total",
+    "`.narinfo` requests pynixd made to an upstream HTTP binary cache",
+    ["store_id", "result"],  # hit, miss, error
+)
+
 # --- Garbage collection ---
 #
 # Same shape as nixkube's GC series, so one dashboard reads both.
