@@ -15,7 +15,27 @@ import time
 
 import anyio
 
+from pynixd.config import PynixdSettings
 from pynixd.health import HealthReport, LoopLagMonitor
+from pynixd.instance import Server
+
+
+def _server_with_lag(lag: float, settings: PynixdSettings) -> Server:
+    """A `Server` that started nothing, holding one recorded stall.
+
+    `health()` reads the settings and the monitor, and neither needs a
+    running loop. The sample is placed rather than measured: the rule under
+    test is the comparison, not the sampling.
+    """
+    server = Server(settings=settings)
+    server.loop_lag._samples.append((server.loop_lag._clock(), lag))  # noqa: SLF001
+    server.loop_lag.lifetime_max = lag
+    return server
+
+
+def _stock() -> PynixdSettings:
+    """Settings that serve nothing, so `health()` reports the loop alone."""
+    return PynixdSettings(unix_path=None, ssh_port=None)
 
 
 def test_a_report_names_the_check_that_failed() -> None:
@@ -94,3 +114,41 @@ def test_the_window_forgets_an_old_stall() -> None:
     now[0] += 2.0
     assert monitor.window_max == 0.0, "the window kept a stall past its end"
     assert monitor.lifetime_max == 0.4, "lifetime_max must not decay"
+
+
+class TestTheConfiguredThreshold:
+    """`health_loop_lag_max` and `health_loop_lag_window`.
+
+    The right value is a property of the workload -- a host pushing a large
+    closure stalls longer than a laptop -- so both are settings rather than
+    constants. A setting nothing reads looks exactly like one that works.
+    """
+
+    def test_a_stall_under_the_limit_is_healthy(self) -> None:
+        assert _server_with_lag(1.0, _stock()).health().ok
+
+    def test_a_lowered_limit_makes_the_same_stall_unhealthy(self) -> None:
+        """The same 1 s stall, and the only difference is the setting."""
+        lowered = PynixdSettings(unix_path=None, ssh_port=None, health_loop_lag_max=0.5)
+
+        report = _server_with_lag(1.0, lowered).health()
+
+        assert not report.ok
+        assert "stalled" in report.checks["event_loop"]
+
+    def test_a_raised_limit_tolerates_a_stall_the_default_refuses(self) -> None:
+        """The direction an operator reaches for: a node whose transfers
+        stall longer than a laptop's, told so rather than restarted."""
+        raised = PynixdSettings(unix_path=None, ssh_port=None, health_loop_lag_max=30.0)
+
+        assert not _server_with_lag(6.0, _stock()).health().ok
+        assert _server_with_lag(6.0, raised).health().ok
+
+    def test_the_window_setting_reaches_the_monitor(self) -> None:
+        """The other half. A window nothing reads leaves every stall counted
+        for 30 s whatever the configuration says."""
+        settings = PynixdSettings(unix_path=None, ssh_port=None, health_loop_lag_window=7.5)
+
+        server = Server(settings=settings)
+
+        assert server.loop_lag._window == 7.5  # noqa: SLF001
