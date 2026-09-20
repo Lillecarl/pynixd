@@ -197,7 +197,7 @@ class Server:
         self.unix_server: asyncio.Server | None = None
         self.reverse_acceptor: asyncssh.SSHAcceptor | None = None
         self.http_server: web.AppRunner | None = None
-        self.loop_lag = LoopLagMonitor()
+        self.loop_lag = LoopLagMonitor(window=self.settings.health_loop_lag_window)
         self.http_bound_port: int | None = None
         self.https_server: web.AppRunner | None = None
         self.https_bound_port: int | None = None
@@ -350,11 +350,6 @@ class Server:
         """ssh-ng:// URI for --store."""
         return f"ssh-ng://{self.username}@{self.host}:{self.port}"
 
-    # A stall longer than this means the loop is not answering, so nothing this
-    # process serves is being served. It is well under a probe's own timeout on
-    # purpose: the point is to fail before the probe does, with a reason.
-    LOOP_LAG_UNHEALTHY_S = 5.0
-
     def health(self) -> HealthReport:
         """Is the loop running, and is every configured interface serving?
 
@@ -380,11 +375,10 @@ class Server:
         listener("http", s.http_port is not None, self.http_server)
         listener("https", s.https_port is not None, self.https_server)
 
+        limit = s.health_loop_lag_max
         lag = self.loop_lag.window_max
-        lag_ok = lag < self.LOOP_LAG_UNHEALTHY_S
-        checks["event_loop"] = (
-            f"lag {lag:.3f}s" if lag_ok else f"stalled, lag {lag:.3f}s over {self.LOOP_LAG_UNHEALTHY_S}s"
-        )
+        lag_ok = lag < limit
+        checks["event_loop"] = f"lag {lag:.3f}s" if lag_ok else f"stalled, lag {lag:.3f}s over {limit}s"
 
         ok = lag_ok and all(state == "serving" for name, state in checks.items() if name != "event_loop")
         return HealthReport(ok=ok, checks=checks)

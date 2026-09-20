@@ -543,6 +543,20 @@ class PynixdSettings(BaseSettings):
     http_pass: str | None = None
     http_htpasswd: Path | None = None
     http_priority: int = 30
+
+    # How long the event loop may go without running a callback before
+    # `/healthz` reports unhealthy. Everything this process serves is answered
+    # by the loop, so a stall past this means it is serving nothing.
+    #
+    # 5 seconds is chosen to sit well under a probe's own timeout, so the
+    # endpoint fails with a named reason before the probe fails with none. The
+    # right value is a property of the workload -- a host pushing a large
+    # closure stalls longer than a laptop -- so it is configurable, and
+    # `pynixd_event_loop_lag_seconds` on /metrics is what to set it from.
+    health_loop_lag_max: float = 5.0
+    # The span the check looks back over. A stall must stop counting once the
+    # process is serving again, or one bad transfer holds the pod unhealthy.
+    health_loop_lag_window: float = 30.0
     http_upload_dir: Path | None = None
 
     https_port: int | None = None
