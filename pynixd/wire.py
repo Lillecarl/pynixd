@@ -125,17 +125,61 @@ class NixReader:
 
 
 class SSHNixReader(NixReader):
+    # Read ahead, because a call costs the same whatever it asks for. The NAR
+    # forward spends 2.47s of its 2.99s inside asyncssh, two calls per frame:
+    # an 8-byte length prefix costs the same round trip as the 64 KiB payload
+    # behind it. Serving the small reads out of one larger read removes the
+    # prefix calls entirely.
+    #
+    # This is safe only because nothing reads `self.reader` except this class,
+    # so a byte held here is never invisible to a later operation on the same
+    # connection. `_transport_is_dirty` counts this buffer for the same reason.
+    # Check both before giving anything else access to the stream.
+    _READAHEAD = 256 * 1024
+
     def __init__(self, reader: asyncssh.SSHReader, identifier: str = "unknown") -> None:
         super().__init__(identifier=identifier)
         self.reader = reader
+        self._buf: bytes = b""
+        self._pos = 0
 
     async def readexactly(self, n: int) -> bytes:
+        if (len(self._buf) - self._pos) >= n:
+            out = self._buf[self._pos : self._pos + n]
+            self._pos += n
+            return out
+
+        head = self._buf[self._pos :]
+        self._buf = b""
+        self._pos = 0
+        need = n - len(head)
+
         try:
-            return await self.reader.readexactly(n)
+            # A read at least as large as the read-ahead goes straight through.
+            # Buffering it would copy the payload to no purpose.
+            if need >= self._READAHEAD:
+                return head + await self.reader.readexactly(need)
+
+            parts = [head]
+            while need > 0:
+                chunk = await self.reader.read(self._READAHEAD)
+                if not chunk:
+                    raise EOFError("SSH connection closed")
+                if len(chunk) >= need:
+                    parts.append(chunk[:need])
+                    self._buf = chunk
+                    self._pos = need
+                    need = 0
+                else:
+                    parts.append(chunk)
+                    need -= len(chunk)
+            return b"".join(parts)
         except ssh_connection_lost():
             raise EOFError("SSH connection lost") from None
 
     def _transport_is_dirty(self) -> bool:
+        if (len(self._buf) - self._pos) > 0:
+            return True
         if hasattr(self.reader, "get_read_buffer_size"):
             return self.reader.get_read_buffer_size() > 0  # type: ignore[reportAttributeAccessIssue]
         # Fallback to private access if API changed or is missing
