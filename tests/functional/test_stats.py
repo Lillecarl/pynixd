@@ -230,8 +230,13 @@ async def test_build_stats_recording(tmp_path: Path) -> None:
                     await anyio.sleep(0.05)
 
         assert row[0] == "fast-pkg"
-        # Duration should be around 50ms + some overhead
-        assert 50 <= row[1] <= 1000
+        # The 50 ms delay this store was given, recorded. The floor is 45
+        # and not 50: `scheduler.py` stores `int((monotonic() - start) *
+        # 1000)`, which truncates, and a 50 ms sleep that returns a few
+        # hundred microseconds early is written as 49. Measured on a CI
+        # runner, where the same test records 49 and fails a floor of 50.
+        # 45 still separates a recorded delay from one that never ran.
+        assert 45 <= row[1] <= 1000
 
 
 @pytest.mark.covers(F.BUILD_DERIVATION | F.GOAL_BUILD_QUEUE | F.GOAL_SCHEDULER | F.STORE_LOCAL)
