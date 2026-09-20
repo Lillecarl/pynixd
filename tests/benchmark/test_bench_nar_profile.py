@@ -61,6 +61,25 @@ objects, so the collector stays worth watching as allocation grows even though
 it is not what these runs hit. The untested candidate for the floor is the SSH
 handshake: every `nix copy` opens a connection and the key exchange is
 CPU-bound crypto on this loop.
+
+**Both loops, because a throughput claim about pynixd is a claim about the
+loop under it.** ./conftest.py parametrises `anyio_backend`, and `loop` in the
+log line is the class that actually ran rather than the one asked for. One run:
+
+    shape                loop      wall_s  srv_cpu  ms/MiB  max_lag_ms
+    few-large            asyncio    5.247    3.014    23.5        97.9
+    few-large            uvloop     3.142    1.821    14.2        54.0
+    one-path-many-files  asyncio    2.620    1.184    37.9        50.6
+    one-path-many-files  uvloop     1.747    0.698    22.3        45.4
+    many-small           asyncio    2.857    1.559   124.7       144.7
+    many-small           uvloop     1.961    1.215    97.2       328.2
+
+uvloop is about 1.6-1.7x on CPU and wall, on every shape.
+
+**Read `max_lag_ms` as a tail, not as a measurement.** It is one maximum from
+one run, and the same uvloop/many-small cell measured 54.4 ms on the run
+before. Throughput and CPU repeat; this does not. Take a median of several runs
+before concluding anything about a loop from it.
 """
 
 from __future__ import annotations
@@ -267,8 +286,15 @@ def _measure(label: str, *, count: int, sent_bytes: int, lag: _LoopLag | None = 
     client_cpu = (kids1.ru_utime - kids0.ru_utime) + (kids1.ru_stime - kids0.ru_stime)
     sent_mib = sent_bytes / _MIB
 
+    # The loop that actually ran, not the one the parameter asked for. uvloop's
+    # loop class lives in the `uvloop` package and asyncio's in `asyncio`, so
+    # this reports a substitution that did not take rather than repeating the
+    # request back.
+    loop_impl = type(asyncio.get_running_loop()).__module__.partition(".")[0]
+
     log.info(
         "bench_nar_forward_profile",
+        loop=loop_impl,
         shape=label,
         paths=count,
         sent_mib=round(sent_mib, 2),
