@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING
 import anyio
 import structlog
 
+from .. import metrics
+
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
 
@@ -80,6 +82,9 @@ class ConnectionPool:
         self.idle_conns: list[tuple[Connection, float]] = []
         self.all_conns: list[Connection] = []
         self.sweep_task: asyncio.Task[None] | None = None
+        # The collector holds this weakly and reads the three counts above on
+        # each scrape, so nothing here updates a gauge per acquire.
+        metrics.STORE_POOLS.register(self)
 
     @property
     def in_flight(self) -> int:
@@ -121,6 +126,7 @@ class ConnectionPool:
 
             # Perform the async closures safely
             for conn, _ in expired:
+                metrics.POOL_IDLE_EXPIRED.labels(store_id=self.store_id).inc()
                 log.debug(
                     "pool_closing_expired_idle",
                     store_id=self.store_id,
@@ -137,11 +143,14 @@ class ConnectionPool:
         Checked after the sweep closes what expired, which is the only place
         the pool can reach zero without someone about to use it again.
         """
-        if self.on_pool_empty is None:
-            return
         if self.active_connections or self.idle_conns or self.all_conns:
             return
+        # Counted before the callback guard: the pool reached zero whether or
+        # not an owner asked to hear about it.
+        metrics.POOL_EMPTIED.labels(store_id=self.store_id).inc()
         log.debug("pool_empty", store_id=self.store_id)
+        if self.on_pool_empty is None:
+            return
         try:
             await self.on_pool_empty()
         except Exception:
@@ -171,6 +180,7 @@ class ConnectionPool:
         while self.idle_conns:
             candidate, returned_at = self.idle_conns.pop()
             if now - returned_at >= self.idle_ttl or self._too_old(candidate, now):
+                metrics.POOL_IDLE_EXPIRED.labels(store_id=self.store_id).inc()
                 log.debug(
                     "pool_discarding_expired",
                     store_id=self.store_id,
@@ -220,6 +230,7 @@ class ConnectionPool:
         if self.on_connection_created:
             self.on_connection_created(conn)
 
+        metrics.POOL_CONNECTIONS_CREATED.labels(store_id=self.store_id).inc()
         log.debug(
             "pool_created_connection",
             store_id=self.store_id,

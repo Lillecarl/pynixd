@@ -13,6 +13,9 @@ a scraper is the same as no metrics port.
 
 from __future__ import annotations
 
+from aiohttp.test_utils import TestClient, TestServer
+from prometheus_client import REGISTRY
+
 from nix_daemon_protocol.ids import LOCAL_STORE_ID
 from pynixd import metrics
 from pynixd.config import LocalSocketStoreSpec
@@ -73,6 +76,49 @@ class TestTheBody:
 
         assert "pynixd_build_queue_size" in body
         assert "pynixd_builds_completed_total" in body
+
+
+class TestRequestCounting:
+    """The middleware labels by the route pattern, never by the path.
+
+    A binary cache is asked for one path per store path it serves, so a label
+    carrying `request.path` would give one series per path in the store. That
+    is the failure mode that takes a Prometheus down, and it looks fine on the
+    day it ships.
+    """
+
+    def _requests(self, route: str, method: str, status: str) -> float:
+        got = REGISTRY.get_sample_value(
+            "pynixd_http_requests_total",
+            {"route": route, "method": method, "status": status},
+        )
+        return 0.0 if got is None else got
+
+    async def test_a_served_request_counts_under_its_route(self):
+        server = _server(enable_metrics=True)
+        before = self._requests("/healthz", "GET", "200")
+
+        async with TestClient(TestServer(server.app)) as client:
+            response = await client.get("/healthz")
+            assert response.status == 200
+
+        assert self._requests("/healthz", "GET", "200") - before == 1
+
+    async def test_a_request_that_matches_no_route_counts_as_one_series(self):
+        """A probe for `/wp-login.php` must not add a series to the registry."""
+        server = _server(enable_metrics=True)
+        before = self._requests("unmatched", "GET", "404")
+
+        async with TestClient(TestServer(server.app)) as client:
+            for path in ("/wp-login.php", "/.env", "/admin"):
+                assert (await client.get(path)).status == 404
+
+        assert self._requests("unmatched", "GET", "404") - before == 3
+
+    def test_the_cache_routes_are_patterns(self):
+        """What the middleware reads is `resource.canonical`, so this is the
+        label a narinfo request produces."""
+        assert "/{hash}.narinfo" in _routes(_server(enable_cache=True))
 
 
 class TestStoreSpace:

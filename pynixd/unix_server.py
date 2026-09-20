@@ -56,6 +56,7 @@ async def start_unix_server(
                 role=Role.ADMIN,
                 username="local",
                 schedule_mode=schedule_mode or ScheduleMode.auto,
+                transport="unix",
             )
             await proxy.run()
         except Exception:

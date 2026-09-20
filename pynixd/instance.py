@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import os
 import sys
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlsplit
@@ -16,7 +17,7 @@ import structlog
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
 from nix_daemon_protocol.store_dir import set_real_store_dir, set_store_dir
 
-from . import _optional, wire
+from . import _optional, metrics, wire
 from .config import ExternalUnixStoreSpec, HTTPBinaryCacheSpec, LocalSocketStoreSpec, PynixdSettings
 from .context import PynixdContext
 from .gc import Collector
@@ -322,12 +323,24 @@ class Server:
         log.info("gc_loop_started", interval=self.ctx.settings.gc_interval)
         while True:
             await anyio.sleep(self.ctx.settings.gc_interval)
+            started = time.monotonic()
             try:
-                await Collector(self.ctx).run(PynixdGCAction.EXECUTE)
+                resp = await Collector(self.ctx).run(PynixdGCAction.EXECUTE)
             except anyio.get_cancelled_exc_class():
                 return
             except Exception:
+                metrics.GC_CYCLES.labels(result="error").inc()
                 log.exception("gc_pass_failed")
+            else:
+                metrics.GC_CYCLES.labels(result="ok").inc()
+                metrics.GC_PATHS_DELETED.inc(len(resp.store_paths))
+                metrics.GC_BYTES_FREED.inc(resp.bytes)
+                # A wall clock, because this is compared against `time()` in an
+                # alert. `time.monotonic` below measures a duration, which is
+                # the other question.
+                metrics.GC_LAST_SUCCESS.set(time.time())
+            finally:
+                metrics.GC_CYCLE_DURATION.observe(time.monotonic() - started)
 
     @property
     def host(self) -> str:

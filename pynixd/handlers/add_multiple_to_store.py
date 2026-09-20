@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import TYPE_CHECKING, ClassVar
 
 import anyio
@@ -15,6 +16,7 @@ from nix_daemon_protocol.add_multiple_to_store import (
 )
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
 
+from .. import metrics
 from ..serde.context import ReadContext, WriteContext
 from ..wire import FramedReader, FramedWriter, NixReader, NixWriter
 from ._base import Handler
@@ -100,6 +102,7 @@ class AddMultipleToStoreHandler(Handler):
         fdst.write_uint64(expected)
         logger.debug("add_multiple_forward_start", expected=expected)
 
+        started = time.monotonic()
         infos: list[ValidPathInfo] = []
         for _ in range(expected):
             # Per path as well as per chunk. A transfer of many small paths
@@ -127,10 +130,14 @@ class AddMultipleToStoreHandler(Handler):
                 # accepting the connection a TCP liveness probe opens.
                 await checkpoint()
                 sent_bytes += len(data)
+                metrics.NAR_FORWARD_BYTES.inc(len(data))
+            metrics.NAR_FORWARD_PATHS.inc()
 
         await fdst.finalize()
+        metrics.NAR_FORWARD_DURATION.observe(time.monotonic() - started)
         try:
             await asyncio.wait_for(fsrc.ensure_eof(), timeout=10)
         except TimeoutError:
+            metrics.NAR_FORWARD_EOF_TIMEOUTS.inc()
             logger.warning("add_multiple_forward_source_eof_timeout", count=len(infos))
         return infos

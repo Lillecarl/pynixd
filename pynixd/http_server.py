@@ -19,6 +19,7 @@ import contextlib
 import gzip
 import lzma
 import ssl
+import time
 from http import HTTPStatus
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -107,8 +108,10 @@ class PynixdHttpServer:
         if self.upload_dir:
             self.upload_dir.mkdir(parents=True, exist_ok=True)
 
+        # aiohttp applies the last middleware innermost, so this one wraps the
+        # auth middleware and counts a rejected request as well as a served one.
         self.app = web.Application(
-            middlewares=[self.auth_middleware],
+            middlewares=[self.metrics_middleware, self.auth_middleware],
             client_max_size=1024**4,  # 1 TiB
         )
 
@@ -126,7 +129,34 @@ class PynixdHttpServer:
                 self.app.router.add_put("/nar/{filename:.+}", self.handle_put_nar)
                 self.app.router.add_put("/{hash}.narinfo", self.handle_put_narinfo)
 
-    # ── Auth middleware ────────────────────────────────────────────────
+    # ── Middleware ─────────────────────────────────────────────────────
+
+    @web.middleware
+    async def metrics_middleware(
+        self,
+        request: web.Request,
+        handler: Callable[[web.Request], Awaitable[web.StreamResponse]],
+    ) -> web.StreamResponse:
+        """Count and time every request, by the route pattern it matched."""
+        started = time.monotonic()
+        status = "500"
+        try:
+            response = await handler(request)
+        except web.HTTPException as exc:
+            status = str(exc.status)
+            raise
+        else:
+            status = str(response.status)
+            return response
+        finally:
+            resource = request.match_info.route.resource
+            # A request that matched no route reports one series, and not one
+            # per path somebody probed.
+            route = resource.canonical if resource is not None else "unmatched"
+            metrics.HTTP_REQUESTS.labels(route=route, method=request.method, status=status).inc()
+            metrics.HTTP_REQUEST_DURATION.labels(route=route, method=request.method).observe(
+                time.monotonic() - started,
+            )
 
     @web.middleware
     async def auth_middleware(
@@ -270,6 +300,7 @@ class PynixdHttpServer:
                     chunk = await conn.r.readexactly(min(remaining, 1024 * 1024))
                     await response.write(chunk)
                     remaining -= len(chunk)
+                    metrics.HTTP_NAR_BYTES_SENT.inc(len(chunk))
         except Exception:
             log.exception("nar_from_path_streaming_failed", path=path)
             # Response already started — can't change status code.
@@ -321,6 +352,7 @@ class PynixdHttpServer:
         async with await anyio.open_file(temp_path, "wb") as f:
             async for chunk in request.content.iter_any():
                 await f.write(chunk)
+                metrics.HTTP_NAR_BYTES_RECEIVED.inc(len(chunk))
 
         nar_size = (await anyio.Path(temp_path).stat()).st_size
         log.info("nar_upload_complete", hash=hash_part, size=nar_size)

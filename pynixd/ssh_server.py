@@ -107,6 +107,7 @@ async def start_ssh_server(
                 role=role,
                 username=username,
                 schedule_mode=schedule_mode or ScheduleMode.auto,
+                transport="ssh",
             )
             await proxy.run()
         except Exception:

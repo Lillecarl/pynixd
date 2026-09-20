@@ -16,7 +16,7 @@ from nix_daemon_protocol.exceptions import DaemonProtocolError
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
 from nix_daemon_protocol.wire_ops import WIRE_REGISTRY, WireResponse
 
-from . import wire
+from . import metrics, wire
 from ._lazy import ssh_connection_lost
 from .config import ScheduleMode
 from .connection import ClientConn
@@ -117,6 +117,7 @@ class DaemonProxy:
         role: Role = Role.USER,
         username: str = "unknown",
         schedule_mode: ScheduleMode = ScheduleMode.auto,
+        transport: str = "unknown",
     ) -> None:
         self.r = client_r
         self.w = client_w
@@ -127,6 +128,9 @@ class DaemonProxy:
         self.role: Role = role
         self.username: str = username
         self.schedule_mode: ScheduleMode = schedule_mode
+        self.transport = transport
+        """Which listener accepted this session. A metric label, so it is one
+        of a fixed few words and never an address."""
         self._op_timing: dict[int, tuple[int, float]] = {}
         self._temp_roots: TempRoots | None = None
 
@@ -193,6 +197,8 @@ class DaemonProxy:
 
     async def run(self) -> None:
         """Run the full session lifecycle."""
+        metrics.DAEMON_SESSIONS_TOTAL.labels(transport=self.transport).inc()
+        metrics.DAEMON_SESSIONS.labels(transport=self.transport).inc()
         try:
             await self.handshake()
             await self.op_loop()
@@ -201,6 +207,7 @@ class DaemonProxy:
         except Exception:
             log.exception("session_error")
         finally:
+            metrics.DAEMON_SESSIONS.labels(transport=self.transport).dec()
             if self._temp_roots is not None:
                 await self._temp_roots.close()
             if self._op_timing:
@@ -361,6 +368,7 @@ class DaemonProxy:
             op_name = req_cls.name if req_cls else handler_cls.__name__ if handler_cls else f"op_{op_num}"
 
             t0 = time.monotonic()
+            result = "ok"
             try:
                 response = await self.dispatch(op_num)
 
@@ -371,6 +379,7 @@ class DaemonProxy:
                 # else: already handled (streaming, error, etc.)
 
             except Exception as ex:
+                result = "error"
                 log.exception("handle_op_error", name=op_name)
                 await self.client.flush()
                 await self.send_error(_error_text(ex))
@@ -378,6 +387,8 @@ class DaemonProxy:
                 elapsed = time.monotonic() - t0
                 count, acc = self._op_timing.get(op_num, (0, 0.0))
                 self._op_timing[op_num] = (count + 1, acc + elapsed)
+                metrics.DAEMON_OPS.labels(op=op_name, result=result).inc()
+                metrics.DAEMON_OP_DURATION.labels(op=op_name).observe(elapsed)
 
     # ── Dispatch ─────────────────────────────────────────────────────
 
