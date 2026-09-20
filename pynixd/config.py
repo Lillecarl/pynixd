@@ -290,7 +290,8 @@ class ReverseAcceptorSettings(BaseModel):
     """
 
     enabled: bool = False
-    host: str = "0.0.0.0"
+    # Every interface, v4 and v6. See `PynixdSettings.http_host`.
+    host: str = ""
     port: int = 2235
     host_key_path: Path | None = None
 
@@ -534,7 +535,13 @@ class PynixdSettings(BaseSettings):
 
     unix_path: Path | None = Path("/run/pynixd/pynixd.sock")
 
-    http_host: str = "0.0.0.0"
+    # `""`, and not `"0.0.0.0"`. asyncio reads an empty host as "every
+    # interface" and binds one socket per family, so the server answers over
+    # IPv6 too. `"0.0.0.0"` is IPv4 only: on a single-stack IPv6 cluster the
+    # kubelet dials the Pod's v6 address, gets ECONNREFUSED, and the
+    # `httpGet /healthz` probe never passes. Same value as `ssh_host` takes
+    # in nixkube, for the same reason.
+    http_host: str = ""
     http_port: int | None = None
     http_enable_cache: bool = True
     http_enable_metrics: bool = True

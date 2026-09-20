@@ -45,9 +45,9 @@ in
     #
     # This exists because the obvious way to turn it on is wrong. Setting
     # `settings.http_port` alone also serves the binary cache on the same
-    # port -- `http_enable_cache` defaults to true -- and `http_host`
-    # defaults to `0.0.0.0`, so a person reaching for a metrics port publishes
-    # a cache to every interface. `http_metrics_no_auth` then leaves `/metrics`
+    # port -- `http_enable_cache` defaults to true -- and `http_host` binds
+    # every interface, so a person reaching for a metrics port publishes a
+    # cache to all of them. `http_metrics_no_auth` then leaves `/metrics`
     # unauthenticated on it.
     #
     # So the safe combination is the easy one here, and the cache stays off
@@ -77,8 +77,8 @@ in
         type = lib.types.str;
         default = "127.0.0.1";
         description = ''
-          The address to serve metrics on. Localhost, and not the `0.0.0.0`
-          that `http_host` defaults to: `/metrics` answers without
+          The address to serve metrics on. Localhost, and not the every-
+          interface bind `http_host` defaults to: `/metrics` answers without
           authentication, so publishing it is a decision and not a default.
         '';
       };

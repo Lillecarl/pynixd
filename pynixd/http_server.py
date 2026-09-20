@@ -536,7 +536,7 @@ class PynixdHttpServer:
 
     async def start(
         self,
-        host: str = "0.0.0.0",
+        host: str = "",
         port: int = 8080,
         ssl_cert: str | None = None,
         ssl_key: str | None = None,
