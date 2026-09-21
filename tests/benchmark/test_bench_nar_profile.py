@@ -92,12 +92,18 @@ push is that many gigabytes resident. asyncio held less only because it was
 slow enough for the daemon to keep up.
 
 **`max_loop_lag_ms` did not move.** It read 14-22 ms before the fix and
-14-45 ms after, so the starvation this path can cause is not what a push over
-loopback SSH hits: the client's own crypto is slow enough that pynixd's
-reader suspends on the socket anyway. The starvation is real and
-`tests/unit/test_forward_framed_stream.py` measures it at 0 turns of the loop
-for a whole payload, but it needs a source faster than Python, which is what
-`forward_raw` reading a Unix socket is.
+14-45 ms after. One client cannot starve this loop: the whole client pipeline
+-- NAR serialisation, hashing, syscalls, crypto -- costs about as much per MiB
+as pynixd's forwarding does, so pynixd's reader waits on the socket anyway and
+the loop gets scheduled regardless of whether the transfer yields.
+
+Not the crypto specifically, which an earlier note here claimed. The cipher is
+0.27 ms/MiB (`pynixd/constants.py`) against roughly 7 ms/MiB of Python, so it
+is ~4% and cannot be the thing that paces this.
+
+The starvation is real -- `tests/unit/test_forward_framed_stream.py` measures
+0 turns of the loop for a whole payload -- but one client is the wrong shape to
+find it in. `test_bench_nar_concurrency.py` is the right one.
 
 **Both loops, because a throughput claim about pynixd is a claim about the
 loop under it.** ./conftest.py parametrises `anyio_backend`, and `loop` in the
@@ -135,13 +141,13 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import anyio
 import pytest
 import structlog
 
 from tests.conftest import (
     CLIENT_BIN,
     STORE_PREFIX,
+    LoopLag,
     rmtree_robust,
     run_subproc,
     ssh_admin_uri,
@@ -228,42 +234,6 @@ async def _add_paths(src: Path, count: int, size_kib: int) -> list[str]:
     return paths
 
 
-class _LoopLag:
-    """Record how long the event loop goes without running a ready callback.
-
-    A TCP liveness probe is answered by the loop accepting a connection. If a
-    handler runs a stretch of work without suspending, nothing is accepted and
-    the probe times out against a process that is busy rather than wedged --
-    nixkube#37 and #53.
-
-    `await` alone does not suspend. A coroutine that returns from a buffer
-    finishes without reaching the loop, and `drain` returns straight away below
-    the high-water mark, so a read-and-write loop can spin indefinitely while
-    looking like it awaits on every line.
-
-    `max_lag_ms` is what a probe sees. `SAMPLE_S` bounds the resolution: a stall
-    shorter than it can be missed.
-    """
-
-    SAMPLE_S = 0.005
-
-    def __init__(self) -> None:
-        self.max_lag_s = 0.0
-        self.samples = 0
-        self._stop = False
-
-    async def run(self) -> None:
-        while not self._stop:
-            t0 = time.perf_counter()
-            await anyio.sleep(self.SAMPLE_S)
-            lag = time.perf_counter() - t0 - self.SAMPLE_S
-            self.max_lag_s = max(self.max_lag_s, lag)
-            self.samples += 1
-
-    def stop(self) -> None:
-        self._stop = True
-
-
 class _GCPauses:
     """Time every garbage collection that runs inside the block.
 
@@ -297,7 +267,7 @@ class _GCPauses:
 
 
 @contextmanager
-def _measure(label: str, *, count: int, sent_bytes: int, lag: _LoopLag | None = None) -> Iterator[None]:
+def _measure(label: str, *, count: int, sent_bytes: int, lag: LoopLag | None = None) -> Iterator[None]:
     """Report wall time, CPU and peak allocation for the block.
 
     CPU is split. `RUSAGE_SELF` is pynixd, because the server runs in this
@@ -399,7 +369,7 @@ async def _copy_paths_and_measure(
         *paths,
     ]
 
-    lag = _LoopLag()
+    lag = LoopLag()
     lag_task = asyncio.create_task(lag.run())
     try:
         with _measure(label, count=count, sent_bytes=sent_bytes, lag=lag):
@@ -447,7 +417,7 @@ async def _add_path_and_measure(
         str(blob),
     ]
 
-    lag = _LoopLag()
+    lag = LoopLag()
     lag_task = asyncio.create_task(lag.run())
     try:
         with _measure(label, count=1, sent_bytes=size_kib * 1024, lag=lag):
@@ -489,7 +459,7 @@ async def _pull_and_measure(
         *paths,
     ]
 
-    lag = _LoopLag()
+    lag = LoopLag()
     lag_task = asyncio.create_task(lag.run())
     try:
         with _measure(label, count=len(paths), sent_bytes=sent_bytes, lag=lag):

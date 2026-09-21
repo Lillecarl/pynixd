@@ -63,11 +63,13 @@ from tests._conftest.logging import (
     test_log_dir,
     test_logging,
 )
+from tests._conftest.loop_lag import LoopLag as LoopLag
 from tests._conftest.subsumption import pytest_runtest_protocol
 
 __all__ = [
     "CLIENT_BIN",
     "DEFAULT_SSH_OPTS",
+    "LoopLag",
     "NIX_BIN",
     "SESSION_HTTP_PASS",
     "SESSION_HTTP_PORT",
