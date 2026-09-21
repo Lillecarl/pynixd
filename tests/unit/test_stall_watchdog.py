@@ -125,6 +125,57 @@ def test_a_full_sink_stops_growing_and_says_so(tmp_path) -> None:
     assert out.getvalue().count("further dumps go to stderr only") == 1, "the notice repeated"
 
 
+def test_the_cap_is_configurable(tmp_path) -> None:
+    """A constant can only be changed by a release.
+
+    Whoever points the sink at a volume is the person who knows what that
+    volume can spare, and it is not whoever wrote the default.
+    """
+    sink = tmp_path / "stall.log"
+    out = io.StringIO()
+    dog = StallWatchdog(threshold=0.01, stream=out, path=sink, max_bytes=64)
+
+    dog.dump()
+    first = sink.stat().st_size
+    assert first > 64, "the first dump is never refused, whatever the cap"
+
+    dog.beat()
+    dog.dump()
+    assert sink.stat().st_size == first, "the second dump was not refused"
+    assert dog.sink_skipped == 1
+    assert "64 bytes" in out.getvalue()
+
+
+def test_zero_removes_the_cap(tmp_path) -> None:
+    sink = tmp_path / "stall.log"
+    dog = StallWatchdog(threshold=0.01, stream=io.StringIO(), path=sink, max_bytes=0)
+
+    dog.dump()
+    dog.beat()
+    dog.dump()
+
+    assert dog.sink_skipped == 0
+    assert sink.read_text().count("has not run a callback") == 2
+
+
+def test_the_cap_keeps_the_first_dumps(tmp_path) -> None:
+    """Not the last. Rotation would throw away the one that explains the rest.
+
+    The first stall after a deployment is usually the one worth having, so the
+    file fills and then refuses rather than rolling.
+    """
+    sink = tmp_path / "stall.log"
+    dog = StallWatchdog(threshold=0.01, stream=io.StringIO(), path=sink, max_bytes=64)
+    dog.dump()
+    first = sink.read_text()
+
+    for _ in range(3):
+        dog.beat()
+        dog.dump()
+
+    assert sink.read_text() == first, "a later dump displaced the first"
+
+
 def test_the_dump_names_the_stalled_thread() -> None:
     out = io.StringIO()
     dog = StallWatchdog(threshold=0.01, stream=out)

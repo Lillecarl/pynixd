@@ -39,6 +39,17 @@ PROTOCOL_VERSION: Final[int] = proto(1, 38)
 MINIMUM_REMOTE_PROTOCOL: Final[int] = proto(1, 32)
 
 
+# ── Diagnostics ───────────────────────────────────────────────────
+
+# The default cap on the stall dump file (`stall_traceback_path`).
+#
+# Here rather than in `health.py` so `config.py` can name it without importing
+# health, which would pull `prometheus_client` into the import path of
+# anything that reads configuration. Issue #30 measured what an eager import
+# costs every daemon start.
+STALL_TRACEBACK_MAX_BYTES: Final[int] = 8 * 1024 * 1024
+
+
 # ── SSH ───────────────────────────────────────────────────────────
 
 # **Prefer AES-GCM, because almost every box pynixd runs on has AES-NI.**

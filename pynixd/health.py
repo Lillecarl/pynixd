@@ -32,6 +32,7 @@ import anyio
 import structlog
 
 from . import metrics
+from .constants import STALL_TRACEBACK_MAX_BYTES
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -85,10 +86,11 @@ class StallWatchdog:
     hundreds.
     """
 
-    #: Stop appending to the file sink past this. One dump per stall bounds
-    #: this well already; the cap is so a process that stalls for months
-    #: cannot fill the volume it shares with the store.
-    MAX_SINK_BYTES = 8 * 1024 * 1024
+    #: The default cap on the file sink. `stall_traceback_max_bytes` overrides
+    #: it, because whoever points the sink at a volume is the person who knows
+    #: what that volume can spare, and a constant can only be changed by a
+    #: release.
+    MAX_SINK_BYTES = STALL_TRACEBACK_MAX_BYTES
 
     def __init__(
         self,
@@ -97,11 +99,13 @@ class StallWatchdog:
         interval: float = 1.0,
         stream: TextIO | None = None,
         path: Path | None = None,
+        max_bytes: int | None = None,
     ) -> None:
         self.threshold = threshold
         self._interval = interval
         self._stream = stream
         self._path = path
+        self.max_bytes = self.MAX_SINK_BYTES if max_bytes is None else max_bytes
         self._last_beat = time.monotonic()
         self._armed = True
         self._stop = threading.Event()
@@ -166,18 +170,23 @@ class StallWatchdog:
         only to stderr. So both refusals say so on stderr and name the path:
         the one that could not write, and the one that is full. Once each,
         because the next dump would repeat it.
+
+        **The cap keeps the first dumps, not the last.** It appends until the
+        file is full and then refuses, rather than rotating. The first stall
+        after a deployment is usually the one that explains the stalls after
+        it, and a rotation would be the thing that threw it away.
         """
         if self._path is None:
             return
         stream = self._stream if self._stream is not None else sys.stderr
         try:
-            if self._path.exists() and self._path.stat().st_size >= self.MAX_SINK_BYTES:
+            if self.max_bytes and self._path.exists() and self._path.stat().st_size >= self.max_bytes:
                 self.sink_skipped += 1
                 if not self._reported_full:
                     self._reported_full = True
                     print(
                         f"pynixd: the stall dump file {self._path} has reached "
-                        f"{self.MAX_SINK_BYTES} bytes; further dumps go to stderr only",
+                        f"{self.max_bytes} bytes; further dumps go to stderr only",
                         file=stream,
                         flush=True,
                     )

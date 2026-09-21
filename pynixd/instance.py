@@ -202,6 +202,7 @@ class Server:
             StallWatchdog(
                 self.settings.stall_traceback_seconds,
                 path=self.settings.stall_traceback_path,
+                max_bytes=self.settings.stall_traceback_max_bytes,
             )
             if self.settings.stall_traceback_seconds > 0
             else None

@@ -16,6 +16,7 @@ from pydantic_settings import (
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
 
+from .constants import STALL_TRACEBACK_MAX_BYTES
 from .nix_config import NixConfig
 from .store_layout import StoreLayout
 
@@ -595,6 +596,18 @@ class PynixdSettings(BaseSettings):
     # Point it at a persistent volume. On a pod that boots from a PVC, a path
     # under that volume survives both the restart and the recreation.
     stall_traceback_path: Path | None = None
+    # How large `stall_traceback_path` may grow. 0 removes the cap.
+    #
+    # A setting rather than a constant because a constant can only be changed
+    # by a release, and the person who points the sink at a volume is the one
+    # who knows what that volume can spare. Same argument as the path itself.
+    #
+    # 8 MiB is on the order of a thousand dumps, which is far past the point
+    # where the file stops being a diagnostic and becomes a symptom. The cap
+    # keeps the FIRST dumps and refuses later ones rather than rotating: the
+    # first stall after a deployment usually explains the ones after it, and
+    # rotation is what would throw it away.
+    stall_traceback_max_bytes: int = STALL_TRACEBACK_MAX_BYTES
     http_upload_dir: Path | None = None
 
     https_port: int | None = None
