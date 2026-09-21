@@ -39,6 +39,8 @@ hardware in the result.
 
 from __future__ import annotations
 
+import struct
+
 import anyio
 
 from pynixd.wire import BytesReader, BytesWriter, NixWriter, forward_framed, forward_raw
@@ -48,6 +50,11 @@ _FRAMES = 512
 # `forward_raw`'s own chunk, so the two shapes move the same 16 MiB.
 _CHUNK = 1024 * 1024
 _CHUNKS = 16
+
+
+def _framed_body(frames: int = _FRAMES, size: int = _FRAME) -> bytes:
+    """The bytes a FramedSource reassembles, with no framing around them."""
+    return b"".join(bytes([i % 256]) * size for i in range(frames))
 
 
 def _framed_payload(frames: int = _FRAMES, size: int = _FRAME) -> bytes:
@@ -87,6 +94,33 @@ class _TransportWriter(NixWriter):
         self.buffered = 0
 
 
+class _RecordingWriter(NixWriter):
+    """Keep the outgoing frame sizes and their payloads, in order.
+
+    The framing and the body arrive as separate `write` calls, so this pairs
+    each length with the write that follows it.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(identifier="recording-double")
+        self.frames: list[int] = []
+        self.payloads: list[bytes] = []
+        self._expect_payload = False
+
+    def write(self, data: bytes) -> None:
+        if self._expect_payload:
+            self._expect_payload = False
+            self.payloads.append(data)
+            return
+        (size,) = struct.unpack("<Q", data)
+        if size:
+            self.frames.append(size)
+            self._expect_payload = True
+
+    async def drain(self) -> None:
+        pass
+
+
 class _Ticker:
     """Count how often the event loop gets to run something else."""
 
@@ -106,25 +140,27 @@ class _Ticker:
 async def test_forward_framed_lets_the_loop_run() -> None:
     """The loop schedules the rest of the process while a NAR moves through it.
 
-    One tick per frame is the floor a `checkpoint` per frame gives. Fewer than
-    that means a probe, a metrics scrape or a second client waits for the whole
-    payload.
+    The floor is one turn per outgoing chunk, not per incoming frame:
+    `forward_framed` gathers client frames up to `chunk_size` and a frame
+    boundary carries no meaning. Fewer turns than that means a probe, a
+    metrics scrape or a second client waits for the whole payload.
     """
     src = BytesReader(_framed_payload())
     dst = _TransportWriter()
     ticker = _Ticker()
+    expected_chunks = (_FRAMES * _FRAME) // _CHUNK
 
     async with anyio.create_task_group() as tg:
         tg.start_soon(ticker.run)
-        await forward_framed(src, dst)
+        await forward_framed(src, dst, chunk_size=_CHUNK)
         ticker.stop()
 
-    assert dst.sent == _FRAMES * (_FRAME + 8) + 8
-    assert ticker.ticks >= _FRAMES, f"the loop ran {ticker.ticks} times for {_FRAMES} frames"
+    assert dst.sent == _FRAMES * _FRAME + (expected_chunks + 1) * 8
+    assert ticker.ticks >= expected_chunks, f"the loop ran {ticker.ticks} times for {expected_chunks} chunks"
 
 
 async def test_forward_framed_does_not_buffer_the_payload() -> None:
-    """The transport holds about one frame, not the closure.
+    """The transport holds about one chunk, not the closure.
 
     A push of 2.8 GiB against a 64Mi request is an OOM kill, and the container
     restart destroys the evidence that it was a transfer.
@@ -132,12 +168,28 @@ async def test_forward_framed_does_not_buffer_the_payload() -> None:
     src = BytesReader(_framed_payload())
     dst = _TransportWriter()
 
-    await forward_framed(src, dst)
+    await forward_framed(src, dst, chunk_size=_CHUNK)
 
-    # Four frames of slack: the loop writes a length and a payload per turn,
-    # and a fix that drains every few frames is as correct as one that drains
-    # every frame. The whole payload is 512 frames.
-    assert dst.peak <= 4 * (_FRAME + 8), f"peak {dst.peak} of {dst.sent} bytes held"
+    # Two chunks of slack: the gather holds one while the transport holds the
+    # one before it. The whole payload is 16 chunks.
+    assert dst.peak <= 2 * (_CHUNK + 8), f"peak {dst.peak} of {dst.sent} bytes held"
+
+
+async def test_forward_framed_coalesces_the_client_frames() -> None:
+    """Nix's 32 KiB frames leave as chunks, which is where the CPU went.
+
+    `FramedSource` reassembles frames into one byte stream and never sees a
+    boundary (`serialise.hh:694`), so this costs the daemon nothing. It saves
+    31 of every 32 turns of the loop: two transport writes, a drain and a
+    checkpoint each.
+    """
+    src = BytesReader(_framed_payload())
+    dst = _RecordingWriter()
+
+    await forward_framed(src, dst, chunk_size=_CHUNK)
+
+    assert dst.frames == [_CHUNK] * ((_FRAMES * _FRAME) // _CHUNK)
+    assert b"".join(dst.payloads) == _framed_body()
 
 
 async def test_forward_raw_lets_the_loop_run() -> None:

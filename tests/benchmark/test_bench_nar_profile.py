@@ -62,6 +62,25 @@ it is not what these runs hit. The untested candidate for the floor is the SSH
 handshake: every `nix copy` opens a connection and the key exchange is
 CPU-bound crypto on this loop.
 
+**Three ops, not one.** `nix copy --to ssh-ng://` is AddMultipleToStore (op
+44) at protocol 1.32 and above, `remote-store.cc:508`. A single-path add is
+AddToStoreNar (op 39) through `wire.forward_framed`,
+`remote-store.cc:451`, and a pull is NarFromPath (op 38) through
+`wire.forward_raw`. The three take different loops, and only op 44's was
+measured before.
+
+Op 39 reads Nix's 32 KiB `FramedSink` frames (`serialise.hh:71,724`), so it
+did 32 times the per-turn work op 44 does at 1 MiB. Coalescing the client's
+frames into chunks, on a 64 MiB path:
+
+    loop      ms/MiB per frame   ms/MiB coalesced   wall_s
+    asyncio               27.2               11.0   1.87 -> 0.83
+    uvloop                12.7                8.5   0.96 -> 0.68
+
+which lands op 39 on op 44's 9.9 and 7.3. A frame boundary carries no
+meaning: `FramedSource` reassembles the frames into one byte stream
+(`serialise.hh:694`).
+
 **Both loops, because a throughput claim about pynixd is a claim about the
 loop under it.** ./conftest.py parametrises `anyio_backend`, and `loop` in the
 log line is the class that actually ran rather than the one asked for. One run:
@@ -381,6 +400,128 @@ async def _copy_paths_and_measure(
     # Every path named, not `count` -- `count` is the unit the shape varies,
     # which is paths for some shapes and files inside one path for others.
     assert len(stdout_check.split()) >= len(paths)
+
+
+async def _add_path_and_measure(
+    server: Server,
+    src: Path,
+    label: str,
+    size_kib: int,
+) -> None:
+    """Push ONE path with `nix store add-path`, which is op 39 and not op 44.
+
+    `nix copy` sends AddMultipleToStore at protocol 1.32 and above
+    (`remote-store.cc:508`), so every other test in this file measures op 44.
+    A single-path add goes through `RemoteStore::addToStore`
+    (`remote-store.cc:451`), which is AddToStoreNar and `wire.forward_framed`
+    -- a different loop with a different frame size. Nix frames it with a 32
+    KiB `FramedSink` (`serialise.hh:71,724`) against op 44's 1 MiB chunks, so
+    per-frame cost shows up here at 32 times the rate.
+    """
+    blob = _CONTENT_DIR / f"op39-{size_kib}k"
+    blob.write_bytes(os.urandom(size_kib * 1024))
+
+    cmd = [
+        str(CLIENT_BIN),
+        "store",
+        "add-path",
+        "--store",
+        ssh_admin_uri(server),
+        str(blob),
+    ]
+
+    lag = _LoopLag()
+    lag_task = asyncio.create_task(lag.run())
+    try:
+        with _measure(label, count=1, sent_bytes=size_kib * 1024, lag=lag):
+            rc, stdout, stderr, _ = await run_subproc(cmd)
+    finally:
+        lag.stop()
+        await lag_task
+
+    assert rc == 0, f"nix store add-path failed:\n{stderr}"
+    assert stdout.strip().startswith("/nix/store/"), stdout
+
+    _ = src  # the source store is unused here; the client dumps from disk
+    blob.unlink()
+
+
+async def _pull_and_measure(
+    server: Server,
+    paths: list[str],
+    label: str,
+    *,
+    sent_bytes: int,
+) -> None:
+    """Pull the paths back out of pynixd, which is NarFromPath (op 38).
+
+    The serving direction. A node that starts a pod reads its closure this
+    way, so this is the loop a liveness probe competes with while pods come
+    up, rather than while somebody pushes.
+    """
+    dst = STORE_PREFIX / "nar-profile-pull"
+    rmtree_robust(dst)
+    dst.mkdir(parents=True, exist_ok=True)
+
+    cmd = [
+        str(CLIENT_BIN),
+        "copy",
+        "--no-check-sigs",
+        "--from",
+        ssh_admin_uri(server),
+        "--to",
+        str(dst),
+        *paths,
+    ]
+
+    lag = _LoopLag()
+    lag_task = asyncio.create_task(lag.run())
+    try:
+        with _measure(label, count=len(paths), sent_bytes=sent_bytes, lag=lag):
+            rc, _, stderr, _ = await run_subproc(cmd)
+    finally:
+        lag.stop()
+        await lag_task
+
+    assert rc == 0, f"nix copy --from failed:\n{stderr}"
+    rmtree_robust(dst)
+
+
+@pytest.mark.benchmark
+async def test_profile_nar_forward_op39_one_large(pynixd_server: Server, src_store: Path) -> None:
+    """One 64 MiB path through `forward_framed`, the op 39 loop.
+
+    Read `peak_over_sent` and `max_loop_lag_ms` against the few-large shape
+    above: the two loops move the same bytes and should now agree, and
+    `cpu_ms_per_mib` says what the 32 KiB frame costs against a 1 MiB chunk.
+    """
+    _, size_kib = _FEW_LARGE
+    await _add_path_and_measure(pynixd_server, src_store, "op39-one-large", size_kib)
+
+
+@pytest.mark.benchmark
+async def test_profile_nar_serve_few_large(pynixd_server: Server, src_store: Path) -> None:
+    """The serving direction: 2 paths of 64 MiB pulled back out, op 38.
+
+    `forward_raw` reads from the local daemon over a Unix socket, which is
+    ready almost every time it is asked, so this loop suspends least of the
+    three and is the one a probe loses to while pods start.
+    """
+    count, size_kib = _FEW_LARGE
+    paths = await _add_paths(src_store, count, size_kib)
+    await _copy_paths_and_measure(
+        pynixd_server,
+        paths,
+        "serve-push-setup",
+        count=count,
+        sent_bytes=count * size_kib * 1024,
+    )
+    await _pull_and_measure(
+        pynixd_server,
+        paths,
+        "serve-few-large",
+        sent_bytes=count * size_kib * 1024,
+    )
 
 
 @pytest.mark.benchmark
