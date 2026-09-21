@@ -21,7 +21,7 @@ from . import _optional, metrics, wire
 from .config import ExternalUnixStoreSpec, HTTPBinaryCacheSpec, LocalSocketStoreSpec, PynixdSettings
 from .context import PynixdContext
 from .gc import Collector
-from .health import HealthReport, LoopLagMonitor
+from .health import HealthReport, LoopLagMonitor, StallWatchdog
 from .scheduler import Scheduler
 from .serde.protocol import PynixdGCAction
 from .store import DaemonStore, ExternalUnixStore, LocalDBStore, LocalStore, Store, is_http_binary_cache
@@ -198,7 +198,13 @@ class Server:
         self.unix_server: asyncio.Server | None = None
         self.reverse_acceptor: asyncssh.SSHAcceptor | None = None
         self.http_server: web.AppRunner | None = None
-        self.loop_lag = LoopLagMonitor(window=self.settings.health_loop_lag_window)
+        self.stall_watchdog = (
+            StallWatchdog(self.settings.stall_traceback_seconds) if self.settings.stall_traceback_seconds > 0 else None
+        )
+        self.loop_lag = LoopLagMonitor(
+            window=self.settings.health_loop_lag_window,
+            watchdog=self.stall_watchdog,
+        )
         self.http_bound_port: int | None = None
         self.https_server: web.AppRunner | None = None
         self.https_bound_port: int | None = None
@@ -460,6 +466,9 @@ class Server:
             self.background_tasks.append(asyncio.create_task(self._gc_tick()))
 
         # Before the listeners, so a stall during their startup is recorded.
+        if self.stall_watchdog is not None:
+            self.stall_watchdog.beat()
+            self.stall_watchdog.start()
         self.background_tasks.append(asyncio.create_task(self.loop_lag.run()))
 
         s = self.settings
@@ -542,6 +551,9 @@ class Server:
             return
         self._started = False
         log.info("server_shutting_down")
+
+        if self.stall_watchdog is not None:
+            self.stall_watchdog.stop()
 
         if self.http_server:
             await self.http_server.cleanup()

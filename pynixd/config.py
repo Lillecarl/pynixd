@@ -564,6 +564,24 @@ class PynixdSettings(BaseSettings):
     # The span the check looks back over. A stall must stop counting once the
     # process is serving again, or one bad transfer holds the pod unhealthy.
     health_loop_lag_window: float = 30.0
+    # Dump every thread's Python stack when the loop stops beating for this
+    # long. 0 disables it.
+    #
+    # **This exists because the failure is not reproducible.** A push on
+    # nixlab2 sat at 100% CPU for about ten minutes with no progress, having
+    # moved 42.9 MiB in total, so the cost is not proportional to the bytes and
+    # a local benchmark has never produced it. The restart that follows
+    # destroys the evidence.
+    #
+    # A watchdog thread reads a timestamp `LoopLagMonitor` writes every sample.
+    # It works for the case that matters: CPU-bound Python releases the GIL
+    # every switch interval, so the watchdog runs even while the loop does not.
+    # A stall inside a C call that holds the GIL would defeat it.
+    #
+    # Well above `health_loop_lag_max`, because this writes a large amount to
+    # stderr and a stall long enough to fail a probe is not by itself a fault
+    # worth a stack dump. The ten-minute case is.
+    stall_traceback_seconds: float = 30.0
     http_upload_dir: Path | None = None
 
     https_port: int | None = None
