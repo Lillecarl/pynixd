@@ -30,6 +30,7 @@ import lz4.frame
 import structlog
 import zstandard as zstd
 from aiohttp import web
+from anyio.lowlevel import checkpoint
 from anyio.to_thread import run_sync
 from passlib.apache import HtpasswdFile
 
@@ -45,6 +46,7 @@ from .serde import (
 )
 from .serde.context import ReadContext, WriteContext
 from .store_path import StorePath
+from .wire import _CHUNK_SIZE
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -297,8 +299,14 @@ class PynixdHttpServer:
                 await conn.r.drain_stderr()
                 remaining = vinfo.info.nar_size
                 while remaining > 0:
-                    chunk = await conn.r.readexactly(min(remaining, 1024 * 1024))
+                    chunk = await conn.r.readexactly(min(remaining, _CHUNK_SIZE))
                     await response.write(chunk)
+                    # aiohttp's `write` awaits its payload writer, so this loop
+                    # has backpressure. It still needs a guaranteed suspension:
+                    # the daemon read is served from a buffer and the write
+                    # returns below the high-water mark, so neither reaches the
+                    # event loop. See `wire.forward_raw`.
+                    await checkpoint()
                     remaining -= len(chunk)
                     metrics.HTTP_NAR_BYTES_SENT.inc(len(chunk))
         except Exception:
@@ -470,6 +478,12 @@ class PynixdHttpServer:
                     raise TypeError(f"Expected bytes, got {type(chunk)}")
 
                 framed.write(chunk)
+                # Backpressure. Without this the transport holds every byte the
+                # daemon has not taken, which is the whole NAR for an upload
+                # that outruns it. `run_sync` above suspends, so the loop does
+                # get scheduled -- the buffer was the fault here, not the
+                # yield. See `wire.forward_framed`.
+                await framed.drain()
                 sent_bytes += len(chunk)
                 log.debug("provide_nar_progress", sent_bytes=sent_bytes)
 

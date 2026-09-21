@@ -18,7 +18,7 @@ from nix_daemon_protocol.valid_path_info import ValidPathInfo
 
 from .. import metrics
 from ..serde.context import ReadContext, WriteContext
-from ..wire import FramedReader, FramedWriter, NixReader, NixWriter
+from ..wire import FramedReader, FramedWriter, NixReader, NixWriter, forward_raw
 from ._base import Handler
 
 if TYPE_CHECKING:
@@ -113,24 +113,9 @@ class AddMultipleToStoreHandler(Handler):
             info = await ValidPathInfo.from_reader(ReadContext(reader=fsrc, version=1))
             infos.append(info)
             fdst.write(await info.bytes_wire())
-            sent_bytes = 0
-            while sent_bytes < info.info.nar_size:
-                read = min(info.info.nar_size - sent_bytes, 1024 * 1024)
-                data = await fsrc.readexactly(read)
-                fdst.write(data)
-                # Backpressure. `write` hands the chunk to the transport and
-                # returns, so without this the buffer holds the whole
-                # payload: measured peak/sent of 0.979 over 128 MiB, which is
-                # a node's closure in RAM.
-                await dst.drain()
-                # A guaranteed suspension. `drain` returns without reaching the
-                # loop below the high-water mark, and a buffered read returns
-                # without reaching it at all, so this loop can run to the end
-                # of a NAR while the loop schedules nothing else -- including
-                # accepting the connection a TCP liveness probe opens.
-                await checkpoint()
-                sent_bytes += len(data)
-                metrics.NAR_FORWARD_BYTES.inc(len(data))
+            # The same loop every other NAR path takes. `forward_raw` carries
+            # the drain and the checkpoint, and why each is needed.
+            await forward_raw(fsrc, fdst, info.info.nar_size, on_bytes=metrics.NAR_FORWARD_BYTES.inc)
             metrics.NAR_FORWARD_PATHS.inc()
 
         await fdst.finalize()

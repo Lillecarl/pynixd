@@ -171,7 +171,7 @@ async def _stream_paths_over_conns(
             await src_conn.r.drain_stderr()
 
             # Pipe raw NAR data from source into the destination's framed stream
-            await wire.pipe_raw_to_framed_writer(
+            await wire.forward_raw(
                 src_conn.r,
                 fw,
                 info.info.nar_size,
