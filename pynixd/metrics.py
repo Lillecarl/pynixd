@@ -14,8 +14,10 @@ already served. Do not add a gauge for any of them.
 
 from __future__ import annotations
 
+import json
 import os
 from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
 from typing import TYPE_CHECKING
 from weakref import WeakSet
 
@@ -426,6 +428,66 @@ class StoreSpaceCollector:
 
 
 REGISTRY.register(StoreSpaceCollector())
+
+
+# --- appstarter ---
+
+APPSTARTER_STATE = Path("var/appstarter/state.json")
+"""Where `appstarter init` records what it put in the store, relative to the
+store root. See `AppstarterCollector`."""
+
+
+class AppstarterCollector:
+    """Whether this pod runs what its deployment asks for, or the image's copy.
+
+    `appstarter init` fetches the environment the deployment names, and when
+    that fetch fails it seeds the store from the copy baked into the image
+    instead. That is deliberate -- a pod that starts behind beats a pod that
+    does not start -- and it is invisible from outside: the pod is Running and
+    every probe passes either way. The two store paths in `state.json` are the
+    only thing that says which happened.
+
+    **Read from the file and on the scrape, not from the environment at
+    import.** `appstarter run` puts both paths in the environment of the
+    container it execs, and only some of these containers are started that way
+    -- the builder runs its program directly. The store they share answers for
+    all of them.
+
+    **Absent rather than zero when the file cannot be read.** A process that
+    cannot tell must not report "not degraded", which is the one answer that
+    would hide exactly what this exists to show. Alert on `== 1`, and on
+    `absent()` separately if the silence itself matters.
+
+    The paths are deliberately not labels: this module's rule against store
+    paths holds, the bit is what an alert needs, and the paths are in the
+    pod's log and in `APPSTARTER_RUNNING_STORE_PATH`.
+
+    The store root is the parent of the *real* store directory, so a chroot
+    store finds its own state file rather than the host's.
+    """
+
+    def collect(self):
+        """Yield the one bit, or nothing when no state was recorded."""
+        path = Path(real_store_dir()).parent / APPSTARTER_STATE
+        try:
+            recorded = json.loads(path.read_text())
+            wanted, running = recorded["wanted"], recorded["running"]
+        except (OSError, ValueError, KeyError, TypeError):
+            # Deliberately silent. `REGISTRY.register` calls `collect()` once
+            # to check for a duplicate metric name, so anything written here
+            # lands on stdout during import -- which broke the JSON a probe in
+            # this suite reads out of a bare interpreter. A scrape every 15
+            # seconds would then repeat it for ever. The absent series is the
+            # signal.
+            return
+        yield GaugeMetricFamily(
+            "pynixd_appstarter_degraded",
+            "1 when this pod runs the environment baked into its image instead of the one the deployment asks for",
+            value=float(wanted != running),
+        )
+
+
+REGISTRY.register(AppstarterCollector())
 
 
 def get_metrics_response() -> tuple[bytes, str]:
