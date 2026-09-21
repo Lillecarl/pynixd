@@ -1,4 +1,6 @@
-"""`forward_framed` must suspend and must not buffer the whole payload.
+"""A NAR forward must suspend and must not buffer the whole payload.
+
+Both directions. `forward_framed` receives, `forward_raw` serves.
 
 `forward_framed` moves a framed NAR from the client to the daemon for
 AddToStore (op 7) and AddToStoreNar (op 39). `nix copy --to ssh-ng://` does not
@@ -21,6 +23,10 @@ Two faults, one per test, and they are separate:
   including accepting the connection a TCP liveness probe opens. `/healthz`
   fails at `health_loop_lag_max` seconds of measured lag.
 
+`forward_raw` carries NarFromPath (op 38), which is a node pulling from
+pynixd rather than pushing to it. Its source is the local daemon over a Unix
+socket, so it suspends even less often than the receiving direction does.
+
 The doubles here suspend for nothing, which is the worst case rather than an
 unfair one: `SSHNixReader` reads 256 KiB ahead and serves eight 32 KiB frames
 per socket read, and asyncio's `drain` returns without yielding below the
@@ -35,10 +41,13 @@ from __future__ import annotations
 
 import anyio
 
-from pynixd.wire import BytesReader, BytesWriter, NixWriter, forward_framed
+from pynixd.wire import BytesReader, BytesWriter, NixWriter, forward_framed, forward_raw
 
 _FRAME = 32 * 1024
 _FRAMES = 512
+# `forward_raw`'s own chunk, so the two shapes move the same 16 MiB.
+_CHUNK = 1024 * 1024
+_CHUNKS = 16
 
 
 def _framed_payload(frames: int = _FRAMES, size: int = _FRAME) -> bytes:
@@ -129,3 +138,24 @@ async def test_forward_framed_does_not_buffer_the_payload() -> None:
     # and a fix that drains every few frames is as correct as one that drains
     # every frame. The whole payload is 512 frames.
     assert dst.peak <= 4 * (_FRAME + 8), f"peak {dst.peak} of {dst.sent} bytes held"
+
+
+async def test_forward_raw_lets_the_loop_run() -> None:
+    """The serving direction, which is the one a node's pull takes.
+
+    `forward_raw` carries NarFromPath (op 38). It reads from the local daemon
+    over a Unix socket, which is ready almost every time it is asked, so the
+    read suspends even less often than op 39's read from the network.
+    """
+    src = BytesReader(b"\0" * (_CHUNK * _CHUNKS))
+    dst = _TransportWriter()
+    ticker = _Ticker()
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(ticker.run)
+        await forward_raw(src, dst, _CHUNK * _CHUNKS, chunk_size=_CHUNK)
+        ticker.stop()
+
+    assert dst.sent == _CHUNK * _CHUNKS
+    assert ticker.ticks >= _CHUNKS, f"the loop ran {ticker.ticks} times for {_CHUNKS} chunks"
+    assert dst.peak <= 2 * _CHUNK, f"peak {dst.peak} of {dst.sent} bytes held"

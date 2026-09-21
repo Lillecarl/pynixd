@@ -406,6 +406,13 @@ async def stream_parse_nar(
             if chunks is not None:
                 chunks.append(pad_data)
 
+        # Backpressure and a guaranteed suspension, per token. Neither the
+        # read nor `write` reaches the event loop on its own, so a NAR of many
+        # tokens otherwise runs to its end with nothing else scheduled. See
+        # `forward_framed`.
+        await dst.drain()
+        await checkpoint()
+
         return data
 
     depth: int = 0
@@ -468,6 +475,25 @@ async def forward_framed(src: NixReader, dst: NixWriter) -> None:
         # the loop for 512 frames.
         await checkpoint()
     await dst.drain()
+
+
+async def forward_raw(src: NixReader, dst: NixWriter, size: int, chunk_size: int = _CHUNK_SIZE) -> None:
+    """Forward exactly *size* unframed bytes from src to dst.
+
+    The serving direction of a NAR: pynixd reads from the local daemon, which
+    is a Unix socket that is nearly always ready, and writes to the client.
+    Neither end reaches the event loop on its own, so the drain and the
+    checkpoint per chunk are what keep the process answering while a closure
+    moves. See `forward_framed`.
+    """
+    remaining = size
+    while remaining > 0:
+        to_read = min(remaining, chunk_size)
+        chunk = await src.readexactly(to_read)
+        dst.write(chunk)
+        await dst.drain()
+        await checkpoint()
+        remaining -= to_read
 
 
 class FramedReader(NixReader):

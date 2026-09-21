@@ -12,7 +12,6 @@ from nix_daemon_protocol.nar_from_path import NarFromPathRequest
 from .. import wire
 from ..serde import QueryPathInfoRequest
 from ..serde.context import ReadContext, WriteContext
-from ..wire import _CHUNK_SIZE
 from ._base import Handler
 
 if TYPE_CHECKING:
@@ -65,12 +64,7 @@ class NarFromPathHandler(Handler):
 
             # 6. Stream unframed NAR bytes from daemon to client
             if nar_size > 0:
-                remaining = nar_size
-                while remaining > 0:
-                    to_read = min(remaining, _CHUNK_SIZE)
-                    chunk = await conn.r.readexactly(to_read)
-                    ctx.proxy.w.write(chunk)
-                    remaining -= to_read
+                await wire.forward_raw(conn.r, ctx.proxy.w, nar_size)
             else:
                 await wire.stream_parse_nar(conn.r, ctx.proxy.w)
 
