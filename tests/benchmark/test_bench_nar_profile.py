@@ -70,16 +70,34 @@ AddToStoreNar (op 39) through `wire.forward_framed`,
 measured before.
 
 Op 39 reads Nix's 32 KiB `FramedSink` frames (`serialise.hh:71,724`), so it
-did 32 times the per-turn work op 44 does at 1 MiB. Coalescing the client's
-frames into chunks, on a 64 MiB path:
+did 32 times the per-turn work op 44 does at 1 MiB. A frame boundary carries
+no meaning -- `FramedSource` reassembles the frames into one byte stream
+(`serialise.hh:694`) -- so the forward gathers them into chunks. One 256 MiB
+path, this machine:
 
-    loop      ms/MiB per frame   ms/MiB coalesced   wall_s
-    asyncio               27.2               11.0   1.87 -> 0.83
-    uvloop                12.7                8.5   0.96 -> 0.68
+    loop     state                    ms/MiB   peak_mib   wall_s
+    asyncio  no drain, per frame        13.5       58.8     3.83
+    asyncio  drain+checkpoint per frame 27.2*      n/a      n/a
+    asyncio  coalesced to 1 MiB         10.0       22.1     2.96
+    uvloop   no drain, per frame         8.6      206.9     2.69
+    uvloop   drain+checkpoint per frame 12.7*      n/a      n/a
+    uvloop   coalesced to 1 MiB          7.8       18.9     2.35
 
-which lands op 39 on op 44's 9.9 and 7.3. A frame boundary carries no
-meaning: `FramedSource` reassembles the frames into one byte stream
-(`serialise.hh:694`).
+    * measured at 64 MiB, and never shipped: the drain landed and the
+      coalescing landed on top of it.
+
+**`peak_mib` is the finding, not `ms/MiB`.** uvloop held 206.9 MiB of a
+256 MiB push, and the figure scales with the closure, so a multi-gigabyte
+push is that many gigabytes resident. asyncio held less only because it was
+slow enough for the daemon to keep up.
+
+**`max_loop_lag_ms` did not move.** It read 14-22 ms before the fix and
+14-45 ms after, so the starvation this path can cause is not what a push over
+loopback SSH hits: the client's own crypto is slow enough that pynixd's
+reader suspends on the socket anyway. The starvation is real and
+`tests/unit/test_forward_framed_stream.py` measures it at 0 turns of the loop
+for a whole payload, but it needs a source faster than Python, which is what
+`forward_raw` reading a Unix socket is.
 
 **Both loops, because a throughput claim about pynixd is a claim about the
 loop under it.** ./conftest.py parametrises `anyio_backend`, and `loop` in the
