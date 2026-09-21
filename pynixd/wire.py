@@ -443,6 +443,11 @@ async def forward_framed(src: NixReader, dst: NixWriter) -> None:
 
     Streams the data without buffering the entire payload in memory.
     Each chunk is: uint64 length + raw data, terminated by length=0.
+
+    Nix frames with `FramedSink`, a `BufferedSink` of 32 KiB
+    (`serialise.hh:71,724`), so a closure of a few gigabytes is tens of
+    thousands of turns of this loop. AddToStore (op 7) and AddToStoreNar
+    (op 39) both reach it.
     """
     while True:
         size = await src.read_uint64()
@@ -452,6 +457,16 @@ async def forward_framed(src: NixReader, dst: NixWriter) -> None:
         data = await src.readexactly(size)
         dst.write_uint64(size)
         dst.write(data)
+        # Backpressure. `write` hands the frame to the transport and returns,
+        # so without this the transport holds every byte the daemon has not
+        # taken yet: measured peak/sent of 1.000 over 16 MiB in
+        # tests/unit/test_forward_framed_stream.py.
+        await dst.drain()
+        # A guaranteed suspension, which `drain` is not: it returns without
+        # reaching the loop below the high-water mark, and a read served from
+        # a buffer never reaches it at all. The same test measured 0 turns of
+        # the loop for 512 frames.
+        await checkpoint()
     await dst.drain()
 
 
