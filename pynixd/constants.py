@@ -39,6 +39,41 @@ PROTOCOL_VERSION: Final[int] = proto(1, 38)
 MINIMUM_REMOTE_PROTOCOL: Final[int] = proto(1, 32)
 
 
+# ── SSH ───────────────────────────────────────────────────────────
+
+# **Prefer AES-GCM, because almost every box pynixd runs on has AES-NI.**
+# asyncssh offers chacha20-poly1305 first, which is the right default for a
+# library that cannot know its host and the wrong one here. Measured on a host
+# with `aes` and `vaes`, one MiB through asyncssh's own cipher objects:
+#
+#     chacha20-poly1305@openssh.com   3678 MiB/s   0.27 ms/MiB
+#     aes256-gcm@openssh.com          9041 MiB/s   0.11 ms/MiB
+#     aes128-gcm@openssh.com         10806 MiB/s   0.09 ms/MiB
+#
+# That is 2.46x on the cipher, and it is event loop CPU on every byte.
+#
+# **It does not show end to end, and the reason is worth keeping.** Eight
+# concurrent clients moving 128 MiB measured 185-193 MiB/s pushing under
+# chacha20 and 165-177 under AES-GCM -- within noise, and if anything worse.
+# Crypto is about 0.27 ms/MiB against roughly 7 ms/MiB for the Python that
+# forwards the bytes, so it is ~4% of the cost and cannot move the total. The
+# saving is real loop CPU (~0.16 ms/MiB, about 460 ms over a 2.8 GiB closure)
+# and nothing more. Do not quote the 2.46x as a transfer speedup.
+#
+# **This only binds where pynixd is the SSH client.** The chosen cipher is the
+# first entry of the *client's* list that the server also offers (RFC 4253
+# 7.1), and OpenSSH leads with chacha20-poly1305. So a `nix copy` into pynixd
+# keeps chacha20 whatever the server offers; changing that needs
+# `NIX_SSHOPTS="-c aes256-gcm@openssh.com"` on the pushing side.
+#
+# **The `^` prefix makes this a preference and not a whitelist.** asyncssh
+# reads it as "these first, then the defaults" (`connection._expand_algs`), so
+# chacha20 stays available. That matters: a host without AES-NI does software
+# AES far slower than chacha20, and pinning AES would punish exactly the hosts
+# the default was protecting.
+SSH_ENCRYPTION_ALGS: Final[str] = "^aes256-gcm@openssh.com,aes128-gcm@openssh.com"
+
+
 # ── Stderr message types ──────────────────────────────────────────
 
 STDERR_NEXT: Final[int] = 0x6F6C6D67

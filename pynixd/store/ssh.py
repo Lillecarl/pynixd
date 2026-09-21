@@ -21,6 +21,7 @@ from ..config import (
     SSHSubprocessStoreSpec,
 )
 from ..connection import Connection
+from ..constants import SSH_ENCRYPTION_ALGS
 from ..monitor import DummyResourceMonitor, GenericResourcePoller, ResourceMonitor
 from ..wire import SSHNixReader, SSHNixWriter
 from .daemon import SSHD_DEFAULT_MAX_SESSIONS, DaemonStore
@@ -242,6 +243,7 @@ class SSHStore(DaemonStore):
                     "host": self.host,
                     "port": self.port,
                     "known_hosts": self.known_hosts,
+                    "encryption_algs": SSH_ENCRYPTION_ALGS,
                 }
                 if self.username is not None:
                     connect_kwargs["username"] = self.username

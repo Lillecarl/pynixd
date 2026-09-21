@@ -15,6 +15,7 @@ import structlog
 
 from . import wire
 from .config import ScheduleMode
+from .constants import SSH_ENCRYPTION_ALGS
 from .proxy import DaemonProxy
 from .serde.auth import Role
 from .sftp_server import PSIMonitorSFTPServer
@@ -125,6 +126,7 @@ async def start_ssh_server(
         process_factory=handle_client,
         sftp_factory=PSIMonitorSFTPServer,
         encoding=None,
+        encryption_algs=SSH_ENCRYPTION_ALGS,
     )
     bound_port = server.get_port()
     log.info("ssh_server_listening", host=host, port=bound_port)

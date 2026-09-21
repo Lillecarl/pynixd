@@ -20,6 +20,7 @@ import structlog
 from nix_daemon_protocol.ids import StoreId
 
 from .config import ReverseAcceptorSettings, ReverseStoreSpec
+from .constants import SSH_ENCRYPTION_ALGS
 from .store.reverse import ReverseStore
 
 if TYPE_CHECKING:
@@ -150,6 +151,7 @@ async def start_reverse_acceptor(
         client_keys=[host_key],
         known_hosts=None,
         encoding=None,
+        encryption_algs=SSH_ENCRYPTION_ALGS,
     )
     bound_port = acceptor.get_port()
     log.info("reverse_server_listening", host=settings.host, port=bound_port)
