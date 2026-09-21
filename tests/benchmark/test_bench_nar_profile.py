@@ -404,7 +404,6 @@ async def _copy_paths_and_measure(
 
 async def _add_path_and_measure(
     server: Server,
-    src: Path,
     label: str,
     size_kib: int,
 ) -> None:
@@ -441,8 +440,6 @@ async def _add_path_and_measure(
 
     assert rc == 0, f"nix store add-path failed:\n{stderr}"
     assert stdout.strip().startswith("/nix/store/"), stdout
-
-    _ = src  # the source store is unused here; the client dumps from disk
     blob.unlink()
 
 
@@ -488,7 +485,7 @@ async def _pull_and_measure(
 
 
 @pytest.mark.benchmark
-async def test_profile_nar_forward_op39_one_large(pynixd_server: Server, src_store: Path) -> None:
+async def test_profile_nar_forward_op39_one_large(pynixd_server: Server, src_store: Path) -> None:  # noqa: ARG001
     """One 64 MiB path through `forward_framed`, the op 39 loop.
 
     Read `peak_over_sent` and `max_loop_lag_ms` against the few-large shape
@@ -496,7 +493,7 @@ async def test_profile_nar_forward_op39_one_large(pynixd_server: Server, src_sto
     `cpu_ms_per_mib` says what the 32 KiB frame costs against a 1 MiB chunk.
     """
     _, size_kib = _FEW_LARGE
-    await _add_path_and_measure(pynixd_server, src_store, "op39-one-large", size_kib)
+    await _add_path_and_measure(pynixd_server, "op39-one-large", size_kib)
 
 
 @pytest.mark.benchmark

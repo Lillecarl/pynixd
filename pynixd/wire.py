@@ -384,8 +384,10 @@ async def stream_parse_nar(
     If capture=True, returns the raw NAR bytes.
     """
     chunks: list[bytes] | None = [] if capture else None
+    since_yield = 0
 
     async def _fwd_token() -> bytes:
+        nonlocal since_yield
         """Read and forward one token, returning its raw data."""
         length: int = await src.read_uint64()
         dst.write_uint64(length)
@@ -406,12 +408,18 @@ async def stream_parse_nar(
             if chunks is not None:
                 chunks.append(pad_data)
 
-        # Backpressure and a guaranteed suspension, per token. Neither the
-        # read nor `write` reaches the event loop on its own, so a NAR of many
-        # tokens otherwise runs to its end with nothing else scheduled. See
-        # `forward_framed`.
-        await dst.drain()
-        await checkpoint()
+        # Backpressure and a guaranteed suspension, per chunk of bytes rather
+        # than per token. Neither the read nor `write` reaches the event loop
+        # on its own, so a NAR otherwise runs to its end with nothing else
+        # scheduled. Per token would be far more often than that needs: a NAR
+        # holding 8871 files carries tens of thousands of tokens of a few
+        # bytes each, and a loop turn per 32 KiB frame rather than per 1 MiB
+        # chunk already measured 2.5x the CPU in `forward_framed`.
+        since_yield += 8 + length + pad
+        if since_yield >= _CHUNK_SIZE:
+            since_yield = 0
+            await dst.drain()
+            await checkpoint()
 
         return data
 
@@ -439,6 +447,8 @@ async def stream_parse_nar(
                 break
         elif tok == "contents":
             after_contents = True
+
+    await dst.drain()
 
     if chunks is not None:
         return b"".join(chunks)
