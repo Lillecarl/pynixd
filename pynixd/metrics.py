@@ -100,6 +100,27 @@ EVENT_LOOP_LAG_MAX = Gauge(
     "Largest event loop stall seen since the process started",
 )
 
+# **A maximum carries no time, so it cannot be tied to an event.** A cluster
+# reported a lifetime maximum of 7.912 s against a 0.802 s window, and nothing
+# in the scrape said whether that stall landed during a push, during a pull or
+# at rest. These two answer that without a scrape at the right moment.
+#
+# The histogram is the one to graph: `rate(..._bucket[5m])` shows when the
+# stalls happened, and its `_count` divided by the scrape interval says the
+# monitor is still sampling, which a gauge stuck at its maximum does not.
+EVENT_LOOP_LAG_SAMPLES = Histogram(
+    "pynixd_event_loop_lag_sample_seconds",
+    "Every event loop lag sample, so a stall can be located in time",
+    buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30),
+)
+
+# Wall clock, not monotonic: the point is to line the peak up against a pod
+# event or a push in somebody else's log.
+EVENT_LOOP_LAG_MAX_AT = Gauge(
+    "pynixd_event_loop_lag_max_timestamp_seconds",
+    "Unix time at which the largest event loop stall was observed",
+)
+
 # --- Daemon protocol ---
 #
 # `DaemonProxy.op_loop` already times every operation and prints the total when
@@ -138,8 +159,26 @@ DAEMON_SESSIONS_TOTAL = Counter(
     ["transport"],
 )
 
-# --- NAR forwarding ---
+# --- NAR transfer ---
 #
+# **Three families, because a NAR takes one of three loops and they fail
+# differently.** A dashboard that reads only one of them sees a pod that moved
+# gigabytes as idle.
+#
+#     bytes received = pynixd_nar_forward_bytes_total   (op 44)
+#                    + pynixd_nar_add_bytes_total       (op 7, op 39)
+#     bytes served   = pynixd_nar_serve_bytes_total     (op 38)
+#
+# Which op a client sends, `remote-store.cc`: `nix copy` at protocol 1.32 and
+# above is AddMultipleToStore, line 508. A single-path add -- `nix store
+# add-path`, `nix-store --import`, any client below 1.32 -- is AddToStoreNar,
+# line 451. A pull is NarFromPath.
+#
+# **So the split is also the discriminator.** Given a push whose op nobody
+# recorded, whichever of the two receive counters moved names the loop it
+# took. Keep them separate for that reason, and do not fold them into one
+# series with a label: an alert on the whole would fire per label.
+
 # The server side of `AddMultipleToStore`: what a `nix copy` into pynixd
 # spends its time and its memory on. This is the path that peaked at 0.979 of
 # the payload in RAM and 3.074 s of CPU per 128 MiB before the backpressure and
@@ -147,12 +186,12 @@ DAEMON_SESSIONS_TOTAL = Counter(
 
 NAR_FORWARD_BYTES = Counter(
     "pynixd_nar_forward_bytes_total",
-    "NAR bytes forwarded from a client to the local daemon",
+    "NAR bytes received from a client for AddMultipleToStore (op 44)",
 )
 
 NAR_FORWARD_PATHS = Counter(
     "pynixd_nar_forward_paths_total",
-    "Store paths forwarded from a client to the local daemon",
+    "Store paths received from a client for AddMultipleToStore (op 44)",
 )
 
 NAR_FORWARD_DURATION = Histogram(
@@ -166,6 +205,48 @@ NAR_FORWARD_DURATION = Histogram(
 NAR_FORWARD_EOF_TIMEOUTS = Counter(
     "pynixd_nar_forward_source_eof_timeouts_total",
     "AddMultipleToStore payloads whose source did not reach EOF in time",
+)
+
+# The other receiving direction: one path per request, through
+# `wire.forward_framed`. It held the whole payload in the transport and never
+# suspended until 2026-09-21, so a push of a large closure was resident in
+# full: measured 206.9 MiB of a 256 MiB path.
+
+NAR_ADD_BYTES = Counter(
+    "pynixd_nar_add_bytes_total",
+    "NAR bytes received from a client for AddToStore or AddToStoreNar (op 7, op 39)",
+)
+
+NAR_ADD_PATHS = Counter(
+    "pynixd_nar_add_paths_total",
+    "Store paths received one at a time (op 7, op 39)",
+)
+
+NAR_ADD_DURATION = Histogram(
+    "pynixd_nar_add_duration_seconds",
+    "Time one AddToStore or AddToStoreNar payload took to forward",
+    buckets=(0.1, 0.5, 1, 5, 15, 60, 300, 600, 1800),
+)
+
+# The serving direction, which nothing measured before. A node reads its
+# closure this way when a pod starts, so `nar_serve_duration_seconds` is the
+# series that says a pod is waiting on this process rather than on the
+# scheduler.
+
+NAR_SERVE_BYTES = Counter(
+    "pynixd_nar_serve_bytes_total",
+    "NAR bytes served to a client for NarFromPath (op 38)",
+)
+
+NAR_SERVE_PATHS = Counter(
+    "pynixd_nar_serve_paths_total",
+    "Store paths served to a client for NarFromPath (op 38)",
+)
+
+NAR_SERVE_DURATION = Histogram(
+    "pynixd_nar_serve_duration_seconds",
+    "Time one NarFromPath response took to stream",
+    buckets=(0.1, 0.5, 1, 5, 15, 60, 300, 600, 1800),
 )
 
 # --- Connection pools ---

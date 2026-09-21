@@ -455,7 +455,12 @@ async def stream_parse_nar(
     return None
 
 
-async def forward_framed(src: NixReader, dst: NixWriter, chunk_size: int = _CHUNK_SIZE) -> None:
+async def forward_framed(
+    src: NixReader,
+    dst: NixWriter,
+    chunk_size: int = _CHUNK_SIZE,
+    on_bytes: Callable[[int], None] | None = None,
+) -> None:
     """Forward framed data (chunks terminated by size=0) from src to dst.
 
     Streams the data without buffering the entire payload in memory.
@@ -470,8 +475,12 @@ async def forward_framed(src: NixReader, dst: NixWriter, chunk_size: int = _CHUN
     and a frame boundary carries no meaning -- `FramedSource` reassembles the
     frames into one byte stream and never sees them (`serialise.hh:694`). So
     this gathers up to `chunk_size` of client frames into one outgoing frame.
-    Measured on a 64 MiB path, this machine, uvloop: 12.7 ms/MiB per frame
-    against 6.6 ms/MiB coalesced.
+    Measured on one 256 MiB path, this machine, uvloop: 8.6 ms/MiB frame for
+    frame against 7.8 ms/MiB coalesced, and 206.9 MiB resident against 18.9.
+
+    `on_bytes` takes each outgoing chunk's length. The caller passes its own
+    counter rather than this naming one, because the op a transfer belongs to
+    is known at the handler and not here.
     """
     pending: list[bytes] = []
     pending_size = 0
@@ -480,6 +489,7 @@ async def forward_framed(src: NixReader, dst: NixWriter, chunk_size: int = _CHUN
         nonlocal pending_size
         if not pending_size:
             return
+        sent = pending_size
         dst.write_uint64(pending_size)
         dst.write(pending[0] if len(pending) == 1 else b"".join(pending))
         pending.clear()
@@ -494,6 +504,8 @@ async def forward_framed(src: NixReader, dst: NixWriter, chunk_size: int = _CHUN
         # a buffer never reaches it at all. The same test measured 0 turns of
         # the loop for a whole payload.
         await checkpoint()
+        if on_bytes is not None:
+            on_bytes(sent)
 
     while True:
         size = await src.read_uint64()
@@ -509,7 +521,13 @@ async def forward_framed(src: NixReader, dst: NixWriter, chunk_size: int = _CHUN
     await dst.drain()
 
 
-async def forward_raw(src: NixReader, dst: NixWriter, size: int, chunk_size: int = _CHUNK_SIZE) -> None:
+async def forward_raw(
+    src: NixReader,
+    dst: NixWriter,
+    size: int,
+    chunk_size: int = _CHUNK_SIZE,
+    on_bytes: Callable[[int], None] | None = None,
+) -> None:
     """Forward exactly *size* unframed bytes from src to dst.
 
     The serving direction of a NAR: pynixd reads from the local daemon, which
@@ -517,6 +535,10 @@ async def forward_raw(src: NixReader, dst: NixWriter, size: int, chunk_size: int
     Neither end reaches the event loop on its own, so the drain and the
     checkpoint per chunk are what keep the process answering while a closure
     moves. See `forward_framed`.
+
+    `on_bytes` takes each chunk's length. The caller passes its own counter
+    rather than this naming one, because the op a transfer belongs to is
+    known at the handler and not here.
     """
     remaining = size
     while remaining > 0:
@@ -526,6 +548,8 @@ async def forward_raw(src: NixReader, dst: NixWriter, size: int, chunk_size: int
         await dst.drain()
         await checkpoint()
         remaining -= to_read
+        if on_bytes is not None:
+            on_bytes(len(chunk))
 
 
 class FramedReader(NixReader):

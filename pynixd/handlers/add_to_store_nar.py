@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING, ClassVar
 
 import structlog
@@ -11,6 +12,7 @@ from nix_daemon_protocol.add_to_store_nar import (
     AddToStoreNarResponse,
 )
 
+from .. import metrics
 from ..serde.context import ReadContext, WriteContext
 from ..wire import forward_framed
 from ._base import Handler
@@ -51,7 +53,10 @@ class AddToStoreNarHandler(Handler):
             await conn.w.drain()
 
             # 3. Forward framed NAR bytes from client to daemon
-            await forward_framed(ctx.proxy.r, conn.w)
+            started = time.monotonic()
+            await forward_framed(ctx.proxy.r, conn.w, on_bytes=metrics.NAR_ADD_BYTES.inc)
+            metrics.NAR_ADD_PATHS.inc()
+            metrics.NAR_ADD_DURATION.observe(time.monotonic() - started)
 
             # 4. Read response from daemon
             return await AddToStoreNarResponse.from_reader(

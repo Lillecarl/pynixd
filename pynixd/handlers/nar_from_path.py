@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING, ClassVar
 
 import structlog
@@ -9,7 +10,7 @@ import structlog
 from nix_daemon_protocol.logs import WireLogs
 from nix_daemon_protocol.nar_from_path import NarFromPathRequest
 
-from .. import wire
+from .. import metrics, wire
 from ..serde import QueryPathInfoRequest
 from ..serde.context import ReadContext, WriteContext
 from ._base import Handler
@@ -49,6 +50,7 @@ class NarFromPathHandler(Handler):
         logger.debug("nar_from_path_streaming", path=req.path, size=nar_size)
 
         # 3. Forward request to daemon (serde), stream NAR to client
+        started = time.monotonic()
         async with store.transfer_conn() as conn:
             await req.to_writer(WriteContext.from_conn(conn))
             await conn.w.drain()
@@ -64,10 +66,14 @@ class NarFromPathHandler(Handler):
 
             # 6. Stream unframed NAR bytes from daemon to client
             if nar_size > 0:
-                await wire.forward_raw(conn.r, ctx.proxy.w, nar_size)
+                await wire.forward_raw(conn.r, ctx.proxy.w, nar_size, on_bytes=metrics.NAR_SERVE_BYTES.inc)
             else:
+                # No nar_size to count against, so the bytes land on the
+                # counter only once the parse has walked the whole archive.
                 await wire.stream_parse_nar(conn.r, ctx.proxy.w)
 
         await ctx.proxy.w.drain()
+        metrics.NAR_SERVE_PATHS.inc()
+        metrics.NAR_SERVE_DURATION.observe(time.monotonic() - started)
         logger.debug("responded_op")
         return
