@@ -25,6 +25,7 @@ import threading
 import time
 import traceback
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import anyio
@@ -34,6 +35,7 @@ from . import metrics
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
+    from pathlib import Path
     from typing import TextIO
 
 log = structlog.get_logger(__name__)
@@ -83,20 +85,28 @@ class StallWatchdog:
     hundreds.
     """
 
+    #: Stop appending to the file sink past this. One dump per stall bounds
+    #: this well already; the cap is so a process that stalls for months
+    #: cannot fill the volume it shares with the store.
+    MAX_SINK_BYTES = 8 * 1024 * 1024
+
     def __init__(
         self,
         threshold: float,
         *,
         interval: float = 1.0,
         stream: TextIO | None = None,
+        path: Path | None = None,
     ) -> None:
         self.threshold = threshold
         self._interval = interval
         self._stream = stream
+        self._path = path
         self._last_beat = time.monotonic()
         self._armed = True
         self._stop = threading.Event()
         self.dumps = 0
+        self.sink_errors = 0
 
     def beat(self) -> None:
         """Record that the loop is still running callbacks."""
@@ -125,13 +135,42 @@ class StallWatchdog:
         stream = self._stream if self._stream is not None else sys.stderr
         names = {t.ident: t.name for t in threading.enumerate()}
         lines = [
-            f"pynixd: event loop has not run a callback for {stalled_for:.1f}s; stacks of every thread follow",
+            f"pynixd: {datetime.now(tz=UTC).isoformat()} event loop has not run a "
+            f"callback for {stalled_for:.1f}s; stacks of every thread follow",
         ]
         for ident, frame in sys._current_frames().items():  # noqa: SLF001
             lines.append(f"Thread {names.get(ident, '<unknown>')} ({ident}):")
             lines.extend(line.rstrip("\n") for line in traceback.format_stack(frame))
-        print("\n".join(lines), file=stream, flush=True)
+        text = "\n".join(lines)
+        print(text, file=stream, flush=True)
+        self._write_sink(text)
         self.dumps += 1
+
+    def _write_sink(self, text: str) -> None:
+        """Also write the dump somewhere a container restart cannot take.
+
+        stderr reaches the container log, and that is the first place to look.
+        It is not a place to rely on: a stall that ends in a restart races the
+        log shipper, and a pod that is deleted and recreated takes the previous
+        container's log with it. This is the failure the watchdog exists for,
+        so its only sink must not be the thing that failure destroys.
+
+        Best effort by construction. A dump that cannot be filed must never
+        take down the process it is reporting on, so every error here is
+        counted and swallowed.
+        """
+        if self._path is None:
+            return
+        try:
+            if self._path.exists() and self._path.stat().st_size >= self.MAX_SINK_BYTES:
+                return
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            with self._path.open("a", encoding="utf-8") as handle:
+                handle.write(text + "\n\n")
+        except OSError as exc:
+            self.sink_errors += 1
+            stream = self._stream if self._stream is not None else sys.stderr
+            print(f"pynixd: could not write the stall dump to {self._path}: {exc}", file=stream, flush=True)
 
     def run(self) -> None:
         while not self._stop.wait(self._interval):

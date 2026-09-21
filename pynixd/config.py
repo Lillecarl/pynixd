@@ -582,6 +582,19 @@ class PynixdSettings(BaseSettings):
     # stderr and a stall long enough to fail a probe is not by itself a fault
     # worth a stack dump. The ten-minute case is.
     stall_traceback_seconds: float = 30.0
+    # A second place to write the stall dump, which a container restart cannot
+    # take away. `None` writes to stderr only.
+    #
+    # **stderr is not a reliable sink for this one.** It reaches the container
+    # log, which is the first place to look, but the stall this catches
+    # typically ends in a liveness restart: that races the log shipper, and a
+    # pod deleted and recreated takes the previous container's log with it. An
+    # instrument whose only sink is destroyed by the event it records is not an
+    # instrument.
+    #
+    # Point it at a persistent volume. On a pod that boots from a PVC, a path
+    # under that volume survives both the restart and the recreation.
+    stall_traceback_path: Path | None = None
     http_upload_dir: Path | None = None
 
     https_port: int | None = None

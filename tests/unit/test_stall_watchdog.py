@@ -55,6 +55,60 @@ def test_zero_disables_it() -> None:
     assert dog._check(time.monotonic() + 3600.0) is False
 
 
+def test_the_dump_also_goes_to_a_file(tmp_path) -> None:
+    """stderr alone is not a sink for this.
+
+    The stall this catches usually ends in a liveness restart, which races the
+    log shipper, and a pod deleted and recreated takes the previous
+    container's log with it. An instrument whose only sink is destroyed by the
+    event it records is not an instrument.
+    """
+    sink = tmp_path / "state" / "stall.log"
+    out = io.StringIO()
+    dog = StallWatchdog(threshold=0.01, stream=out, path=sink)
+    dog.dump()
+
+    assert sink.exists(), "the dump did not reach the file"
+    text = sink.read_text()
+    assert "has not run a callback" in text
+    # A wall clock time, so a dump can be lined up against a pod event. The
+    # stall duration alone cannot be.
+    assert text.lstrip().startswith("pynixd: 2")
+    # Both sinks, not one or the other.
+    assert "has not run a callback" in out.getvalue()
+
+    dog.beat()
+    dog.dump()
+    assert sink.read_text().count("has not run a callback") == 2, "the second dump replaced the first"
+    assert dog.sink_errors == 0
+
+
+def test_a_sink_it_cannot_write_never_raises(tmp_path) -> None:
+    """A dump that cannot be filed must not take down what it reports on."""
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("")
+    out = io.StringIO()
+    dog = StallWatchdog(threshold=0.01, stream=out, path=blocker / "stall.log")
+
+    dog.dump()
+
+    assert dog.dumps == 1, "the dump itself must still count"
+    assert dog.sink_errors == 1
+    assert "could not write the stall dump" in out.getvalue()
+
+
+def test_a_full_sink_stops_growing(tmp_path) -> None:
+    """A process that stalls for months must not fill the store's volume."""
+    sink = tmp_path / "stall.log"
+    sink.write_bytes(b"x" * StallWatchdog.MAX_SINK_BYTES)
+    dog = StallWatchdog(threshold=0.01, stream=io.StringIO(), path=sink)
+
+    dog.dump()
+
+    assert sink.stat().st_size == StallWatchdog.MAX_SINK_BYTES
+    assert dog.sink_errors == 0
+
+
 def test_the_dump_names_the_stalled_thread() -> None:
     out = io.StringIO()
     dog = StallWatchdog(threshold=0.01, stream=out)
@@ -62,7 +116,7 @@ def test_the_dump_names_the_stalled_thread() -> None:
     text = out.getvalue()
 
     assert "has not run a callback" in text
-    # faulthandler's own output, which is what carries the diagnosis.
+    # The stack itself, which is what carries the diagnosis.
     assert "Thread" in text or "File " in text
 
 

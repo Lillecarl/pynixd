@@ -199,7 +199,12 @@ class Server:
         self.reverse_acceptor: asyncssh.SSHAcceptor | None = None
         self.http_server: web.AppRunner | None = None
         self.stall_watchdog = (
-            StallWatchdog(self.settings.stall_traceback_seconds) if self.settings.stall_traceback_seconds > 0 else None
+            StallWatchdog(
+                self.settings.stall_traceback_seconds,
+                path=self.settings.stall_traceback_path,
+            )
+            if self.settings.stall_traceback_seconds > 0
+            else None
         )
         self.loop_lag = LoopLagMonitor(
             window=self.settings.health_loop_lag_window,
