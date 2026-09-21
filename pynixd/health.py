@@ -111,9 +111,15 @@ class LoopLagMonitor:
                 # Neither is a stall, and recording it would lower the maximum.
                 continue
             self._samples.append((self._clock(), lag))
-            self.lifetime_max = max(self.lifetime_max, lag)
+            metrics.EVENT_LOOP_LAG_SAMPLES.observe(lag)
+            if lag > self.lifetime_max:
+                self.lifetime_max = lag
+                # Wall clock, so the peak can be lined up against a pod event
+                # or somebody else's log. `self._clock` is monotonic and means
+                # nothing outside this process.
+                metrics.EVENT_LOOP_LAG_MAX_AT.set(time.time())
+                metrics.EVENT_LOOP_LAG_MAX.set(self.lifetime_max)
             metrics.EVENT_LOOP_LAG.set(self.window_max)
-            metrics.EVENT_LOOP_LAG_MAX.set(self.lifetime_max)
             self.started.set()
             self._sampled.set()
 
