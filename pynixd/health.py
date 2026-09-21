@@ -107,6 +107,8 @@ class StallWatchdog:
         self._stop = threading.Event()
         self.dumps = 0
         self.sink_errors = 0
+        self.sink_skipped = 0
+        self._reported_full = False
 
     def beat(self) -> None:
         """Record that the loop is still running callbacks."""
@@ -158,18 +160,33 @@ class StallWatchdog:
         Best effort by construction. A dump that cannot be filed must never
         take down the process it is reporting on, so every error here is
         counted and swallowed.
+
+        **Swallowed is not silent.** A dump that stopped landing looks exactly
+        like a stall that never happened, which is the same fault as writing
+        only to stderr. So both refusals say so on stderr and name the path:
+        the one that could not write, and the one that is full. Once each,
+        because the next dump would repeat it.
         """
         if self._path is None:
             return
+        stream = self._stream if self._stream is not None else sys.stderr
         try:
             if self._path.exists() and self._path.stat().st_size >= self.MAX_SINK_BYTES:
+                self.sink_skipped += 1
+                if not self._reported_full:
+                    self._reported_full = True
+                    print(
+                        f"pynixd: the stall dump file {self._path} has reached "
+                        f"{self.MAX_SINK_BYTES} bytes; further dumps go to stderr only",
+                        file=stream,
+                        flush=True,
+                    )
                 return
             self._path.parent.mkdir(parents=True, exist_ok=True)
             with self._path.open("a", encoding="utf-8") as handle:
                 handle.write(text + "\n\n")
         except OSError as exc:
             self.sink_errors += 1
-            stream = self._stream if self._stream is not None else sys.stderr
             print(f"pynixd: could not write the stall dump to {self._path}: {exc}", file=stream, flush=True)
 
     def run(self) -> None:

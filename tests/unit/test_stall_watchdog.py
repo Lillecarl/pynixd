@@ -97,16 +97,32 @@ def test_a_sink_it_cannot_write_never_raises(tmp_path) -> None:
     assert "could not write the stall dump" in out.getvalue()
 
 
-def test_a_full_sink_stops_growing(tmp_path) -> None:
-    """A process that stalls for months must not fill the store's volume."""
+def test_a_full_sink_stops_growing_and_says_so(tmp_path) -> None:
+    """A process that stalls for months must not fill the store's volume.
+
+    And it must not go quiet about it. A dump that stopped landing looks
+    exactly like a stall that never happened, which is the fault that writing
+    to stderr alone had. The refusal names the path, once.
+    """
     sink = tmp_path / "stall.log"
     sink.write_bytes(b"x" * StallWatchdog.MAX_SINK_BYTES)
-    dog = StallWatchdog(threshold=0.01, stream=io.StringIO(), path=sink)
+    out = io.StringIO()
+    dog = StallWatchdog(threshold=0.01, stream=out, path=sink)
 
     dog.dump()
 
     assert sink.stat().st_size == StallWatchdog.MAX_SINK_BYTES
     assert dog.sink_errors == 0
+    assert dog.sink_skipped == 1
+    assert str(sink) in out.getvalue()
+    assert "further dumps go to stderr only" in out.getvalue()
+    # The dump itself still reached stderr; only the file copy was refused.
+    assert "has not run a callback" in out.getvalue()
+
+    dog.beat()
+    dog.dump()
+    assert dog.sink_skipped == 2
+    assert out.getvalue().count("further dumps go to stderr only") == 1, "the notice repeated"
 
 
 def test_the_dump_names_the_stalled_thread() -> None:
