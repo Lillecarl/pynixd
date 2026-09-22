@@ -441,12 +441,21 @@ class Server:
             self.ctx.db = None
             # Say which store it is and why. The line carried no field at all,
             # so a reader could see that the SQLite fast path was off and not
-            # what had turned it off -- and the two ways to build a local store
-            # disagree about the answer. `PynixdSettings.to_stores` hardcodes
-            # `LocalStore`, so the shipped `pynixd daemon` always lands here;
-            # `Server.__init__` calls `spec.to_store()` and honours
-            # `use_db`, so a programmatic server and the test suite do not.
-            # Issue Lillecarl/nanopynix#163 holds the decision.
+            # what had turned it off. Issue Lillecarl/nanopynix#163 holds the
+            # decision.
+            #
+            # **Reaching here means a caller named the class.** Both ways of
+            # building the local store -- `PynixdSettings.to_stores` and
+            # `Server.__init__` -- go through `spec.to_store()`, which reads
+            # `use_db`, and `use_db` defaults to true. A caller that writes
+            # `LocalStore(spec)` or the legacy alias `LocalSocketStore(spec)`
+            # chooses the store without the fast paths at the call site, and
+            # the `use_db` beside it is then read by nothing.
+            #
+            # nixkube's three entry points did exactly that, through the
+            # legacy name, so every pynixd pod it deploys logged this line and
+            # answered every query over the socket. The store path is not the
+            # tell: this fires on `/`, on a chroot store and on a PVC alike.
             log.warning(
                 "local_store_db_disabled",
                 store_id=str(local_store.store_id),
