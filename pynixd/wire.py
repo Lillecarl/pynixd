@@ -218,17 +218,59 @@ class StrCoercible(Protocol):
 class NixWriter:
     """Wraps AsyncWriter with wire protocol methods."""
 
+    # Coalesce before the transport sees anything.
+    #
+    # **asyncio charges per write, not per byte, and the charge is the whole
+    # buffer.** `transport.write` calls `_maybe_pause_protocol`, which calls
+    # `get_write_buffer_size`, which is `sum(map(len, self._buffer))` over
+    # everything not yet on the socket. `write_bytes` is two or three writes
+    # per value -- the length, the payload, the padding -- so an op carrying
+    # thousands of store paths paid that sum tens of thousands of times over
+    # a buffer that only grew. The cost is quadratic in the number of values,
+    # and none of it suspends, so the event loop runs nothing throughout.
+    #
+    # Measured at 61bcef7d, one QueryValidPaths over a Unix socket: 4000
+    # paths stalled the loop 0.82s and 8000 stalled it 3.28s. Doubling the
+    # count quadrupled the stall. `health_loop_lag_max` is 5s and a liveness
+    # probe times out at 10, so the process stops answering `/healthz` at all
+    # -- not even to say it is unhealthy. `pynixd-drafts/loop-stall.md` in
+    # the umbrella holds the numbers and the reproduction.
+    #
+    # One large write per flush makes the buffer a handful of chunks whatever
+    # the op carries, so the sum is over a handful of lengths.
+    #
+    # **Safe because every complete message is followed by `drain`.** The op
+    # loop of `DaemonProxy` drains after each response and `Connection.call`
+    # drains after each request, so nothing is left here unsent. A subclass
+    # that overrides `write` -- `BytesWriter`, `FramedWriter` -- never reaches
+    # this buffer and needs nothing.
+    _FLUSH_BYTES = 64 * 1024
+
     def __init__(self, identifier: str = "unknown") -> None:
         self.identifier = identifier
+        self._pending = bytearray()
 
     def write(self, data: bytes) -> None:
-        self._write_to_transport(data)
+        self._pending += data
+        if len(self._pending) >= self._FLUSH_BYTES:
+            self.flush()
+
+    def flush(self) -> None:
+        """Hand everything buffered to the transport, as one write."""
+        if self._pending:
+            self._write_to_transport(bytes(self._pending))
+            self._pending.clear()
 
     async def drain(self) -> None:
+        self.flush()
         await self._drain_transport()
 
     async def is_dirty(self) -> bool:
-        return self._transport_is_dirty()
+        # The pending buffer counts. A byte held here is invisible to the
+        # transport, and `is_dirty` exists to answer whether anything of this
+        # connection is still in flight before something else is given the
+        # stream. Same argument as `SSHNixReader._transport_is_dirty`.
+        return bool(self._pending) or self._transport_is_dirty()
 
     def _write_to_transport(self, data: bytes) -> None:
         raise NotImplementedError
