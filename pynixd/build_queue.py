@@ -913,8 +913,20 @@ class BuildQueue:
                     if not build.scheduler_request_ids and build.is_done:
                         to_remove.append(build)
 
+            # One pass, not one `list.remove` per build. `remove` scans from
+            # the front and is O(len(queue)), so pruning k builds out of n
+            # cost O(n*k) -- and a deploy that queues thousands of builds
+            # prunes them in batches, which is exactly the shape that makes
+            # the two grow together.
+            #
+            # Slice assignment rather than rebinding: the `queue` property
+            # hands out this same list, so a caller holding it must keep
+            # seeing the live one.
+            if to_remove:
+                doomed = {id(build) for build in to_remove}
+                self._queue[:] = [build for build in self._queue if id(build) not in doomed]
+
             for build in to_remove:
-                self._queue.remove(build)
                 self._by_id.pop(build.build_id, None)
                 drv_path_str = str(build.request.drv_path)
                 if drv_path_str in self._by_path:
