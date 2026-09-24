@@ -13,9 +13,15 @@
 
 let
   jsonFormat = pkgs.formats.json { };
+
+  # Where every Nix client looks for the daemon, and where nix-daemon moves
+  # to in `replace` mode. The same directory, so nix-daemon.socket's own
+  # `ConditionPathIsReadWrite` still holds.
+  daemonSocket = "/nix/var/nix/daemon-socket/socket";
+  upstreamSocket = "/nix/var/nix/daemon-socket/upstream";
 in
 {
-  inherit jsonFormat;
+  inherit jsonFormat daemonSocket upstreamSocket;
 
   # `options.services.pynixd`, whole. Each platform module assigns this to
   # that attribute and adds nothing.
@@ -24,6 +30,35 @@ in
       type = lib.types.bool;
       default = false;
       description = "Enable pynixd, a Python Nix daemon protocol proxy.";
+    };
+
+    mode = lib.mkOption {
+      type = lib.types.enum [
+        "beside"
+        "replace"
+      ];
+      default = "beside";
+      description = ''
+        How pynixd sits next to the machine's Nix daemon.
+
+        `beside`: pynixd listens on its own socket, `unix_path`, and a
+        client opts in with `--store unix:///run/pynixd/pynixd.sock`.
+        Everything else still talks to nix-daemon.
+
+        `replace`: pynixd takes nix-daemon's socket,
+        `/nix/var/nix/daemon-socket/socket`, and nix-daemon moves to
+        `daemon-socket/upstream` behind it. Every client that uses the
+        daemon then talks to pynixd: `nix build` as a user, `ssh-ng://`
+        through `nix-daemon --stdio`, remote builds. NixOS only.
+
+        Root is the exception in both modes. Nix's `auto` store opens the
+        store directly for a user who can write it, so root's `nix`
+        reaches neither daemon unless it passes `--store daemon`.
+
+        pynixd builds nothing itself in either mode: every build and every
+        write to the store goes to nix-daemon, with its build users and its
+        sandbox.
+      '';
     };
 
     package = lib.mkOption {
@@ -151,6 +186,16 @@ in
         unix_path = "/run/pynixd/pynixd.sock";
         ssh_port = null;
         http_port = null;
+      }
+      // lib.optionalAttrs (cfg.mode == "replace") {
+        unix_path = daemonSocket;
+        # `managed = false` with an absolute path: pynixd connects to the
+        # system daemon there and starts none of its own.
+        stores.local = {
+          type = "local-socket";
+          socket_path = upstreamSocket;
+          managed = false;
+        };
       }
       // lib.optionalAttrs cfg.metrics.enable {
         http_port = cfg.metrics.port;

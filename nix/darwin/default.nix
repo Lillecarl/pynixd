@@ -27,6 +27,12 @@ in
   # One `mkIf`, for the reason the NixOS module states: a module that installs
   # a package while it is disabled cannot be imported and left alone.
   config = lib.mkIf cfg.enable {
+    assertions = [
+      {
+        assertion = cfg.mode == "beside";
+        message = "services.pynixd.mode = \"replace\" is NixOS only: it moves nix-daemon's systemd socket.";
+      }
+    ];
     services.pynixd.settings = common.settingsDefaultsFor cfg;
     environment.etc."pynixd/pynixd.json".source = configFile;
 
