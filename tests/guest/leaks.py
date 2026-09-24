@@ -48,14 +48,18 @@ async def test(vms: Machines) -> None:
         mine = [p for p in after if p["pid"] not in was_running and _is_a_leak(p)]
         leaked += mine
 
-        print(f"[test] {name}: {len(before)} processes before, {len(after)} after")
+        # What the host pays for this guest's RAM now, after its suite. The
+        # measurement that tells the two backends apart: UML returns freed
+        # pages to the host, and `memory` is a ceiling, not a cost.
+        host_kib = vm.host_memory_kib()
+        print(f"[test] {name}: {len(before)} processes before, {len(after)} after; host pays {host_kib // 1024} MiB")
         for p in mine:
             print(f"[test] {name}: LEAKED {p['pid']} (parent {p['ppid']}) {p['cmdline'][:120]}")
 
         # Written whether or not anything leaked: a clean census is what a
         # later one is read against.
         (vms.artifacts / name / "processes.json").write_text(
-            json.dumps({"before": before, "after": after, "leaked": mine}, indent=2) + "\n"
+            json.dumps({"before": before, "after": after, "leaked": mine, "host_kib": host_kib}, indent=2) + "\n"
         )
 
     assert len(leaked) <= ALLOWED_LEAKS, (
