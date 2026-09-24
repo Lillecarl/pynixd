@@ -23,7 +23,9 @@ builder."""
 
 
 async def test(vms: Machines) -> None:
-    vm = vms.node
+    # The phase declares one guest, named after the suite, and `vms`
+    # holds only that one.
+    [vm] = vms.values()
     name = vms.phase
     if name is None or name not in vms.settings["suites"]:
         raise RuntimeError(f"no suite for phase {name!r}; settings.suites has {list(vms.settings['suites'])}")

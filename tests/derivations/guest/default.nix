@@ -1,9 +1,9 @@
 # The suites, in a guest.
 #
-# `nix build --file . tests.guest` boots one NixOS guest, runs each suite
-# in it as a phase of its own, counts the guest's processes before and
-# after, and powers it off. Nothing of it survives -- see
-# tests/guest/leaks.py for why that is the point.
+# `nix build --file . tests.guest` boots one NixOS guest per suite, runs
+# the suites at once as phases of their own, counts each guest's
+# processes before and after, and powers them off. Nothing of it survives
+# -- see tests/guest/leaks.py for why that is the point.
 #
 # **QEMU, and only QEMU.** Under User-Mode Linux these suites panic the
 # guest: `Kernel panic - not syncing: Kernel mode fault` inside `munmap`,
@@ -100,10 +100,16 @@ uml.mkSession {
   // lib.mapAttrs (name: suite: {
     script = ../../guest/suite.py;
     after = [ "prepare" ];
+    # A guest each, so the suites run at once: the session starts phases
+    # whose guests do not overlap together. `prepare` and `leaks` name no
+    # guest, so they hold all three.
+    nodes = [ name ];
     description = suite.path;
   }) suites;
 
-  nodes.node = {
+  # One guest per suite, named after it, so events.jsonl says
+  # `machine=unit` and a suite's files land in artifacts/unit/.
+  nodes = lib.genAttrs (lib.attrNames suites) (_: {
     boot.uml = {
       # `tests/unit` peaks well above the default 128M, and an agent that
       # is OOM-killed partway through looks exactly like a hang.
@@ -176,5 +182,5 @@ uml.mkSession {
     # tests that read it fail on "file 'nixpkgs' was not found in the Nix
     # search path", which names nothing about pynixd.
     nix.nixPath = [ "nixpkgs=${pkgs.path}" ];
-  };
+  });
 }

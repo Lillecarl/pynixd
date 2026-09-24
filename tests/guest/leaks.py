@@ -33,30 +33,35 @@ before, 1 after` every time and none of it is a leak."""
 
 
 async def test(vms: Machines) -> None:
-    before = vms.shared.get("before")
-    if before is None:
+    census = vms.shared.get("before")
+    if census is None:
         raise RuntimeError("no census from `prepare`, so there is nothing to compare against")
-    after = await vms.node.processes()
 
-    # By pid, not by count: a count that happens to match hides one
-    # process exiting while another leaks.
-    was_running = {p["pid"] for p in before}
-    leaked = [p for p in after if p["pid"] not in was_running and _is_a_leak(p)]
+    leaked: list[dict] = []
+    for name, vm in vms.items():
+        before = census[name]
+        after = await vm.processes()
 
-    print(f"[test] {len(before)} processes before, {len(after)} after")
-    for p in leaked:
-        print(f"[test] LEAKED {p['pid']} (parent {p['ppid']}) {p['cmdline'][:120]}")
+        # By pid, not by count: a count that happens to match hides one
+        # process exiting while another leaks.
+        was_running = {p["pid"] for p in before}
+        mine = [p for p in after if p["pid"] not in was_running and _is_a_leak(p)]
+        leaked += mine
 
-    # Written whether or not anything leaked: a clean census is what a
-    # later one is read against.
-    (vms.artifacts / "node" / "processes.json").write_text(
-        json.dumps({"before": before, "after": after, "leaked": leaked}, indent=2) + "\n"
-    )
+        print(f"[test] {name}: {len(before)} processes before, {len(after)} after")
+        for p in mine:
+            print(f"[test] {name}: LEAKED {p['pid']} (parent {p['ppid']}) {p['cmdline'][:120]}")
+
+        # Written whether or not anything leaked: a clean census is what a
+        # later one is read against.
+        (vms.artifacts / name / "processes.json").write_text(
+            json.dumps({"before": before, "after": after, "leaked": mine}, indent=2) + "\n"
+        )
 
     assert len(leaked) <= ALLOWED_LEAKS, (
         f"the suites left {len(leaked)} processes holding a test store, and "
-        f"{ALLOWED_LEAKS} is what issue #36 accounts for. The whole census is "
-        "in processes.json beside this run's logs."
+        f"{ALLOWED_LEAKS} is what issue #36 accounts for. Each guest's census "
+        "is in its processes.json beside this run's logs."
     )
 
 

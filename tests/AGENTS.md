@@ -9,8 +9,9 @@ nix run --file . tests.guest.run -- --out ./o --only unit --break-on-failure
 ```
 
 One NixOS guest, one phase per suite, poweroff. The phases are
-`prepare`, then `unit`, `protocol` and `parity`, then `leaks`. Each suite
-needs only `prepare`, so one failing skips none of the others. `leaks`
+`prepare`, then `unit`, `protocol` and `parity` at once, a guest each,
+then `leaks`. Each suite needs only `prepare`, so one failing skips none
+of the others. `leaks`
 runs even after a failure. Nothing survives the run: no store under
 `/tmp`, no daemon, no socket. That is what it is for — these suites
 start daemons and build into stores they make, and a build sandbox
@@ -18,8 +19,8 @@ cleans up files and not processes.
 
 **The attempt never fails.** `tests.guest` reads `tests.guest.attempt`,
 whose output keeps a failed run: `phases.json`, `junit.xml`,
-`events.jsonl`, each suite's log under `artifacts/node/`, and the
-process census. Every test of every suite is a case in `junit.xml`,
+`events.jsonl`, each suite's log under `artifacts/<suite>/`, and
+each guest's process census. Every test of every suite is a case in `junit.xml`,
 because each suite writes JUnit to `/artifacts/junit/`, and
 user-mode-nixos reads it back. Read them there rather than running it
 again:
