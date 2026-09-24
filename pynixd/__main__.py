@@ -17,6 +17,7 @@ import uvloop
 from .cli.base import load_settings, setup_logging
 from .cli.gc import register as register_gc
 from .instance import Server
+from .systemd import notify
 
 log = structlog.get_logger(__name__)
 
@@ -41,9 +42,13 @@ async def async_daemon_main() -> None:
     async with anyio.create_task_group() as tg:
         tg.start_soon(_handle_signals)
         await server.start()
+        # After every listener is bound: in `replace` mode the daemon socket
+        # is one, and `Type=notify` holds back what is ordered after us.
+        notify("READY=1")
         await shutdown_event.wait()
         tg.cancel_scope.cancel()
 
+    notify("STOPPING=1")
     await server.close()
 
 
