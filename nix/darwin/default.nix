@@ -41,6 +41,9 @@ in
       # wraps `command` in `/bin/wait4path /nix/store && exec ...`. A daemon
       # starts early at boot, and the Nix store can still be unmounted then.
       command = "${lib.getExe cfg.package} daemon";
+      # pynixd reads `trusted-users` and `allowed-users` with `nix config
+      # show`, and a managed store spawns `nix daemon`.
+      path = [ config.nix.package ];
 
       serviceConfig = {
         RunAtLoad = true;

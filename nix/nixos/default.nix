@@ -48,6 +48,9 @@ in
       # that uses one.
       before = lib.mkIf (cfg.mode == "replace") [ "multi-user.target" ];
       restartTriggers = [ configFile ];
+      # pynixd reads `trusted-users` and `allowed-users` with `nix config
+      # show`, from the same Nix as nix-daemon.
+      path = [ config.nix.package ];
 
       serviceConfig = {
         # pynixd says READY=1 once its listeners are bound. `simple` called
