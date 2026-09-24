@@ -76,6 +76,13 @@ let
     # 22 as well: user-mode-nixos moves sshd to `boot.uml.sshPort` for the
     # host's forward, and a client on the segment dials 22 like anywhere.
     services.openssh.ports = [ 22 ];
+    # `stranger` is the user outside `allowed-users` that `untrusted` needs.
+    # mkForce, because NixOS defaults this to `*` and lists concatenate.
+    nix.settings.allowed-users = lib.mkForce [
+      "root"
+      "tester"
+    ];
+    users.users.stranger.isNormalUser = true;
   };
 in
 uml.mkSession (
@@ -124,6 +131,14 @@ uml.mkSession (
         script = ../../daemon/remote.py;
         after = [ "prepare" ];
         description = "the client builds in each far store, and on each as a builder";
+      };
+      untrusted = {
+        script = ../../daemon/untrusted.py;
+        after = [
+          "local"
+          "remote"
+        ];
+        description = "an untrusted user's refusals, and a stranger's, on each server";
       };
       bypass = {
         script = ../../daemon/bypass.py;

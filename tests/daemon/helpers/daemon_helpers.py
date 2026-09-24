@@ -8,6 +8,7 @@ guest would never reach pynixd, and would pass for the wrong reason.
 from __future__ import annotations
 
 import json
+import re
 import shlex
 
 from uml_runner import Machine
@@ -29,6 +30,24 @@ async def as_tester(vm: Machine, command: str, *, timeout: float = 300) -> str:
     stdout = f"/tmp/as-tester-{abs(hash(command))}"
     await vm.succeed(f"su - tester -c {shlex.quote(command)} > {stdout}", timeout=timeout)
     return await vm.succeed(f"cat {stdout}; rm -f {stdout}")
+
+
+async def attempt(vm: Machine, command: str, *, user: str = "tester", timeout: float = 120) -> tuple[int, str]:
+    """`command`'s exit status and its stderr, run as `user`, for a command that may fail."""
+    stderr = f"/tmp/attempt-{abs(hash(command))}"
+    rc, _ = await vm.execute(f"su - {user} -c {shlex.quote(command)} > /dev/null 2> {stderr}", timeout=timeout)
+    return rc, await vm.succeed(f"cat {stderr}; rm -f {stderr}")
+
+
+def errors(stderr: str) -> list[str]:
+    """The `error:` and `warning:` lines of a client's stderr, without colour.
+
+    A temporary link's name carries a pid and a random number, so two
+    correct runs name different ones.
+    """
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", stderr)
+    plain = re.sub(r"\.tmp-link-\d+-\d+", ".tmp-link-N", plain)
+    return [line.strip() for line in plain.splitlines() if line.strip().startswith(("error:", "warning:"))]
 
 
 def store_path(output: str) -> str:
