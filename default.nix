@@ -351,5 +351,13 @@ package
       src = lib.cleanSource ./.;
       inherit (sources) user-mode-nixos;
     };
+
+    # pynixd as the Nix daemon of a guest, against nix-daemon on another,
+    # over the paths a user takes: a local build, `ssh-ng://` and
+    # `--builders`.
+    daemon = pkgs.callPackage ./tests/derivations/daemon {
+      inherit package;
+      inherit (sources) user-mode-nixos;
+    };
   };
 }
