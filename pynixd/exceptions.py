@@ -20,5 +20,14 @@ class ResourceExhaustedError(PynixdError):
     """Raised when system resources are too stressed to proceed (PSI/Load)."""
 
 
+class ClosingError(PynixdError):
+    """An error that ends the session after the client reads it.
+
+    `processConnection` in `src/libstore/daemon.cc` closes the connection
+    when an operation throws before `startWork`, since the arguments may be
+    unread. An operation that refuses a client there raises this.
+    """
+
+
 class OpNotImplementedError(PynixdError):
     """Raised when an operation is not implemented for a specific executor (e.g. DB)."""

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
 
 from .store.daemon import DaemonStore
+from .trust import TrustPolicy
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -33,6 +34,11 @@ class PynixdContext:
     _stores: dict[StoreId, Store]
     db: LocalStoreDB | None = None
     scheduler: Scheduler | None = None
+    trust: TrustPolicy = field(default_factory=TrustPolicy)
+    """Who may connect over the Unix listener, and who is trusted.
+
+    `Server.start` replaces the default with what the local store's Nix reads.
+    """
     output_locations: dict[str, StoreId] = field(default_factory=dict)
     """Where each output a backend built now lives.
 

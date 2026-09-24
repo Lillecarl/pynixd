@@ -159,12 +159,12 @@ async def test_a_garbage_collection_retires_the_idle_connections_first():
 
 
 @pytest.mark.anyio
-async def test_a_client_that_may_not_collect_retires_nothing():
-    """The handler refuses first, so a plain user cannot drop the pool."""
+async def test_an_untrusted_client_collects_as_well():
+    """Nix lets every allowed user collect garbage, `daemon.cc:735`. Issue #56."""
     proxy = await _handle(CollectGarbageHandler(), _request(), Role.USER)
 
-    assert proxy.local_store.calls == []
-    assert proxy.errors
+    assert proxy.local_store.calls == ["retire", "call:CollectGarbageRequest"]
+    assert not proxy.errors
 
 
 @pytest.mark.anyio

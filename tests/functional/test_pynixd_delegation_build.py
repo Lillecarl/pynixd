@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING
 
 import anyio
@@ -74,10 +75,14 @@ async def test_pynixd_delegation_build(tmp_path: Path) -> None:
     )
 
     # 1. Start Server B (The Actual Builder)
+    # Server A is B's admin. A builder refuses an input-addressed
+    # `BuildDerivation` from an untrusted sender, `daemon.cc:634`, and A then
+    # builds the job itself. Issue #56.
     async with Server(
         stores={StoreId("local"): store_b},
         ssh_port=0,
         http_port=None,
+        admin_users={os.environ.get("USER", "root")},
     ) as server_b:
         port_b = server_b.port
         log.info("server_b_started", port=port_b)

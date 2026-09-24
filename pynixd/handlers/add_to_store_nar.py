@@ -13,6 +13,7 @@ from nix_daemon_protocol.add_to_store_nar import (
 )
 
 from .. import metrics
+from ..serde.auth import Role
 from ..serde.context import ReadContext, WriteContext
 from ..wire import forward_framed
 from ._base import Handler
@@ -47,6 +48,11 @@ class AddToStoreNarHandler(Handler):
             req = await AddToStoreNarRequest.from_reader(
                 ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version, features=ctx.proxy.standard_features),
             )
+            # `daemon.cc:909-912`. The connection is root's, so this is pynixd's to do.
+            if ctx.role < Role.ADMIN:
+                req = req.model_copy(
+                    update={"dont_check_sigs": 0, "info": req.info.model_copy(update={"ultimate": False})},
+                )
 
             # 2. Write request header to daemon
             await req.to_writer(WriteContext.from_conn(conn))

@@ -25,6 +25,7 @@ from ..config import LocalSocketStoreSpec, PynixdSettings
 from ..connection import Connection
 from ..monitor import DummyResourceMonitor, create_monitor
 from ..store_path import StorePath
+from ..trust import TrustPolicy
 from ..wire import UnixNixReader, UnixNixWriter
 from .daemon import DaemonStore
 
@@ -331,6 +332,34 @@ class LocalStore(DaemonStore):
             f"Managed daemon socket not accepting connections at {self.socket_path} "
             f"within {_DAEMON_START_TIMEOUT:g}s (pid={self.daemon_proc.pid}): {stderr_output!r}",
         )
+
+    async def trust_policy(self) -> TrustPolicy:
+        """`trusted-users`, `allowed-users` and `build-users-group`, as this store's Nix reads them.
+
+        Read from `nix config show` in the daemon's environment, so includes,
+        `extra-` settings and `NIX_CONFIG` resolve as they do for nix-daemon.
+        """
+        env = os.environ.copy()
+        env.update(self.extra_env)
+        env.update(self.layout.daemon_environment())
+        proc = await asyncio.create_subprocess_exec(
+            self.nix_bin,
+            "--extra-experimental-features",
+            "nix-command",
+            "config",
+            "show",
+            "--json",
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"`nix config show` failed with code {proc.returncode}: {stderr.decode(errors='replace')}"
+            )
+        return TrustPolicy.from_nix_config(json.loads(stdout))
 
     def _recent_output_text(self) -> str:
         """The last lines the daemon wrote, for a start-up error message.

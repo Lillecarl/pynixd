@@ -6,8 +6,11 @@ from typing import TYPE_CHECKING, ClassVar
 
 import structlog
 
+from ..goals.resolution import _nix_drv_name, unparse_basic_derivation
 from ..serde import BuildDerivationRequest, BuildDerivationResponse
+from ..serde.auth import Role
 from ..serde.context import ReadContext
+from ..store_path import StorePath
 from ._base import Handler
 
 if TYPE_CHECKING:
@@ -28,6 +31,19 @@ class BuildDerivationHandler(Handler):
         logger.debug("received_op")
 
         self_req = await BuildDerivationRequest.from_reader(ReadContext.from_request(ctx))
+        if ctx.role < Role.ADMIN:
+            outputs = self_req.derivation.outputs.values()
+            if not (outputs and all(output.is_ca for output in outputs)):
+                # `daemon.cc:634`, after `startWork`, so the session goes on.
+                await ctx.proxy.send_error("you are not privileged to build input-addressed derivations")
+                return None
+            # `daemon.cc:642-653`: the client's path is not evidence, so Nix
+            # writes the derivation and builds the path that it gets.
+            name = f"{_nix_drv_name(self_req.drv_path)}.drv"
+            text = unparse_basic_derivation(self_req.derivation)
+            references = {str(path) for path in self_req.derivation.input_srcs}
+            drv_path = await ctx.proxy.local_store.add_text_to_store(name, text, references)
+            self_req = self_req.model_copy(update={"drv_path": StorePath(path=drv_path)})
 
         if not ctx.proxy.use_scheduler_for_builds:
             logger.debug("handle_local_mode_fallback")

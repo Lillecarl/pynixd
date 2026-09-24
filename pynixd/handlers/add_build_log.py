@@ -25,9 +25,7 @@ class AddBuildLogHandler(Handler):
         )
 
         if ctx.role < Role.ADMIN:
-            await ctx.proxy.send_error(
-                "Operation 'AddBuildLog' requires administrative privileges.",
-            )
+            await ctx.proxy.send_error("you are not privileged to add logs")
             return None
 
         return await ctx.proxy.local_store.call(req)

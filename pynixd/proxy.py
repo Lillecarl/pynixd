@@ -20,11 +20,12 @@ from . import metrics, wire
 from ._lazy import ssh_connection_lost
 from .config import ScheduleMode
 from .connection import ClientConn
-from .exceptions import OpNotImplementedError, PynixdError
+from .exceptions import ClosingError, OpNotImplementedError, PynixdError
 from .goals import GoalEngine
 from .handlers._base import HANDLER_REGISTRY
 from .protocol import get_extension_features
 from .serde import (
+    BuildMode,
     BuildPathsRequest,
     BuildPathsWithResultsRequest,
     IsValidPathRequest,
@@ -330,7 +331,7 @@ class DaemonProxy:
         if client_version >= wire.proto(1, 33):
             self.w.write_string(self._version_for_the_client())
             if client_version >= wire.proto(1, 35):
-                self.w.write_uint64(OptTrusted.TRUSTED)
+                self.w.write_uint64(OptTrusted.TRUSTED if self.role == Role.ADMIN else OptTrusted.NOT_TRUSTED)
         self.w.write_uint64(wire.STDERR_LAST)
         await self.w.drain()
 
@@ -378,6 +379,12 @@ class DaemonProxy:
                     await self.w.drain()
                 # else: already handled (streaming, error, etc.)
 
+            except ClosingError as ex:
+                result = "error"
+                log.info("handle_op_closing", name=op_name, reason=str(ex))
+                await self.client.flush()
+                await self.send_error(str(ex))
+                break
             except Exception as ex:
                 result = "error"
                 log.exception("handle_op_error", name=op_name)
@@ -397,6 +404,13 @@ class DaemonProxy:
         request: WireRequest,
     ) -> Any:
         """Execute an operation, falling back to other stores for extensions."""
+        if (
+            isinstance(request, BuildPathsRequest | BuildPathsWithResultsRequest)
+            and request.build_mode == BuildMode.REPAIR
+            and self.role < Role.ADMIN
+        ):
+            # `daemon.cc:554,572`, before `startWork`, so Nix closes the connection.
+            raise ClosingError("repairing is not allowed because you are not in 'trusted-users'")
         if isinstance(request, BuildPathsWithResultsRequest):
             return await self.goal_engine.build_paths_with_results(request, client=self.client)
         if isinstance(request, BuildPathsRequest):

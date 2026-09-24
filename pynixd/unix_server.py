@@ -11,11 +11,12 @@ import asyncio
 from typing import TYPE_CHECKING
 
 import anyio
+import anyio.to_thread
 import structlog
 
 from .config import ScheduleMode
 from .proxy import DaemonProxy
-from .serde.auth import Role
+from .trust import PeerRefusedError, authorise, peer_of
 from .wire import UnixNixReader, UnixNixWriter
 
 if TYPE_CHECKING:
@@ -46,15 +47,24 @@ async def start_unix_server(
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
     ) -> None:
-        peer = writer.get_extra_info("peername") or "unknown"
-        log.info("unix_client_connected", peer=peer)
+        peer = peer_of(writer.get_extra_info("socket"))
+        try:
+            # A thread, because NSS may answer from the network.
+            role, user = await anyio.to_thread.run_sync(authorise, peer, ctx.trust)
+        except PeerRefusedError as ex:
+            # nix-daemon closes the socket before the handshake, and the
+            # client reads end-of-file.
+            log.warning("unix_client_refused", pid=peer.pid, uid=peer.uid, reason=str(ex))
+            writer.close()
+            return
+        log.info("unix_client_connected", pid=peer.pid, user=user, role=role.name)
         try:
             proxy = DaemonProxy(
                 UnixNixReader(reader, identifier="client"),
                 UnixNixWriter(writer, identifier="client"),
                 ctx=ctx,
-                role=Role.ADMIN,
-                username="local",
+                role=role,
+                username=user or "<unknown>",
                 schedule_mode=schedule_mode or ScheduleMode.auto,
                 transport="unix",
             )

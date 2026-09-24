@@ -4,9 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, ClassVar
 
-from nix_daemon_protocol.add_perm_root import AddPermRootResponse
-from nix_daemon_protocol.logs import LogNext
-
+from ..exceptions import ClosingError
 from ..serde import AddPermRootRequest
 from ..serde.auth import Role
 from ..serde.context import ReadContext
@@ -17,21 +15,19 @@ if TYPE_CHECKING:
 
 
 class AddPermRootHandler(Handler):
-    """Server handler for AddPermRoot — no-op for non-admin, forwards to daemon for admin."""
+    """Server handler for AddPermRoot. Nix refuses it to an untrusted client."""
 
     op: ClassVar[int] = 47
 
     async def handle(self, ctx: RequestContext) -> object | None:
-        """Decode AddPermRoot request, forward to daemon for admin, log no-op for others."""
-        if ctx.role == Role.ADMIN:
-            req = await AddPermRootRequest.from_reader(
-                ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version, features=ctx.proxy.standard_features),
+        """Forward for a trusted client; refuse and close for any other, as `daemon.cc:680` does."""
+        if ctx.role < Role.ADMIN:
+            raise ClosingError(
+                "you are not privileged to create perm roots\n\n"
+                "hint: you can just do this client-side without special privileges, "
+                "and probably want to do that instead."
             )
-            return await ctx.proxy.local_store.call(req)
-
-        # Non-admin: consume request body, return no-op success
-        await ctx.proxy.r.read_bytes()
-        await ctx.proxy.r.read_bytes()
-        resp = AddPermRootResponse(gc_root="")
-        resp.logs.add(LogNext(text="pynixd: AddPermRoot ignored (no-op)"))
-        return resp
+        req = await AddPermRootRequest.from_reader(
+            ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version, features=ctx.proxy.standard_features),
+        )
+        return await ctx.proxy.local_store.call(req)

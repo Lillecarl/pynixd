@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import anyio
@@ -40,6 +41,7 @@ from pynixd.serde import (
 from pynixd.serde.auth import Role
 from pynixd.serde.context import WriteContext
 from pynixd.store.pool import ConnectionPool
+from pynixd.trust import TrustPolicy
 from pynixd.wire import PROTOCOL_VERSION, STDERR_LAST, BytesReader, BytesWriter
 
 if TYPE_CHECKING:
@@ -147,6 +149,7 @@ class FakeProxy:
         self.standard_features: frozenset[str] = frozenset()
         self.local_store = FakeStore()
         self.client = ClientConn(BytesWriter("client"))
+        self.ctx = SimpleNamespace(trust=TrustPolicy())
 
 
 @dataclass
@@ -184,12 +187,16 @@ async def test_the_handler_sends_nothing_over_the_pool() -> None:
 
 
 @pytest.mark.anyio
-async def test_a_user_that_is_not_an_admin_keeps_no_set() -> None:
+async def test_an_untrusted_user_keeps_the_set_without_its_restricted_settings() -> None:
+    """`daemon.cc:297`: `post-build-hook` is restricted, and the fixed fields stay. Issue #56."""
     ctx = FakeContext(FakeProxy(await _body(_options("/hook.sh"))), Role.USER)
 
     await SetOptionsHandler().handle(cast("Any", ctx))
 
-    assert ctx.proxy.client.options is None
+    options = ctx.proxy.client.options
+    assert options is not None
+    assert options.overrides == {}
+    assert options.max_build_jobs == 1
 
 
 # ── The build carries the set of the client that asked for it ────────

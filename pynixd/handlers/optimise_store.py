@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, ClassVar
 
 from ..serde import OptimiseStoreRequest
-from ..serde.auth import Role
 from ..serde.context import ReadContext
 from ._base import Handler
 
@@ -14,20 +13,14 @@ if TYPE_CHECKING:
 
 
 class OptimiseStoreHandler(Handler):
-    """Server handler for OptimiseStore — admin-only."""
+    """Server handler for OptimiseStore. Nix allows it to every client, `daemon.cc:860`."""
 
     op: ClassVar[int] = 34
 
     async def handle(self, ctx: RequestContext) -> object | None:
-        """Decode OptimiseStore request, verify admin auth, execute via daemon, return response."""
+        """Decode the request and forward it to the daemon."""
         req = await OptimiseStoreRequest.from_reader(
             ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version, features=ctx.proxy.standard_features),
         )
-
-        if ctx.role < Role.ADMIN:
-            await ctx.proxy.send_error(
-                "Operation 'OptimiseStore' requires administrative privileges.",
-            )
-            return None
 
         return await ctx.proxy.local_store.call(req)

@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, ClassVar
 
 from ..serde import CollectGarbageRequest
-from ..serde.auth import Role
 from ..serde.context import ReadContext
 from ._base import Handler
 
@@ -14,21 +13,15 @@ if TYPE_CHECKING:
 
 
 class CollectGarbageHandler(Handler):
-    """Server handler for CollectGarbage — admin-only."""
+    """Server handler for CollectGarbage. Nix allows it to every client, `daemon.cc:735`."""
 
     op: ClassVar[int] = 20
 
     async def handle(self, ctx: RequestContext) -> object | None:
-        """Decode CollectGarbage request, verify admin auth, execute via daemon, return response."""
+        """Decode the request and forward it to the daemon."""
         req = await CollectGarbageRequest.from_reader(
             ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version, features=ctx.proxy.standard_features),
         )
-
-        if ctx.role < Role.ADMIN:
-            await ctx.proxy.send_error(
-                "Operation 'CollectGarbage' requires administrative privileges.",
-            )
-            return None
 
         # An idle connection keeps a worker of the daemon alive, and that
         # worker holds a temporary root for each path that it took. The

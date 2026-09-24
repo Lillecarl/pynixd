@@ -10,6 +10,7 @@ from . import (
     add_to_store_nar,  # noqa: F401
     build_derivation,  # noqa: F401
     collect_garbage,  # noqa: F401
+    find_roots,  # noqa: F401
     nar_from_path,  # noqa: F401
     optimise_store,  # noqa: F401
     pynixd_collect_garbage,  # noqa: F401

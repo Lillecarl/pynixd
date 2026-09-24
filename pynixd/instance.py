@@ -431,6 +431,14 @@ class Server:
                 "Please upgrade your Nix daemon.",
             )
 
+        self.ctx.trust = await local_store.trust_policy()
+        log.info(
+            "trust_policy",
+            trusted_users=self.ctx.trust.trusted_users,
+            allowed_users=self.ctx.trust.allowed_users,
+            build_users_group=self.ctx.trust.build_users_group,
+        )
+
         if isinstance(local_store, LocalDBStore):
             self.ctx.db = local_store.db
             log.info(

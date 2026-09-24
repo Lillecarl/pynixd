@@ -46,11 +46,11 @@ async def test_collect_garbage_admin(pynixd_server: Server) -> None:
 
 
 async def test_collect_garbage_non_admin(pynixd_server: Server) -> None:
-    """GC as non-admin user should be rejected."""
+    """GC as an untrusted user succeeds: Nix allows it, `daemon.cc:735`. Issue #56."""
     uri = ssh_user_uri(pynixd_server)
     cmd = [str(CLIENT_BIN), "store", "gc", "--store", uri, "--max", "0"]
-    rc, stdout, stderr, stdboth = await run_subproc(cmd, expected_retcode=None)
-    assert "requires administrative privileges" in stdboth
+    rc, stdout, stderr, stdboth = await run_subproc(cmd)
+    assert rc == 0, f"GC as an untrusted user failed:\n{stdboth}"
 
 
 async def test_collect_garbage_unix_admin(pynixd_server: Server) -> None:

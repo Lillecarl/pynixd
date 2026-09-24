@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING, Any, ClassVar, Self, cast
 import structlog
 from cachetools import TTLCache
 
+from ..trust import TrustPolicy
+
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Set as AbstractSet
 
@@ -96,6 +98,11 @@ class Store(ABC):
     @property
     def in_flight(self) -> int:
         return 0
+
+    async def trust_policy(self) -> TrustPolicy:
+        """Who may use this store and who is trusted. Nix's defaults here;
+        `LocalStore` reads what its Nix reads."""
+        return TrustPolicy()
 
     # ── Lifecycle ───────────────────────────────────────────────────
 
