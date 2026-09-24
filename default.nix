@@ -69,7 +69,7 @@ let
 
     Every root here is a real pyproject project, which is why this works at
     all: `uml-runner` carries one at `pkgs/uml-runner`, and it is what
-    `tests/guest/run.py` imports.
+    the phase scripts in `tests/guest/` import.
 
     **pynixd itself does not depend on any of this, and must not.**  The
     shipped proxy is pure Python and links no C++; `nanopynix-testing`
@@ -115,7 +115,8 @@ let
     ++ library.dependencies
     ++ [
       ps.pytest
-      # `tests/guest/run.py` imports it, and the type gate reads that file.
+      # The phase scripts in `tests/guest/` import it, and the type gate
+      # reads them.
       # `devEnv` gets the same package from its own pyproject root, because
       # the two environments resolve by different machinery: this one is
       # nixpkgs, and that one is pyproject.nix.

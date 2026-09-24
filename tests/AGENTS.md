@@ -3,20 +3,36 @@
 ## Running the suites in a guest
 
 ```sh
-nix build --file . tests.guest            # QEMU, needs /dev/kvm
-nix build --file . tests.guest.uml        # a process, on any machine
-nix build --file . tests.guest.typecheck  # pyright over the script, seconds
+nix build --file . tests.guest                        # QEMU, needs /dev/kvm
+nix run --file . tests.guest.run -- --out ./o         # the same, by hand
+nix run --file . tests.guest.run -- --out ./o --only unit --break-on-failure
 ```
 
-One NixOS guest, three pytest processes, poweroff. Nothing survives it: no
-store under `/tmp`, no daemon, no socket. That is what it is for — these
-suites start daemons and build into stores they make, and a build sandbox
+One NixOS guest, one phase per suite, poweroff. The phases are
+`prepare`, then `unit`, `protocol` and `parity`, then `leaks`. Each suite
+needs only `prepare`, so one failing skips none of the others. `leaks`
+runs even after a failure. Nothing survives the run: no store under
+`/tmp`, no daemon, no socket. That is what it is for — these suites
+start daemons and build into stores they make, and a build sandbox
 cleans up files and not processes.
 
-**The test derivation never fails.** `tests.guest` reads a marker that
-`tests.guest.attempt` wrote, and names that path in its build log. So a
-failed run keeps its logs, its junit files and its process census. Read
-them there rather than running it again.
+**The attempt never fails.** `tests.guest` reads `tests.guest.attempt`,
+whose output keeps a failed run: `phases.json`, `junit.xml`,
+`events.jsonl`, each suite's log under `artifacts/node/`, and the
+process census. Every test of every suite is a case in `junit.xml`,
+because each suite writes JUnit to `/artifacts/junit/`, and
+user-mode-nixos reads it back. Read them there rather than running it
+again:
+
+```sh
+a=$(nix eval --raw --file . tests.guest.attempt)
+jq -r '.phases[] | "\(.name)\t\(.state)"' $a/phases.json
+jq -c 'select(.kind == "case" and .data.outcome == "failed") | .text' $a/events.jsonl
+```
+
+`--break-on-failure` keeps the guest up after a failing suite, and
+`uml ctl --out ./o exec ...` reaches in. See user-mode-nixos's
+AGENTS.md.
 
 Two things a test in there must respect:
 
@@ -31,9 +47,11 @@ The run counts every process in the guest before and after, and fails on a
 daemon that outlived its suite. That check found issue #36 on its first
 run.
 
-`tests/guest/run.py` is the script and `tests/derivations/guest/` packages
-it. The script lives here rather than in user-mode-nixos: that repository
-is the library, and a test about pynixd belongs beside pynixd.
+`tests/guest/` holds the phase scripts: `prepare.py`, `suite.py` (one
+script for every suite, told apart by `vms.phase`) and `leaks.py`.
+`tests/derivations/guest/` declares the phases and the suites. They live
+here rather than in user-mode-nixos: that repository is the library, and
+a test about pynixd belongs beside pynixd.
 
 ## `@pytest.mark.asyncio`
 

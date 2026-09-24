@@ -1,15 +1,15 @@
 # The suites, in a guest.
 #
-# `nix build --file . tests.guest` boots one NixOS guest, runs pytest twice
-# in it, and powers it off. Nothing of it survives -- see tests/guest/run.py
-# for why that is the point.
+# `nix build --file . tests.guest` boots one NixOS guest, runs each suite
+# in it as a phase of its own, counts the guest's processes before and
+# after, and powers it off. Nothing of it survives -- see
+# tests/guest/leaks.py for why that is the point.
 #
 # **QEMU, and only QEMU.** Under User-Mode Linux these suites panic the
 # guest: `Kernel panic - not syncing: Kernel mode fault` inside `munmap`,
 # measured twice. It is UML's memory manager that gives, not pynixd, and it
 # is intermittent -- one UML run finished `tests/unit` in 87 seconds and the
-# next panicked. `.uml` exists because `mkTest` builds both, not because it
-# works. Read user-mode-nixos issue #8 before reaching for it.
+# next panicked. Read user-mode-nixos issue #8 before reaching for it.
 {
   pkgs,
   lib ? pkgs.lib,
@@ -29,23 +29,79 @@ let
     ps.pytest-timeout
     ps.pyinstrument
   ]);
-in
-uml.mkTest {
-  name = "pynixd";
-  backend = "qemu";
-  script = ../../guest/run.py;
+
+  perTestTimeout = "--async-test-timeout=600";
 
   /*
-    What the script needs that only Nix knows.
+    One phase each, generated below from this list.
 
-    `mkTest` registers the closure of everything here with the guest's Nix
-    database, so these are valid paths in there rather than files Nix goes
-    looking for a substituter for.
+    Per suite, because `nix-daemon-protocol/tests` is its own project with
+    its own `pytest.ini`: it does not know `--async-test-timeout`, and
+    pytest answers an unknown option with exit 4 before collecting
+    anything. The 600 seconds is against the suite's own 120, which is
+    written for a machine rather than a machine inside one: measured,
+    `test_wire_parity[impure]` timed out at 120.016s on an idle host.
+
+    Each suite needs only `prepare`, so a failure in one skips none of the
+    others -- they are independent, and a run that stopped at the first
+    would hide the second.
+
+    Missing on purpose: `tests/functional`, which wants a daemon it may
+    build with (issue #29).
+  */
+  suites = {
+    unit = {
+      path = "tests/unit";
+      flags = [ perTestTimeout ];
+    };
+    protocol = {
+      path = "nix-daemon-protocol/tests";
+      flags = [ ];
+    };
+    # Missing for 35 minutes of failure that the guest's own configuration
+    # caused: it took cache.nixos.org from the NixOS default and had no
+    # route to it. `substituters = lib.mkForce [ ]` below is what put it
+    # back -- 2120.92s and 5 failures became 121.20s and none. Issue #37.
+    parity = {
+      path = "tests/parity";
+      flags = [ perTestTimeout ];
+    };
+  };
+in
+uml.mkSession {
+  name = "pynixd";
+  backend = "qemu";
+
+  /*
+    What the scripts need that only Nix knows.
+
+    `mkSession` registers the closure of everything here with the guest's
+    Nix database, so these are valid paths in there rather than files Nix
+    goes looking for a substituter for.
   */
   settings = {
     src = "${src}";
     nixpkgs = "${pkgs.path}";
+    inherit suites;
   };
+
+  phases = {
+    prepare = {
+      script = ../../guest/prepare.py;
+      after = [ "boot" ];
+    };
+    leaks = {
+      script = ../../guest/leaks.py;
+      after = lib.attrNames suites;
+      always = true;
+      description = "no process outlived its suite";
+    };
+  }
+  // lib.mapAttrs (name: suite: {
+    script = ../../guest/suite.py;
+    after = [ "prepare" ];
+    description = suite.path;
+  }) suites;
 
   nodes.node = {
     boot.uml = {

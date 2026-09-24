@@ -1,0 +1,64 @@
+"""Count the guest's processes again, and fail on one the suites left.
+
+A guest and not a derivation, because these suites start nix daemons,
+pynixd daemons, ssh servers and http servers, and build into stores they
+make themselves. A build sandbox cleans up files and nothing else: a
+process that outlives its test keeps running on the machine that ran it.
+Measured while writing the first version of this: a UML guest leaked by
+an earlier session had been using a whole core for thirty-one hours.
+
+`always`, so it runs after a suite that failed -- a leak is most likely
+exactly then.
+"""
+
+from __future__ import annotations
+
+import json
+
+from uml_runner import Machines
+
+ALLOWED_LEAKS = 0
+"""The one leak this check has found belongs to `tests/parity`: a
+per-connection worker of a managed daemon, which `daemon.cc` gives its own
+session, so no group signal at either end reaches it. Issue #36. Raise this
+only with an issue number beside it, never to make a run pass."""
+
+LEAK_MARKERS = ("/tmp/pynixd-", "pynixd")
+"""A test store, or pynixd itself. Matched against the command line and
+the process name both, because `/proc/<pid>/stat` cuts a name at 15
+characters.
+
+Not `nix-daemon`: the guest's own is socket-activated, so it reads `0
+before, 1 after` every time and none of it is a leak."""
+
+
+async def test(vms: Machines) -> None:
+    before = vms.shared.get("before")
+    if before is None:
+        raise RuntimeError("no census from `prepare`, so there is nothing to compare against")
+    after = await vms.node.processes()
+
+    # By pid, not by count: a count that happens to match hides one
+    # process exiting while another leaks.
+    was_running = {p["pid"] for p in before}
+    leaked = [p for p in after if p["pid"] not in was_running and _is_a_leak(p)]
+
+    print(f"[test] {len(before)} processes before, {len(after)} after")
+    for p in leaked:
+        print(f"[test] LEAKED {p['pid']} (parent {p['ppid']}) {p['cmdline'][:120]}")
+
+    # Written whether or not anything leaked: a clean census is what a
+    # later one is read against.
+    (vms.artifacts / "node" / "processes.json").write_text(
+        json.dumps({"before": before, "after": after, "leaked": leaked}, indent=2) + "\n"
+    )
+
+    assert len(leaked) <= ALLOWED_LEAKS, (
+        f"the suites left {len(leaked)} processes holding a test store, and "
+        f"{ALLOWED_LEAKS} is what issue #36 accounts for. The whole census is "
+        "in processes.json beside this run's logs."
+    )
+
+
+def _is_a_leak(process: dict) -> bool:
+    return any(marker in process["cmdline"] or marker in process["name"] for marker in LEAK_MARKERS)
