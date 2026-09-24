@@ -83,12 +83,20 @@ uml.mkSession (
   {
     name = "pynixd-daemon";
 
+    /*
+      `mixed` by default: pynixd's guest on UML and the other two on QEMU.
+      pynixd is one asyncio loop, so UML's single CPU costs it nothing and
+      the host pays far less for the guest (measured on the guest suites:
+      1253 MiB against 2256). The client and nix-daemon's guest build,
+      which wants QEMU's CPU. `uml` or `qemu` puts all three on one.
+    */
     knobs.backend = {
       env = "PYNIXD_GUEST_BACKEND";
-      default = "qemu";
-      description = "qemu, or uml for a host without /dev/kvm";
+      default = "mixed";
+      description = "mixed, or uml or qemu for all three guests";
     };
-    backend = config.resolved.backend.value;
+    backend =
+      if config.resolved.backend.value == "mixed" then "qemu" else config.resolved.backend.value;
 
     pythonPath = [ ../../daemon/helpers ];
 
@@ -139,6 +147,7 @@ uml.mkSession (
           mode = "replace";
           inherit package;
         };
+        boot.uml.backend = lib.mkIf (config.resolved.backend.value == "mixed") "uml";
       };
       control = server "control";
       client = {
