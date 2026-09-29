@@ -54,8 +54,8 @@ let
     The interpreter of the development shell, resolved by pyproject.nix.
 
     **One set, and not a path of several.**  `nanopynix-testing` is the
-    oracle of `tests/differential`, and `nanopynix/settings.py:15` imports
-    `nanopynix_bindings`, so a PYTHONPATH assembled from store paths imports
+    oracle of `tests/differential`, and nanopynix imports the compiled
+    `huggorm_bindings`, so a PYTHONPATH assembled from store paths imports
     the packages and then fails on the first attribute.  Only a set that
     resolves the whole closure works, and mixing a package built in one set
     into another set's environment does not resolve either.
