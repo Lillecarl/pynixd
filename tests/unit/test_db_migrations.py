@@ -13,6 +13,7 @@ adding. Issue Lillecarl/nanopynix#166 wants that second table.
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from typing import TYPE_CHECKING
 
 import aiosqlite
@@ -39,7 +40,7 @@ def _nix_database(tmp_path: Path) -> Path:
     """A store database with the one Nix table that `LocalStoreDB.open` probes."""
     db_path = tmp_path / "nix" / "var" / "nix" / "db" / "db.sqlite"
     db_path.parent.mkdir(parents=True)
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.execute("CREATE TABLE ValidPaths (id INTEGER PRIMARY KEY, path TEXT UNIQUE NOT NULL)")
     return db_path
 
@@ -247,30 +248,23 @@ class TestBuildStatisticsSurviveARestart:
     async def test_a_recorded_duration_is_still_there_after_a_reopen(self, tmp_path: Path) -> None:
         _nix_database(tmp_path)
 
-        db = await LocalStoreDB.open(StoreLayout.chroot(tmp_path))
-        assert db.schema.usable, db.schema.reason
-        await db.record_build_stats(
-            pname="hello",
-            platform="aarch64-linux",
-            derivation_json="{}",
-            cpu_user_us=None,
-            cpu_system_us=None,
-            duration_ms=1234,
-        )
-        await db.close()
+        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
+            assert db.schema.usable, db.schema.reason
+            await db.record_build_stats(
+                pname="hello",
+                platform="aarch64-linux",
+                derivation_json="{}",
+                cpu_user_us=None,
+                cpu_system_us=None,
+                duration_ms=1234,
+            )
 
-        reopened = await LocalStoreDB.open(StoreLayout.chroot(tmp_path))
-        try:
+        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as reopened:
             assert await reopened.get_build_stats_hint("hello", "aarch64-linux") == 1234
-        finally:
-            await reopened.close()
 
     async def test_the_statistics_are_off_when_the_schema_is_not_usable(self, tmp_path: Path) -> None:
         """A store whose tables pynixd cannot bring up must not query them."""
         _nix_database(tmp_path)
-        db = await LocalStoreDB.open(StoreLayout.chroot(tmp_path))
-        try:
+        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
             db.schema = db_migrations.SchemaState(version=0, usable=False, reason="test")
             assert await db.get_build_stats_hint("hello", "aarch64-linux") is None
-        finally:
-            await db.close()

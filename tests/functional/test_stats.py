@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, closing
 from typing import TYPE_CHECKING
 
 import anyio
@@ -324,51 +324,49 @@ async def test_build_stats_hint_by_pname(tmp_path: Path) -> None:
     (pynixd_local_path / "nix/var/nix/db").mkdir(parents=True)
 
     db_file = pynixd_local_path / "nix/var/nix/db/db.sqlite"
-    conn = sqlite3.connect(db_file)
-    conn.execute("CREATE TABLE ValidPaths (id INTEGER PRIMARY KEY, path TEXT UNIQUE)")
-    conn.close()
+    with closing(sqlite3.connect(db_file)) as conn, conn:
+        conn.execute("CREATE TABLE ValidPaths (id INTEGER PRIMARY KEY, path TEXT UNIQUE)")
 
     pynixd_local = LocalDBStore(
         make_test_spec(store_id="local", store_path=pynixd_local_path, no_probe=True),
     )
-    db = await LocalStoreDB.open(StoreLayout.chroot(pynixd_local_path))
-    pynixd_local.db = db
+    async with await LocalStoreDB.open(StoreLayout.chroot(pynixd_local_path)) as db:
+        pynixd_local.db = db
 
-    assert db.active
+        assert db.active
 
-    # Record stats for two versions of the same package on same platform
-    await db.record_build_stats(
-        pname="testpkg",
-        platform="x86_64-linux",
-        derivation_json='{"builder":"bash","outputs":["out"]}',
-        cpu_user_us=None,
-        cpu_system_us=None,
-        duration_ms=500,
-    )
+        # Record stats for two versions of the same package on same platform
+        await db.record_build_stats(
+            pname="testpkg",
+            platform="x86_64-linux",
+            derivation_json='{"builder":"bash","outputs":["out"]}',
+            cpu_user_us=None,
+            cpu_system_us=None,
+            duration_ms=500,
+        )
 
-    await db.record_build_stats(
-        pname="testpkg",
-        platform="x86_64-linux",
-        derivation_json='{"builder":"bash","outputs":["out","bin"]}',
-        cpu_user_us=None,
-        cpu_system_us=None,
-        duration_ms=300,  # latest replaces via INSERT OR REPLACE
-    )
+        await db.record_build_stats(
+            pname="testpkg",
+            platform="x86_64-linux",
+            derivation_json='{"builder":"bash","outputs":["out","bin"]}',
+            cpu_user_us=None,
+            cpu_system_us=None,
+            duration_ms=300,  # latest replaces via INSERT OR REPLACE
+        )
 
-    # Same pname + platform should return the latest (300)
-    hint = await db.get_build_stats_hint("testpkg", "x86_64-linux")
-    assert hint == 300
+        # Same pname + platform should return the latest (300)
+        hint = await db.get_build_stats_hint("testpkg", "x86_64-linux")
+        assert hint == 300
 
-    # Different platform: falls back to cross-platform average (300)
-    hint = await db.get_build_stats_hint("testpkg", "aarch64-linux")
-    assert hint == 300
+        # Different platform: falls back to cross-platform average (300)
+        hint = await db.get_build_stats_hint("testpkg", "aarch64-linux")
+        assert hint == 300
 
-    # Different pname: no entry at all
-    hint = await db.get_build_stats_hint("otherpkg", "x86_64-linux")
-    assert hint is None
+        # Different pname: no entry at all
+        hint = await db.get_build_stats_hint("otherpkg", "x86_64-linux")
+        assert hint is None
 
-    log.info("build_stats_hint_by_pname_verified")
-    await db.close()
+        log.info("build_stats_hint_by_pname_verified")
 
 
 class CpuUtilTestStore(StatsTestStore):

@@ -20,6 +20,7 @@ import importlib.util
 import json
 import sqlite3
 import sys
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -94,35 +95,40 @@ def _make_store(root: Path, *, realisations: bool = True, pynixd_tables: bool = 
     """A test store at `<root>/<suite>/<test>`, with a database a reader can open."""
     db_path = root / "ca" / "build" / "var" / "nix" / "db" / "db.sqlite"
     db_path.parent.mkdir(parents=True)
-    db = sqlite3.connect(db_path)
-    db.execute("PRAGMA synchronous = OFF")
-    db.executescript(_SCHEMA)
-    if realisations:
-        db.executescript(_REALISATION_SCHEMA)
-    if pynixd_tables:
-        db.executescript(_PYNIXD_SCHEMA)
+    with closing(sqlite3.connect(db_path)) as db:
+        db.execute("PRAGMA synchronous = OFF")
+        db.executescript(_SCHEMA)
+        if realisations:
+            db.executescript(_REALISATION_SCHEMA)
+        if pynixd_tables:
+            db.executescript(_PYNIXD_SCHEMA)
 
-    db.execute(
-        "insert into ValidPaths (id, path, hash, registrationTime, deriver, narSize, ultimate, sigs, ca) "
-        "values (1, ?, 'sha256:aaa', 111, null, 208, 1, 'key:sig', 'text:sha256:bbb')",
-        (f"{_STORE}/aaa-builder.sh",),
-    )
-    db.execute(
-        "insert into ValidPaths (id, path, hash, registrationTime, deriver, narSize, ultimate, sigs, ca) "
-        "values (2, ?, 'sha256:ccc', 222, ?, 400, null, null, null)",
-        (f"{_STORE}/ccc-out", f"{_STORE}/ddd-thing.drv"),
-    )
-    db.execute("insert into Refs (referrer, reference) values (2, 1)")
-    db.execute("insert into DerivationOutputs (drv, id, path) values (1, 'out', ?)", (f"{_STORE}/ccc-out",))
-    if realisations:
-        # Two rows for one output, which a real store does hold. `ca/build` of
-        # Nix 2.34 leaves two identical rows for one `sha256:...!out`.
-        db.execute("insert into Realisations (id, drvPath, outputName, outputPath) values (1, 'sha256:ddd', 'out', 2)")
-        db.execute("insert into Realisations (id, drvPath, outputName, outputPath) values (2, 'sha256:ddd', 'out', 2)")
-        db.execute("insert into Realisations (id, drvPath, outputName, outputPath) values (3, 'sha256:eee', 'out', 1)")
-        db.execute("insert into RealisationsRefs (referrer, realisationReference) values (3, 1)")
-    db.commit()
-    db.close()
+        db.execute(
+            "insert into ValidPaths (id, path, hash, registrationTime, deriver, narSize, ultimate, sigs, ca) "
+            "values (1, ?, 'sha256:aaa', 111, null, 208, 1, 'key:sig', 'text:sha256:bbb')",
+            (f"{_STORE}/aaa-builder.sh",),
+        )
+        db.execute(
+            "insert into ValidPaths (id, path, hash, registrationTime, deriver, narSize, ultimate, sigs, ca) "
+            "values (2, ?, 'sha256:ccc', 222, ?, 400, null, null, null)",
+            (f"{_STORE}/ccc-out", f"{_STORE}/ddd-thing.drv"),
+        )
+        db.execute("insert into Refs (referrer, reference) values (2, 1)")
+        db.execute("insert into DerivationOutputs (drv, id, path) values (1, 'out', ?)", (f"{_STORE}/ccc-out",))
+        if realisations:
+            # Two rows for one output, which a real store does hold. `ca/build` of
+            # Nix 2.34 leaves two identical rows for one `sha256:...!out`.
+            db.execute(
+                "insert into Realisations (id, drvPath, outputName, outputPath) values (1, 'sha256:ddd', 'out', 2)"
+            )
+            db.execute(
+                "insert into Realisations (id, drvPath, outputName, outputPath) values (2, 'sha256:ddd', 'out', 2)"
+            )
+            db.execute(
+                "insert into Realisations (id, drvPath, outputName, outputPath) values (3, 'sha256:eee', 'out', 1)"
+            )
+            db.execute("insert into RealisationsRefs (referrer, realisationReference) values (3, 1)")
+        db.commit()
     return db_path
 
 

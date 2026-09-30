@@ -116,9 +116,9 @@ async def test_a_store_root_pynixd_cannot_write_yields_an_inactive_instance() ->
     assert not unwritable.exists(), "this test needs a root that is not there"
 
     assert resolve_db_path(StoreLayout.chroot(unwritable)) is None
-    db = await LocalStoreDB.open(StoreLayout.chroot(unwritable))
-    assert not db.active
-    assert db.db_path is None
+    async with await LocalStoreDB.open(StoreLayout.chroot(unwritable)) as db:
+        assert not db.active
+        assert db.db_path is None
 
 
 @pytest.mark.anyio

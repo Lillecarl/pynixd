@@ -27,7 +27,7 @@ import os
 import time
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
 
 import aiosqlite
 import anyio
@@ -127,7 +127,11 @@ class LocalStoreDB:
     Operation types implement their own DB logic via ``execute_db(db)``.
     This class only manages connections and dispatches.
 
-    Use the async factory ``await LocalStoreDB.open(layout)`` to create.
+    Use the async factory ``await LocalStoreDB.open(layout)`` to create. A
+    caller that holds it for one block writes ``async with await
+    LocalStoreDB.open(layout) as db:``, so it is closed on every way out.
+    One left open keeps an aiosqlite thread alive, and the interpreter
+    then cannot exit.
     """
 
     def __init__(
@@ -166,6 +170,12 @@ class LocalStoreDB:
         self._idle_conns: list[aiosqlite.Connection] = []
         self._pool_lock = anyio.Lock()
         self._sem = anyio.Semaphore(max_conns)
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        await self.close()
 
     @classmethod
     def inactive(

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from contextlib import closing
 from typing import TYPE_CHECKING
 
 import pytest
@@ -46,7 +47,7 @@ def _store_with_a_closure(tmp_path: Path) -> Path:
     """A store database where `hello` references `libc`."""
     db_path = tmp_path / "nix" / "var" / "nix" / "db" / "db.sqlite"
     db_path.parent.mkdir(parents=True)
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.execute(
             "CREATE TABLE ValidPaths ("
             "id INTEGER PRIMARY KEY, path TEXT UNIQUE NOT NULL, "
@@ -98,40 +99,30 @@ class TestFlushingTheReferences:
     async def test_a_marked_path_reaches_the_table_with_its_closure(self, tmp_path: Path) -> None:
         """`libc` was never named, and it is referenced because `hello` is."""
         _store_with_a_closure(tmp_path)
-        db = await LocalStoreDB.open(StoreLayout.chroot(tmp_path))
-        try:
+        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
             db.mark_path(HELLO)
             await db.flush_references()
 
             assert set(await _access_times(db)) == {HELLO, LIBC}
-        finally:
-            await db.close()
 
     async def test_the_registration_time_is_refreshed_as_well(self, tmp_path: Path) -> None:
         """Both, and on purpose. `nix-collect-garbage` reads the Nix column."""
         _store_with_a_closure(tmp_path)
-        db = await LocalStoreDB.open(StoreLayout.chroot(tmp_path))
-        try:
+        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
             db.mark_path(HELLO)
             await db.flush_references()
 
             assert all(t > 0 for t in (await _registration_times(db)).values())
-        finally:
-            await db.close()
 
     async def test_marking_nothing_writes_nothing(self, tmp_path: Path) -> None:
         _store_with_a_closure(tmp_path)
-        db = await LocalStoreDB.open(StoreLayout.chroot(tmp_path))
-        try:
+        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
             await db.flush_references()
             assert await _access_times(db) == {}
-        finally:
-            await db.close()
 
     async def test_a_second_reference_moves_the_time_forward(self, tmp_path: Path) -> None:
         _store_with_a_closure(tmp_path)
-        db = await LocalStoreDB.open(StoreLayout.chroot(tmp_path))
-        try:
+        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
             db.mark_path(HELLO)
             await db.flush_references()
             async with db.acquire_conn() as conn:
@@ -142,26 +133,20 @@ class TestFlushingTheReferences:
             await db.flush_references()
 
             assert all(t > 1 for t in (await _access_times(db)).values())
-        finally:
-            await db.close()
 
     async def test_the_pending_set_is_emptied(self, tmp_path: Path) -> None:
         _store_with_a_closure(tmp_path)
-        db = await LocalStoreDB.open(StoreLayout.chroot(tmp_path))
-        try:
+        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
             db.mark_paths([HELLO, LIBC])
             await db.flush_references()
             assert db.pending_references == set()
-        finally:
-            await db.close()
 
 
 @pytest.mark.anyio
 class TestAskingTheTable:
     async def test_an_old_path_is_reported_and_a_fresh_one_is_not(self, tmp_path: Path) -> None:
         _store_with_a_closure(tmp_path)
-        db = await LocalStoreDB.open(StoreLayout.chroot(tmp_path))
-        try:
+        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
             db.mark_path(HELLO)
             await db.flush_references()
             async with db.acquire_conn() as conn:
@@ -175,14 +160,11 @@ class TestAskingTheTable:
 
             assert stale is not None
             assert {str(p) for p in stale} == {LIBC}
-        finally:
-            await db.close()
 
     async def test_a_path_the_store_no_longer_holds_is_pruned(self, tmp_path: Path) -> None:
         """The join that keeping the table inside Nix's database buys."""
         _store_with_a_closure(tmp_path)
-        db = await LocalStoreDB.open(StoreLayout.chroot(tmp_path))
-        try:
+        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
             async with db.acquire_conn() as conn:
                 await conn.execute(
                     f"INSERT INTO {PATH_ACCESS_TABLE} (path, lastReferencedAt) VALUES (?, 1)",
@@ -194,15 +176,10 @@ class TestAskingTheTable:
 
             assert removed == 1
             assert GONE not in await _access_times(db)
-        finally:
-            await db.close()
 
     async def test_pruning_an_untouched_table_removes_nothing(self, tmp_path: Path) -> None:
         _store_with_a_closure(tmp_path)
-        db = await LocalStoreDB.open(StoreLayout.chroot(tmp_path))
-        try:
+        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
             db.mark_path(HELLO)
             await db.flush_references()
             assert await db.prune_path_access() == 0
-        finally:
-            await db.close()
