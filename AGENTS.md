@@ -42,13 +42,24 @@ Pynixd will adversise 1.38 support even if local_store is 1.35 and translate whe
 - **Transparency**: No-op or cached operations MUST inject a `StderrNext` message (e.g., `"pynixd: IsValidPath (SQLite hit)"`) into the buffer for transparency.
 
 ## 4. Engineering Standards
-- **Validation**: before committing, run all five:
+- **Validation**: before committing, the gates and the guest session:
 
       nix build --file . checks.format checks.lint checks.types --no-link
-      nix develop --impure --file shell.nix --command pytest tests/functional tests/unit
-      nix develop --impure --file shell.nix --command pytest nix-daemon-protocol/tests
-      nix develop --impure --file shell.nix --command pytest tests/differential
-      nix develop --impure --file shell.nix --command pytest tests/parity
+      nix run --file . tests.guest.driver -- --out ./out
+
+  `tests.guest` runs the five suites (unit, protocol, parity, functional,
+  differential) at once, each in a vivarium container guest: 87 s for the
+  session, 2 s of it booting, after evaluation and the build of a changed
+  tree. The host's `nix.conf`, `/tmp` and daemons cannot reach the guests. One suite:
+  `-- --out ./out --only prepare --only unit`. Evidence is in `./out`:
+  `junit.xml`, `events.jsonl`, and each suite's log under
+  `artifacts/<suite>/`. Agents start it through the vivarium MCP (`start`
+  with `attr = "tests.guest"`) and watch the `monitor` command.
+
+  **Do not run the suites with host pytest** (`nix develop ... pytest`).
+  It reads the host's config: measured on dynhetz, `use-cgroups` killed
+  every managed nix-daemon, so functional and differential errored and
+  the wirelog tests waited out 30 s timeouts.
 
   The `checks.*` derivations are gates: non-mutating, and each fails the
   build. `nix run --file . fix` is the rewriter — never a gate.
@@ -239,14 +250,15 @@ The pytest says what pynixd does. The marker says why the two differ, and it
 is the register that a later reader reads to reverse the decision.
 
 ### Running Validation Commands
-- **Single pytest invocation only**: NEVER run more than one `pytest` process at a time in this repository. Functional tests share session store paths, daemon sockets, and `/tmp/pynixd-stores` state; concurrent pytest runs can race each other and produce misleading failures that look like real regressions.
+- **Run the suites in `tests.guest`**, not with host pytest; section 4 says why. Each suite has a guest of its own, so they run at once without sharing store paths or sockets.
+- **Single host pytest only**: if you run host pytest anyway, NEVER run more than one `pytest` process at a time. Functional tests share session store paths, daemon sockets, and `/tmp/pynixd-stores` state; concurrent host runs race each other and produce misleading failures that look like real regressions.
 - **NEVER pipe away output** from the `checks.*` build or from `pytest` — the full output contains failure details you need to diagnose issues.
 - If the user explicitly tells you not to pipe or select on output, YOU MUST DO WHAT THEY SAY. No exceptions. Do not override their instruction with this rule's redirect-to-file fallback — they want to see the output directly.
 - If output is too large for context (failing tests produce heaps of logs), you may redirect to a file: `pytest ... > /tmp/test-output.txt 2>&1`, then read specific sections. But if the user told you not to redirect, you must not redirect.
 - Do NOT use `tee` when redirecting — it doubles context consumption.
 - If you must limit output, use `tail -N` on the file afterwards, never pipe the command itself.
 - You do NOT need to specify pytest timeout, the configured 120s is enough per test.
-- **Timeouts**: the functional suite takes 3min+ (measured 166s) — set timeout=300 (5 min) for Bash tool calls. Unit tests (`pytest tests/unit/`) complete in seconds — timeout=60000 is fine.
+- **Timings in container guests** (one run): unit 13 s, protocol 3 s, parity 18 s, differential 25 s, functional 75 s. Run the session in the background and let the monitor report.
 
 ## 7. User Direction Supersedes All Rules
 
