@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from tests._conftest.constants import HELLO
 from tests.conftest import (
     CLIENT_BIN,
     run_subproc,
@@ -23,7 +24,7 @@ async def test_copy(pynixd_server: Server):
     - RegisterDrvOutput: Registers derivation output
     """
 
-    await run_subproc([CLIENT_BIN, "build", "nixpkgs#hello", "--no-link"])
+    await run_subproc([CLIENT_BIN, "build", *HELLO, "--no-link"])
     await run_subproc(
         [
             CLIENT_BIN,
@@ -32,6 +33,6 @@ async def test_copy(pynixd_server: Server):
             "daemon",
             "--to",
             server_uri(pynixd_server),
-            "nixpkgs#hello",
+            *HELLO,
         ],
     )

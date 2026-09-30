@@ -12,6 +12,7 @@ import structlog
 from pynixd.serde import QueryPathInfoRequest
 from pynixd.store import LocalSocketStore
 from pynixd.store_path import StorePath
+from tests._conftest.constants import HELLO
 from tests.conftest import (
     CLIENT_BIN,
     SESSION_HTTP_PASS,
@@ -31,14 +32,14 @@ HTTP_AUTH_HEADER = "Basic " + base64.b64encode(f"{SESSION_HTTP_USER}:{SESSION_HT
 
 
 async def get_hello_path() -> StorePath:
-    """Build nixpkgs#hello and return its store path."""
+    """Build hello from <nixpkgs> and return its store path."""
     rc, stdout, stderr, _ = await run_subproc(
-        [str(CLIENT_BIN), "path-info", "nixpkgs#hello"],
+        [str(CLIENT_BIN), "path-info", *HELLO],
     )
     if rc != 0:
-        await run_subproc([str(CLIENT_BIN), "build", "nixpkgs#hello"])
+        await run_subproc([str(CLIENT_BIN), "build", *HELLO])
         rc, stdout, stderr, _ = await run_subproc(
-            [str(CLIENT_BIN), "path-info", "nixpkgs#hello"],
+            [str(CLIENT_BIN), "path-info", *HELLO],
         )
     return StorePath(stdout.strip())
 

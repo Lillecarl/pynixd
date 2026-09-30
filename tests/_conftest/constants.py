@@ -28,6 +28,15 @@ _log_dir_key = pytest.StashKey[Path]()
 
 STORE_PREFIX = Path("/tmp/pynixd-stores")
 SESSION_STORE_PREFIX = Path("/tmp/pynixd-session-stores")
+HELLO = ("--file", "<nixpkgs>", "hello")
+"""A real package with a real closure, as installables of `nix`.
+
+`<nixpkgs>` and not `nixpkgs#hello`: the flake registry resolves that to
+an unpinned channel, fetched over the network on every machine, so the
+tests needed a network and built whatever the channel said that day. A
+guest has no network, and the channel's `hello` sent it to build 572
+derivations from the bootstrap seed. Issue #57.
+"""
 TMP_PREFIX = "/tmp/pynixd-test/"
 """Where each test's `tmp_path` goes: a directory of its own, so the sweep
 after each test lists the suite's leftovers and not the host's `/tmp`.
