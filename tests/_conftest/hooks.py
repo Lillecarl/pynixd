@@ -13,7 +13,7 @@ import anyio
 import pytest
 import structlog
 
-from tests._conftest.constants import _log_dir_key
+from tests._conftest.constants import TMP_PREFIX, _log_dir_key
 
 log = structlog.get_logger(__name__)
 
@@ -57,7 +57,7 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     #
     # pytest keeps the last three roots of its own and removes the rest, so
     # nothing here has to.
-    rmtree_robust_glob("/tmp/pynixd-test-*")
+    rmtree_robust_glob(f"{TMP_PREFIX}*")
 
 
 def pytest_terminal_summary(

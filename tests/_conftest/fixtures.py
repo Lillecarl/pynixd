@@ -19,6 +19,7 @@ from tests._conftest.constants import (
     HAS_PYINSTRUMENT,
     SESSION_STORE_PREFIX,
     STORE_PREFIX,
+    TMP_PREFIX,
     ConsoleRenderer,
     Profiler,
     _default_store_ids,
@@ -124,7 +125,7 @@ def cleanup_stores():
     """Remove any leftover test stores before and after each test."""
     yield
     rmtree_robust_glob(f"{STORE_PREFIX}/*")
-    rmtree_robust_glob("/tmp/pynixd-test-*")
+    rmtree_robust_glob(f"{TMP_PREFIX}*")
 
 
 # ── Non-autouse fixtures ──────────────────────────────────────────
@@ -136,7 +137,6 @@ def anyio_backend() -> tuple[str, dict[str, bool]]:
     return ("asyncio", {"use_uvloop": True})
 
 
-TMP_PREFIX = "/tmp/pynixd-test-"
 _RANDOM_SUFFIX = len("-xxxxxxxx")
 _SOCKET_UNDER_A_TEST_STORE = "/store/nix/var/nix/daemon-socket/pynixd-nix"
 

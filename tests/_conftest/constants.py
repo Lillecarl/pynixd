@@ -28,6 +28,12 @@ _log_dir_key = pytest.StashKey[Path]()
 
 STORE_PREFIX = Path("/tmp/pynixd-stores")
 SESSION_STORE_PREFIX = Path("/tmp/pynixd-session-stores")
+TMP_PREFIX = "/tmp/pynixd-test/"
+"""Where each test's `tmp_path` goes: a directory of its own, so the sweep
+after each test lists the suite's leftovers and not the host's `/tmp`.
+Measured with 14,013 entries in `/tmp`: a glob of `/tmp/pynixd-test-*` after
+each test cost 5.5 of 27 seconds. Still 17 characters, so `NAME_BUDGET`
+does not move."""
 # Anchored on this file, and not on the working directory. The suite ran
 # from `pynixd/` alone until issue Lillecarl/nanopynix#131, and `nix build --file tests/nix`
 # then resolved against the checkout root and reported that the path does
