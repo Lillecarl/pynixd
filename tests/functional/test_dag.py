@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-import pytest
 import structlog
 
 from pynixd.store import get_current_system
@@ -22,22 +21,10 @@ if TYPE_CHECKING:
 
     from pynixd import Server
 
-from tests.test_features import TestFeatures as F
 
 log = structlog.get_logger(__name__)
 
 
-@pytest.mark.covers(
-    F.DAG_BUILD
-    | F.REGULAR
-    | F.BUILD_DERIVATION
-    | F.BUILD_PATHS
-    | F.BUILD_PATHS_WITH_RESULTS
-    | F.GOAL_DAG
-    | F.GOAL_BUILD
-    | F.GOAL_BUILD_QUEUE
-    | F.STORE_LOCAL
-)
 async def test_builders(pynixd_server: Server, tmp_path: Path) -> None:
     """Build nix/standard.dag via --builders.
 

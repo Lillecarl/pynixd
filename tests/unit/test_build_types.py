@@ -8,10 +8,7 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from pynixd.serde import BuildMode, BuildResult, BuildResultStatus, BuiltOutput, StorePath
-from tests.test_features import TestFeatures as F
 
 # This repository holds two classes named `StorePath`. `pynixd.store_path`
 # holds the domain one, which strips the `/nix/store/` prefix and keeps an
@@ -28,7 +25,6 @@ from tests.test_features import TestFeatures as F
 StorePath = StorePath
 
 
-@pytest.mark.covers(F.BUILD_TYPES)
 class TestBuildResultStatus:
     def test_built(self):
         assert BuildResultStatus.BUILT == 0

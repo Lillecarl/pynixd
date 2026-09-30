@@ -16,7 +16,6 @@ from pynixd.exceptions import ResourceExhaustedError
 from pynixd.monitor import ResourceMonitor
 from pynixd.store.local import LocalSocketStore
 from tests.conftest import make_test_spec
-from tests.test_features import TestFeatures as F
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -32,7 +31,6 @@ class MockMonitor(ResourceMonitor):
             await anyio.sleep(1)
 
 
-@pytest.mark.covers(F.SERVER_PSI_GATING | F.STORE_LOCAL)
 async def test_local_socket_store_gating(tmp_path: Path) -> None:
     """Test that LocalSocketStore gates connections based on memory gate state."""
 

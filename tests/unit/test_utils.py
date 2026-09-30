@@ -8,13 +8,9 @@ from __future__ import annotations
 
 import hashlib
 
-import pytest
-
 from pynixd.utils import NIX32_CHARS, nix32_encode
-from tests.test_features import TestFeatures as F
 
 
-@pytest.mark.covers(F.UTILS_NIX32 | F.UTILS_CRYPTO)
 class TestNix32Encode:
     def test_empty_bytes(self):
         assert nix32_encode(b"") == ""

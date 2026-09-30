@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-import pytest
 import structlog
 
 from pynixd.store import get_current_system
@@ -17,7 +16,6 @@ from tests.conftest import (
     server_uri,
     set_log_levels,
 )
-from tests.test_features import TestFeatures as F
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -29,19 +27,6 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 
-@pytest.mark.covers(
-    F.REGULAR
-    | F.TEXT_OUTPUT
-    | F.BUILD_DERIVATION
-    | F.BUILD_PATHS
-    | F.BUILD_PATHS_WITH_RESULTS
-    | F.GOAL_BUILD
-    | F.GOAL_DAG
-    | F.GOAL_BUILD_QUEUE
-    | F.GOAL_SCHEDULER
-    | F.STORE_SSH
-    | F.STORE_REVERSE
-)
 async def test_builders(
     profiler: pyinstrument.Profiler,
     pynixd_server: Server,
@@ -87,18 +72,6 @@ async def test_builders(
     assert out_path.startswith("/nix/store/"), f"Expected store path, got: {out_path}"
 
 
-@pytest.mark.covers(
-    F.REGULAR
-    | F.TEXT_OUTPUT
-    | F.BUILD_DERIVATION
-    | F.BUILD_PATHS
-    | F.BUILD_PATHS_WITH_RESULTS
-    | F.GOAL_BUILD
-    | F.GOAL_DAG
-    | F.GOAL_BUILD_QUEUE
-    | F.GOAL_SCHEDULER
-    | F.STORE_LOCAL
-)
 async def test_store(
     profiler: pyinstrument.Profiler,
     pynixd_server: Server,

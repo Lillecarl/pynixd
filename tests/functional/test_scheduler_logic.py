@@ -16,7 +16,6 @@ from pynixd.serde import (
 from pynixd.store_path import StorePath
 from tests.conftest import serde_path
 from tests.functional.mock_store import MockStore
-from tests.test_features import TestFeatures as F
 
 """
 Deterministic Scheduler Logic Tests
@@ -31,16 +30,6 @@ PSI-aware routing) with zero flakiness and high speed.
 """
 
 
-@pytest.mark.covers(
-    F.GOAL_SCHEDULER
-    | F.GOAL_BUILD_QUEUE
-    | F.GOAL_DAG
-    | F.GOAL_BUILD
-    | F.BUILD_DERIVATION
-    | F.BUILD_PATHS
-    | F.BUILD_PATHS_WITH_RESULTS
-    | F.STORE_LOCAL
-)
 @pytest.mark.xfail(reason="missing BuildDerivationRequest mock response in MockStore — pre-existing")
 async def test_scheduler_load_balancing():
     """Verify that the scheduler correctly assigns builds to idle remote stores.

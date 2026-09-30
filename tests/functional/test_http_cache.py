@@ -6,7 +6,6 @@ import random
 from typing import TYPE_CHECKING
 
 import aiohttp
-import pytest
 import structlog
 
 from pynixd.serde import QueryAllValidPathsRequest, QueryPathInfoRequest, StorePath as StorePath
@@ -18,7 +17,6 @@ from tests.conftest import (
     rmtree_robust,
     run_subproc,
 )
-from tests.test_features import TestFeatures as F
 
 if TYPE_CHECKING:
     from pynixd import Server
@@ -52,7 +50,6 @@ async def _pick_random_path(store: DaemonStore) -> StorePath:
     return all_paths[0]
 
 
-@pytest.mark.covers(F.SERVER_HTTP | F.STORE_HTTP_BINARY_CACHE | F.NAR_FROM_PATH | F.QUERY_PATH_INFO | F.STORE_LOCAL)
 async def test_narinfo(pynixd_server: Server) -> None:
     """Test fetching .narinfo from the HTTP cache."""
     local_store = pynixd_server.local_store

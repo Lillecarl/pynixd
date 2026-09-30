@@ -55,12 +55,6 @@ CLIENT_BIN: Path = NIX_BIN
 
 def pytest_addoption(parser):
     parser.addoption(
-        "--no-test-subsumption",
-        action="store_true",
-        default=False,
-        help="Disable test subsumption (run full suite even if features are already covered)",
-    )
-    parser.addoption(
         "--async-test-timeout",
         type=float,
         default=120.0,
@@ -73,11 +67,6 @@ def pytest_configure(config):
     asyncio_plugin = config.pluginmanager.get_plugin("asyncio")
     if asyncio_plugin is not None:
         config.pluginmanager.unregister(asyncio_plugin)
-
-    config.addinivalue_line(
-        "markers",
-        "covers(features): TestFeatures flag mask covered by this test. Used by test subsumption sorting and skipping.",
-    )
 
 
 # ── URI helpers ───────────────────────────────────────────────────

@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import pytest
 import structlog
 
 from tests.conftest import (
@@ -26,12 +25,10 @@ from tests.conftest import (
 if TYPE_CHECKING:
     from pynixd import Server
 
-from tests.test_features import TestFeatures as F
 
 log = structlog.get_logger(__name__)
 
 
-@pytest.mark.covers(F.COLLECT_GARBAGE | F.SERVER_RBAC | F.STORE_LOCAL)
 async def test_collect_garbage_admin(pynixd_server: Server) -> None:
     """GC as admin user should succeed.
 

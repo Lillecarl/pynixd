@@ -18,7 +18,6 @@ from nix_daemon_protocol.wire_time import Time
 from pynixd.serde import ValidPathInfo
 from pynixd.signing import SecretKey, fingerprint, get_default_signing_key, sign_path_info
 from pynixd.store_path import StorePath
-from tests.test_features import TestFeatures as F
 
 _SEED_32 = b"\x00" * 32
 _SEED_32_B64 = base64.b64encode(_SEED_32).decode()
@@ -27,7 +26,6 @@ _SEED_64 = _SEED_32 + _verify_key
 _SEED_64_B64 = base64.b64encode(_SEED_64).decode()
 
 
-@pytest.mark.covers(F.SIGNING)
 class TestSecretKeyParse:
     def test_parse_32_byte_seed(self):
         key = SecretKey._parse(f"test:{_SEED_32_B64}")
@@ -103,10 +101,6 @@ _DIGEST_32 = "01g18qgknwjmai8jxw601x33d666azxz6m159gs5brbm1aq6iy66"
 
 class TestFingerprint:
     """The string that a signature covers, and the form of the NAR hash in it.
-
-    No `covers` marker. That marker means "this test subsumes the feature", and
-    `tests/_conftest/subsumption.py` then skips every later test of the same
-    feature. These state one rule each, and each one must run.
 
     **A fingerprint carries the base-32 digest, and the wire carries base 16.**
     `path-info.cc:48` writes `narHash.to_string(HashFormat::Nix32, true)`, and

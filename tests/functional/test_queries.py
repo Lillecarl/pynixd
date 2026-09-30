@@ -14,7 +14,6 @@ from tests.conftest import (
     run_subproc,
     server_uri,
 )
-from tests.test_features import TestFeatures as F
 
 if TYPE_CHECKING:
     import pyinstrument
@@ -71,7 +70,6 @@ async def query_env(pynixd_server: Server):
     return pynixd_server, uri, out_path
 
 
-@pytest.mark.covers(F.QUERY_REFERRERS | F.STORE_LOCAL)
 @pytest.mark.legacy_nix_commands
 async def test_query_referrers(profiler: pyinstrument.Profiler, query_env) -> None:
     """Verify QueryReferrers via 'nix-store -q --referrers'.
@@ -136,7 +134,6 @@ async def test_query_referrers(profiler: pyinstrument.Profiler, query_env) -> No
     assert dep_path in referrers
 
 
-@pytest.mark.covers(F.QUERY_PATH_FROM_HASH_PART | F.STORE_LOCAL)
 async def test_query_path_from_hash_part(
     profiler: pyinstrument.Profiler,
     query_env,
@@ -166,7 +163,6 @@ async def test_query_path_from_hash_part(
     assert stdout.strip() == out_path
 
 
-@pytest.mark.covers(F.QUERY_VALID_DERIVERS | F.STORE_LOCAL)
 @pytest.mark.legacy_nix_commands
 async def test_query_valid_derivers(profiler: pyinstrument.Profiler, query_env) -> None:
     """Verify QueryValidDerivers via 'nix-store -q --deriver'.
@@ -193,7 +189,6 @@ async def test_query_valid_derivers(profiler: pyinstrument.Profiler, query_env) 
     assert deriver.startswith("/nix/store/")
 
 
-@pytest.mark.covers(F.QUERY_MISSING | F.STORE_LOCAL)
 async def test_query_missing(profiler: pyinstrument.Profiler, query_env) -> None:
     """Verify QueryMissing via 'nix build --dry-run'.
 
@@ -220,7 +215,6 @@ async def test_query_missing(profiler: pyinstrument.Profiler, query_env) -> None
     assert rc == 0
 
 
-@pytest.mark.covers(F.FIND_ROOTS | F.STORE_LOCAL)
 @pytest.mark.legacy_nix_commands
 async def test_find_roots(profiler: pyinstrument.Profiler, query_env) -> None:
     """Verify FindRoots via 'nix-store --gc --print-roots'.

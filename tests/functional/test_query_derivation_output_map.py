@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
-import pytest
 import structlog
 
 from tests.conftest import CLIENT_BIN, TEST_NIX, run_subproc, server_uri
@@ -17,12 +16,10 @@ from tests.conftest import CLIENT_BIN, TEST_NIX, run_subproc, server_uri
 if TYPE_CHECKING:
     from pynixd import Server
 
-from tests.test_features import TestFeatures as F
 
 log = structlog.get_logger(__name__)
 
 
-@pytest.mark.covers(F.QUERY_DERIVATION_OUTPUT_MAP | F.STORE_LOCAL)
 async def test_query_derivation_output_map(pynixd_server: Server) -> None:
     """Build a derivation and query its output map.
 

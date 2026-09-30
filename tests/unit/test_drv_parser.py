@@ -24,7 +24,6 @@ from pynixd.serde import OutputKind
 from pynixd.store_layout import StoreLayout
 from pynixd.store_path import DrvOutput, StorePath
 from tests.conftest import NIX_BIN
-from tests.test_features import TestFeatures as F
 
 if TYPE_CHECKING:
     from nix_daemon_protocol.aliases import OutputMap
@@ -162,7 +161,6 @@ def _canonical_drv_key(canonical: dict[str, Any]) -> str:
 # ── Live probes tests ──────────────────────────────────────────────────────
 
 
-@pytest.mark.covers(F.DRV_PARSE | F.DRV_SERIALIZE)
 class TestLiveProbes:
     """Tests using real derivations from tests/nix/drv-probes.nix.
 
@@ -275,7 +273,6 @@ class TestLiveProbes:
 # ── Manufactured edge cases ────────────────────────────────────────────────
 
 
-@pytest.mark.covers(F.DRV_PARSE)
 class TestManufacturedExamples:
     """Tests using static inline strings for parser features hard to produce via nix."""
 
@@ -316,7 +313,6 @@ class TestManufacturedExamples:
         assert parsed.required_system_features == {"kvm", "big-parallel"}
 
 
-@pytest.mark.covers(F.DRV_PARSE | F.DYN_CHILD_MAP)
 class TestDrvWithVersion:
     """Tests for the DrvWithVersion ATerm format.
 
@@ -344,7 +340,6 @@ class TestDrvWithVersion:
         assert parsed.dynamic_input_drvs[StorePath("/nix/store/dep.drv")] == ChildMapNode()
 
 
-@pytest.mark.covers(F.DRV_PARSE | F.DRV_HASH_DERIVATION_MODULO | F.DRV_COMPUTE_STOREPATH)
 class TestDerivationProperties:
     """Tests for Derivation property methods with explicit data."""
 
@@ -383,10 +378,6 @@ class TestDerivationProperties:
 
 class TestOutputClassification:
     """What kind each output is, and what follows from that.
-
-    No `covers` marker. That marker means "this class covers these features",
-    and `tests/_conftest/subsumption.py` then skips every test after the first
-    one that passes. These state one rule each, and each one must run.
 
     **`OutputKind` is the one place that classifies an output.** Three callers
     read the two raw fields of the `.drv` instead, and each one got a
@@ -484,7 +475,6 @@ class TestOutputClassification:
         assert Derivation(outputs=[deferred], input_drvs=inputs).should_resolve
 
 
-@pytest.mark.covers(F.DRV_PARSE)
 class TestParseDrvEdgeCases:
     def test_invalid_syntax(self):
         with pytest.raises(ValueError):  # noqa: PT011
@@ -503,7 +493,6 @@ class TestParseDrvEdgeCases:
             parse_drv("")
 
 
-@pytest.mark.covers(F.DRV_PARSE | F.DRV_SERIALIZE)
 class TestToBasicDerivation:
     """to_basic_derivation with mocked output_cache avoids disk I/O."""
 
@@ -534,7 +523,6 @@ class TestToBasicDerivation:
             assert StorePath(path=str(drv_path)) in result.input_srcs
 
 
-@pytest.mark.covers(F.DRV_PARSE)
 class TestDrvOutputFields:
     def test_fields(self):
         o = DrvOutput(hash_algo="sha256", hash_value="xyz", output_name="out", path="/nix/store/a")
@@ -545,7 +533,6 @@ class TestDrvOutputFields:
         assert o.name == "out"
 
 
-@pytest.mark.covers(F.DRV_PARSE | F.DRV_SERIALIZE)
 class TestToJson:
     def test_serializable(self, probes):
         _, drv_content, _ = probes["simple"]
@@ -560,7 +547,6 @@ class TestToJson:
         assert "path" not in out_entry
 
 
-@pytest.mark.covers(F.DRV_PARSE | F.DRV_SERIALIZE)
 class TestSerialize:
     """Tests for Derivation.serialize() roundtrips."""
 

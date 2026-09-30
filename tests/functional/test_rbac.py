@@ -14,7 +14,6 @@ from tests.conftest import (
     ssh_user_uri,
     unix_session_uri,
 )
-from tests.test_features import TestFeatures as F
 
 if TYPE_CHECKING:
     from pynixd import Server
@@ -22,7 +21,6 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 
-@pytest.mark.covers(F.SERVER_RBAC | F.SERVER_SSH | F.ADD_PERM_ROOT | F.ADD_INDIRECT_ROOT | F.SET_OPTIONS | F.STORE_SSH)
 @pytest.mark.xfail(reason="nix 2.34.7 returns exit code 0 even on access-denied errors")
 async def test_rbac_ssh_admin_vs_user(pynixd_server: Server) -> None:
     """Verify that SSH admin can GC, but SSH user cannot.

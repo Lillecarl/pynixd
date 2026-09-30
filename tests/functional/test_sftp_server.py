@@ -5,10 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import asyncssh
-import pytest
 from asyncssh.constants import FX_NO_SUCH_FILE, FX_PERMISSION_DENIED
-
-from tests.test_features import TestFeatures as F
 
 if TYPE_CHECKING:
     from pynixd import Server
@@ -42,7 +39,6 @@ async def _sftp_client(server: Server) -> _SFTPSession:
     return _SFTPSession(conn, sftp)
 
 
-@pytest.mark.covers(F.SERVER_SFTP)
 async def test_sftp_stat_allowed_path(pynixd_server: Server) -> None:
     """stat() should succeed on allowed paths like /proc/meminfo."""
     async with await _sftp_client(pynixd_server) as sftp:

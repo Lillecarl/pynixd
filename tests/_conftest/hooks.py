@@ -13,9 +13,7 @@ import anyio
 import pytest
 import structlog
 
-from tests._conftest.constants import _covered_features_key, _log_dir_key
-from tests._conftest.subsumption import _sort_by_subsumption
-from tests.test_features import TestFeatures
+from tests._conftest.constants import _log_dir_key
 
 log = structlog.get_logger(__name__)
 
@@ -77,11 +75,7 @@ def pytest_terminal_summary(
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]):
-    """Wrap each async test in a deadline, and sort by subsumption."""
-
-    # Sort by descending covers-popcount so broad tests run first.
-    if not config.getoption("no_test_subsumption"):
-        _sort_by_subsumption(items)
+    """Wrap each async test in a deadline."""
 
     for item in items:
         if (
@@ -119,18 +113,11 @@ def _wrap_with_timeout(item: pytest.Function):
 
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item: pytest.Item, call):
-    """Record covered features for subsumption and write failure details to log file."""
+    """Write failure details to the log file."""
     outcome = yield
     report = outcome.get_result()
 
     if report.when == "call":
-        if report.passed and not item.config.getoption("no_test_subsumption"):
-            marker = item.get_closest_marker("covers")
-            if marker is not None and marker.args:
-                features: TestFeatures = marker.args[0]
-                covered = item.config.stash.get(_covered_features_key, TestFeatures(0))
-                item.config.stash[_covered_features_key] = covered | features
-
         if report.failed:
             log_dir = item.config.stash.get(_log_dir_key, None)
             if log_dir:

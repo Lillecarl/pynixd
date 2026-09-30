@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING
 
 import anyio
 import asyncssh
-import pytest
 import structlog
 
 from nix_daemon_protocol.ids import StoreId
@@ -24,7 +23,6 @@ from tests.conftest import (
     rmtree_robust,
     run_subproc,
 )
-from tests.test_features import TestFeatures as F
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -32,7 +30,6 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 
-@pytest.mark.covers(F.EXTENSION_BUILD | F.BUILD_DERIVATION | F.BUILD_PATHS | F.BUILD_PATHS_WITH_RESULTS | F.STORE_LOCAL)
 async def test_pynixd_delegation_build(tmp_path: Path) -> None:
     """Test that pynixd can delegate build OPs to another pynixd instance.
 

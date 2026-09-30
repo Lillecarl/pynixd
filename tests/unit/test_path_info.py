@@ -6,15 +6,12 @@ combinations of fields. All tests are pure — no I/O.
 
 from __future__ import annotations
 
-import pytest
-
 from nix_daemon_protocol.content_address import ContentAddress
 from nix_daemon_protocol.nar_hash import NARHash
 from nix_daemon_protocol.path_info import UnkeyedValidPathInfo
 from nix_daemon_protocol.signature import Signature
 from nix_daemon_protocol.wire_time import Time
 from pynixd.serde import StorePath, ValidPathInfo
-from tests.test_features import TestFeatures as F
 
 
 def path(value: str) -> StorePath:
@@ -46,7 +43,6 @@ def info(
     )
 
 
-@pytest.mark.covers(F.PATH_INFO)
 class TestNarinfoRoundtrip:
     def test_minimal(self):
         vpi = info(

@@ -37,7 +37,6 @@ from pynixd.store import LocalDBStore
 from pynixd.store_layout import StoreLayout
 from pynixd.store_path import StorePath
 from tests.conftest import STORE_PREFIX, make_test_spec, rmtree_robust, serde_path
-from tests.test_features import TestFeatures as F
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -145,7 +144,6 @@ class StatsTestStore(LocalDBStore):
         )
 
 
-@pytest.mark.covers(F.BUILD_DERIVATION | F.QUERY_ALL_VALID_PATHS | F.QUERY_CLOSURE_WITH_INFO | F.STORE_LOCAL)
 async def test_build_stats_recording(tmp_path: Path) -> None:
     """Verify that build stats are recorded to the DB.
 
@@ -239,7 +237,6 @@ async def test_build_stats_recording(tmp_path: Path) -> None:
         assert 45 <= row[1] <= 1000
 
 
-@pytest.mark.covers(F.BUILD_DERIVATION | F.GOAL_BUILD_QUEUE | F.GOAL_SCHEDULER | F.STORE_LOCAL)
 async def test_scheduler_local_fasttrack(tmp_path: Path) -> None:
     """Verify that the scheduler fast-tracks tiny builds to the local store."""
     pynixd_local_path = STORE_PREFIX / "fasttrack-local"
@@ -320,7 +317,6 @@ async def test_scheduler_local_fasttrack(tmp_path: Path) -> None:
         assert tiny_build.is_building
 
 
-@pytest.mark.covers(F.PERSISTENCE)
 async def test_build_stats_hint_by_pname(tmp_path: Path) -> None:
     """Verify that build stats hints match by pname + platform."""
     pynixd_local_path = STORE_PREFIX / "stats-hint-test"
@@ -391,7 +387,6 @@ class CpuUtilTestStore(StatsTestStore):
         self._cpu_util = value
 
 
-@pytest.mark.covers(F.BUILD_DERIVATION | F.GOAL_SCHEDULER | F.GOAL_BUILD_QUEUE | F.SERVER_PSI_GATING | F.STORE_LOCAL)
 @pytest.mark.xfail(reason="pre-existing: scheduler saturation logic needs review")
 async def test_scheduler_skips_saturated_store(tmp_path: Path) -> None:
     """Verify scheduler skips stores at >99% CPU utilization."""

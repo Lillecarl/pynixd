@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import pytest
 import structlog
 
 from tests.conftest import CLIENT_BIN, run_subproc, server_uri
@@ -18,12 +17,10 @@ from tests.conftest import CLIENT_BIN, run_subproc, server_uri
 if TYPE_CHECKING:
     from pynixd import Server
 
-from tests.test_features import TestFeatures as F
 
 log = structlog.get_logger(__name__)
 
 
-@pytest.mark.covers(F.SET_OPTIONS | F.ADD_PERM_ROOT | F.ADD_INDIRECT_ROOT | F.STORE_LOCAL)
 async def test_noop_operations_do_not_crash(pynixd_server: Server) -> None:
     """All no-op operations should not crash the server.
 

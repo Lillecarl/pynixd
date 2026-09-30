@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import asyncssh
-import pytest
 import structlog
 
 from nix_daemon_protocol.ids import StoreId
@@ -22,12 +21,10 @@ from tests.conftest import (
     rmtree_robust,
     run_subproc,
 )
-from tests.test_features import TestFeatures as F
 
 log = structlog.get_logger(__name__)
 
 
-@pytest.mark.covers(F.EXTENSION_DELEGATION | F.STORE_LOCAL)
 async def test_extension_delegation(tmp_path: Path) -> None:
     """Test that pynixd can delegate extension OPs to other pynixd instances.
 

@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import aiohttp
-import pytest
 import structlog
 
 from pynixd.serde import QueryPathInfoRequest
@@ -22,7 +21,6 @@ from tests.conftest import (
     run_subproc,
     serde_path,
 )
-from tests.test_features import TestFeatures as F
 
 if TYPE_CHECKING:
     from pynixd import Server
@@ -62,7 +60,6 @@ async def get_no_refs_path() -> StorePath:
     return StorePath(stdout.strip())
 
 
-@pytest.mark.covers(F.SERVER_HTTP_UPLOAD | F.STORE_HTTP_BINARY_CACHE_WRITE | F.ADD_TO_STORE_NAR | F.STORE_LOCAL)
 async def test_http_upload(
     pynixd_server: Server,
 ) -> None:

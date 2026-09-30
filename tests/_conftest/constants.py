@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 from tests._conftest.nix_config import for_test_store
-from tests.test_features import TestFeatures
 
 # ── Pyinstrument availability ─────────────────────────────────────
 
@@ -24,7 +23,6 @@ except ImportError:
 # ── Pytest stash keys ─────────────────────────────────────────────
 
 _log_dir_key = pytest.StashKey[Path]()
-_covered_features_key = pytest.StashKey[TestFeatures]()
 
 # ── Store paths ───────────────────────────────────────────────────
 

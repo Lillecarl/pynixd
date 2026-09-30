@@ -7,8 +7,6 @@ and all public properties/methods.
 
 from __future__ import annotations
 
-import pytest
-
 from pynixd.derived_path import (
     DerivedPath,
     OutputsAll,
@@ -17,10 +15,8 @@ from pynixd.derived_path import (
     parse_derived_path_legacy,
 )
 from pynixd.store_path import StorePath
-from tests.test_features import TestFeatures as F
 
 
-@pytest.mark.covers(F.DERIVED_PATH)
 class TestOutputsSpec:
     def test_outputs_all_to_string(self):
         assert OutputsAll().to_string() == "*"

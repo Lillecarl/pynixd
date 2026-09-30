@@ -5,17 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 
 import aiohttp
-import pytest
 from passlib.apache import HtpasswdFile
 
 from nix_daemon_protocol.ids import StoreId
 from pynixd import Server
 from pynixd.store import LocalSocketStore
 from tests.conftest import make_test_spec
-from tests.test_features import TestFeatures as F
 
 
-@pytest.mark.covers(F.SERVER_HTTP_AUTH | F.STORE_HTTP_BINARY_CACHE | F.STORE_LOCAL)
 async def test_htpasswd_auth(tmp_path: Path) -> None:
     """Test HTTP cache authentication using an htpasswd file.
 

@@ -12,10 +12,8 @@ import pytest
 
 from nix_daemon_protocol.store_dir import reset_store_dir, set_store_dir, store_dir
 from pynixd.store_path import DrvOutput, StorePath
-from tests.test_features import TestFeatures as F
 
 
-@pytest.mark.covers(F.STORE_PATH_ENCODE)
 class TestStorePathConstruction:
     def test_from_string(self):
         sp = StorePath("/nix/store/abc123-foo")
@@ -91,7 +89,6 @@ def other_store():
     reset_store_dir()
 
 
-@pytest.mark.covers(F.STORE_PATH_ENCODE)
 class TestStorePathStoreDir:
     def test_default_is_nix_store(self):
         assert store_dir() == "/nix/store"

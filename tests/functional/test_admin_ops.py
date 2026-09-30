@@ -24,7 +24,6 @@ from tests.conftest import (
     ssh_user_uri,
     unix_session_uri,
 )
-from tests.test_features import TestFeatures as F
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -34,17 +33,6 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 
-@pytest.mark.covers(
-    F.ADD_PERM_ROOT
-    | F.ADD_INDIRECT_ROOT
-    | F.ADD_TEMP_ROOT
-    | F.OPTIMISE_STORE
-    | F.VERIFY_STORE
-    | F.SET_OPTIONS
-    | F.SYNC_WITH_GC
-    | F.STORE_LOCAL
-    | F.SERVER_RBAC
-)
 async def test_optimise_store_admin(pynixd_server: Server) -> None:
     """OptimiseStore as admin should succeed.
 

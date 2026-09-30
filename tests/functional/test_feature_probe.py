@@ -20,7 +20,6 @@ from tests.conftest import (
     make_test_spec,
     rmtree_robust,
 )
-from tests.test_features import TestFeatures as F
 
 log = structlog.get_logger(__name__)
 
@@ -33,7 +32,6 @@ FEATURE_NIX_CONFIG = for_ca_derivations(
 )
 
 
-@pytest.mark.covers(F.PROBE_FEATURES | F.PROBE_SYSTEMS | F.BUILD_DERIVATION | F.STORE_LOCAL)
 async def test_feature_probe_in_memory() -> None:
     store_path = STORE_PREFIX / "feature-probe"
     rmtree_robust(store_path)

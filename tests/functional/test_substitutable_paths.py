@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import pytest
 import structlog
 
 from tests.conftest import CLIENT_BIN, TEST_NIX, run_subproc, server_uri
@@ -20,12 +19,10 @@ from tests.conftest import CLIENT_BIN, TEST_NIX, run_subproc, server_uri
 if TYPE_CHECKING:
     from pynixd import Server
 
-from tests.test_features import TestFeatures as F
 
 log = structlog.get_logger(__name__)
 
 
-@pytest.mark.covers(F.QUERY_SUBSTITUTABLE_PATHS | F.STORE_LOCAL)
 async def test_substitutable_paths_via_store(pynixd_server: Server) -> None:
     """Build a path and verify it via path-info through pynixd."""
     uri = server_uri(pynixd_server)

@@ -64,7 +64,6 @@ from tests._conftest.logging import (
     test_logging,
 )
 from tests._conftest.loop_lag import LoopLag as LoopLag
-from tests._conftest.subsumption import pytest_runtest_protocol
 
 __all__ = [
     "CLIENT_BIN",
@@ -93,7 +92,6 @@ __all__ = [
     "pytest_configure",
     "pytest_ignore_collect",
     "pytest_runtest_makereport",
-    "pytest_runtest_protocol",
     "pytest_sessionstart",
     "pytest_terminal_summary",
     "read_nar_from_store",

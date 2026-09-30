@@ -3,9 +3,6 @@
 Issue #52. Every test here uses a real store, a real binary cache written by
 `nix copy`, and a real HTTP server, because the rule is about what a remote
 answers and a fake answer proves nothing about that.
-
-No `covers` marker on purpose: these are regression tests, and a subsumed test
-is a test that does not run.
 """
 
 from __future__ import annotations
