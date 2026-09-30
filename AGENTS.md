@@ -48,7 +48,7 @@ Pynixd will adversise 1.38 support even if local_store is 1.35 and translate whe
       nix run --file . tests.guest.driver -- --out ./out
 
   `tests.guest` runs the five suites (unit, protocol, parity, functional,
-  differential) at once, each in a vivarium container guest: 87 s for the
+  differential) at once, each in a vivarium container guest: 115 s for the
   session, 2 s of it booting, after evaluation and the build of a changed
   tree. The host's `nix.conf`, `/tmp` and daemons cannot reach the guests. One suite:
   `-- --out ./out --only prepare --only unit`. Evidence is in `./out`:
@@ -258,7 +258,7 @@ is the register that a later reader reads to reverse the decision.
 - Do NOT use `tee` when redirecting — it doubles context consumption.
 - If you must limit output, use `tail -N` on the file afterwards, never pipe the command itself.
 - You do NOT need to specify pytest timeout, the configured 120s is enough per test.
-- **Timings in container guests** (one run): unit 13 s, protocol 3 s, parity 18 s, differential 25 s, functional 75 s. Run the session in the background and let the monitor report.
+- **Timings in container guests** (one run): unit 13 s, protocol 3 s, parity 17 s, differential 22 s, functional 109 s. Run the session in the background and let the monitor report.
 
 ## 7. User Direction Supersedes All Rules
 
