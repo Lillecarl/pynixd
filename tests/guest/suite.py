@@ -35,9 +35,11 @@ async def test(vms: Machines) -> None:
     # thousands of lines and the way back is a serial line.
     # `PYNIXD_TEST_LOG_DIR` puts the per-test logs there too -- without it
     # a failure names `/tmp/pynixd-logs/...`, which dies with the guest.
+    # Both packages from the copied tree: `tests/differential` refuses a
+    # pynixd from one tree and a nix_daemon_protocol from another.
     command = (
         f"cd /work && "
-        f"PYTHONPATH=/work NIX_BIN=$(command -v nix) "
+        f"PYTHONPATH=/work:/work/nix-daemon-protocol/src NIX_BIN=$(command -v nix) "
         f"PYNIXD_TEST_LOG_DIR=/artifacts/{name}-logs "
         f"pytest -p no:cacheprovider --tb=short -q {' '.join(suite['flags'])} "
         f"--junitxml=/artifacts/junit/{name}.xml {suite['path']} "

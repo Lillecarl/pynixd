@@ -5,8 +5,9 @@
 # processes before and after, and powers them off. Nothing of it survives
 # -- see tests/guest/leaks.py for why that is the point.
 #
-# QEMU by default. `PYNIXD_GUEST_BACKEND=uml` runs the same session under
-# User-Mode Linux. These suites once panicked a UML guest in `munmap`;
+# A container by default: seconds to boot, and the host's store is the
+# guest's. `PYNIXD_GUEST_BACKEND=qemu` or `=uml` runs the same session on
+# the other backends. These suites once panicked a UML guest in `munmap`;
 # vivarium issue #8 traced that to io_uring, which uvloop uses and
 # UML's memory manager cannot map, and a UML guest now has it disabled.
 {
@@ -15,19 +16,31 @@
   pynixd-lib,
   src,
   vivarium,
+  # The dev shell's environment, so a suite in a guest imports what it
+  # imports on the host, nanopynix's oracle for `tests/differential`
+  # included.
+  devEnv,
 }:
 
 let
   vivariumLib = import (vivarium + "/lib.nix") { inherit pkgs lib; };
 
-  # The same set the packaged check builds, so the guest runs what ships
-  # rather than what the tree says.
-  pytestEnv = pkgs.python3.withPackages (ps: [
-    pynixd-lib
-    ps.pytest
-    ps.pytest-timeout
-    ps.pyinstrument
-  ]);
+  pytestEnv = devEnv;
+
+  /*
+    A keypair for `tester`, made once at build time. Not a secret: it
+    opens nothing outside a guest.
+
+    pynixd's SSH server takes any key, and a client with none to offer
+    is refused: asyncssh reads `~/.ssh`, and so does `ssh` for
+    `ssh-ng://`. On the host the developer's own key answers. Measured:
+    the 8 `test_sftp_server` cases failed on "Permission denied for user
+    test" without it.
+  */
+  testerKey = pkgs.runCommand "tester-ssh-key" { nativeBuildInputs = [ pkgs.openssh ]; } ''
+    mkdir $out
+    ssh-keygen -q -t ed25519 -N "" -C tester -f $out/id_ed25519
+  '';
 
   perTestTimeout = "--async-test-timeout=600";
 
@@ -44,9 +57,6 @@ let
     Each suite needs only `prepare`, so a failure in one skips none of the
     others -- they are independent, and a run that stopped at the first
     would hide the second.
-
-    Missing on purpose: `tests/functional`, which wants a daemon it may
-    build with (issue #29).
   */
   suites = {
     unit = {
@@ -56,6 +66,14 @@ let
     protocol = {
       path = "nix-daemon-protocol/tests";
       flags = [ ];
+    };
+    functional = {
+      path = "tests/functional";
+      flags = [ perTestTimeout ];
+    };
+    differential = {
+      path = "tests/differential";
+      flags = [ perTestTimeout ];
     };
     # Missing for 35 minutes of failure that the guest's own configuration
     # caused: it took cache.nixos.org from the NixOS default and had no
@@ -74,8 +92,8 @@ vivariumLib.mkTest (
 
     knobs.backend = {
       env = "PYNIXD_GUEST_BACKEND";
-      default = "qemu";
-      description = "qemu, or uml for a host without /dev/kvm";
+      default = "container";
+      description = "container, qemu, or uml";
     };
     backend = config.resolved.backend.value;
 
@@ -90,6 +108,36 @@ vivariumLib.mkTest (
       src = "${src}";
       nixpkgs = "${pkgs.path}";
       inherit suites;
+      # `HELLO` in tests/_conftest/constants.py: the same `hello` that
+      # `<nixpkgs>` evaluates to in the guest, so it is already valid.
+      hello = "${pkgs.hello}";
+
+      /*
+        What a build with each nixpkgs builder the suites use needs,
+        registered so the guest finds it valid. Without it a
+        `runCommand` in `tests/functional` asked for `stdenv` and set out
+        to build 497 derivations from the bootstrap seed, with no network
+        to fetch a source.
+      */
+      buildInputs = map (drv: "${drv.inputDerivation}") [
+        (pkgs.runCommand "probe" { } "touch $out")
+        (pkgs.stdenvNoCC.mkDerivation {
+          name = "probe";
+          dontUnpack = true;
+          installPhase = "touch $out";
+        })
+        (pkgs.writeShellApplication {
+          name = "probe";
+          text = "true";
+        })
+        (pkgs.symlinkJoin {
+          name = "probe";
+          paths = [
+            pkgs.bash
+            pkgs.coreutils
+          ];
+        })
+      ];
     };
 
     phases = {
@@ -143,7 +191,18 @@ vivariumLib.mkTest (
       users.users.tester = {
         isNormalUser = true;
         uid = 1000;
+        openssh.authorizedKeys.keyFiles = [ "${testerKey}/id_ed25519.pub" ];
       };
+
+      # Copied and not linked: ssh refuses a private key it does not own
+      # at 0600, and a store file is neither.
+      systemd.tmpfiles.rules = [
+        "d /home/tester/.ssh 0700 tester users -"
+        "C /home/tester/.ssh/id_ed25519 - - - - ${testerKey}/id_ed25519"
+        "z /home/tester/.ssh/id_ed25519 0600 tester users -"
+        "C /home/tester/.ssh/id_ed25519.pub - - - - ${testerKey}/id_ed25519.pub"
+        "z /home/tester/.ssh/id_ed25519.pub 0644 tester users -"
+      ];
 
       nix.settings = {
         # What `tests/_conftest/constants.py` asks for through NIX_CONFIG.

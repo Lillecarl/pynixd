@@ -350,6 +350,7 @@ package
       pynixd-lib = library;
       src = lib.cleanSource ./.;
       inherit (sources) vivarium;
+      inherit devEnv;
     };
 
     # pynixd as the Nix daemon of a guest, against nix-daemon on another,
