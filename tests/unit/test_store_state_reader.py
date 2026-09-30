@@ -95,6 +95,7 @@ def _make_store(root: Path, *, realisations: bool = True, pynixd_tables: bool = 
     db_path = root / "ca" / "build" / "var" / "nix" / "db" / "db.sqlite"
     db_path.parent.mkdir(parents=True)
     db = sqlite3.connect(db_path)
+    db.execute("PRAGMA synchronous = OFF")
     db.executescript(_SCHEMA)
     if realisations:
         db.executescript(_REALISATION_SCHEMA)
