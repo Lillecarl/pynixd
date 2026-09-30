@@ -40,6 +40,17 @@ class ReverseStore(SSHStore):
         super().__init__(spec)
         self._ssh_conn: asyncssh.SSHClientConnection = ssh_conn
         self.nix_bin = spec.nix_bin
+        # Persistent, so `_on_pool_empty` never closes the builder's own
+        # connection: this store did not open it and cannot reopen it.
+        self.init_ssh_state(monitor_enabled=False, persistent_connection=True)
+
+    async def start(self, sync_paths: bool = True) -> None:
+        """Start the store over the connection the builder already opened.
+
+        Not `SSHStore.start`: that dials `self.host`, and a reverse store
+        has none. tests/functional/test_reverse_store.py registers one.
+        """
+        await super(SSHStore, self).start(sync_paths=sync_paths)
 
     async def create_conn(self) -> Connection:
         """Spawn nix-daemon --stdio on the builder over the reverse SSH connection."""

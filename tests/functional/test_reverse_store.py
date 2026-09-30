@@ -34,8 +34,12 @@ async def test_reverse_store_registration(tmp_path: Path) -> None:
     builder_path = STORE_PREFIX / builder_store_id
     rmtree_robust(builder_path)
 
+    # Each server's socket in this test's own directory. The default is
+    # /run/pynixd, which exists only where the NixOS module runs pynixd,
+    # and there it is the live service's.
     ctrl_settings = PynixdSettings(
         ssh_port=None,
+        unix_path=tmp_path / "controller.sock",
         reverse_acceptor=ReverseAcceptorSettings(enabled=True, host="127.0.0.1", port=0),
     )
 
@@ -51,6 +55,7 @@ async def test_reverse_store_registration(tmp_path: Path) -> None:
 
         builder_settings = PynixdSettings(
             ssh_port=None,
+            unix_path=tmp_path / "builder.sock",
             reverse_acceptor=ReverseAcceptorSettings(enabled=False),
             reverse_initiator=ReverseInitiatorSettings(
                 enabled=True,
