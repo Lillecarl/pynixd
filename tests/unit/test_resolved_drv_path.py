@@ -38,6 +38,7 @@ from pynixd.goals.ensure import EnsureDerivedPathGoal
 from pynixd.goals.results import GoalResult, goal_success
 from pynixd.goals.substitute import SubstituteAttempt
 from pynixd.serde import BuildMode, IsValidPathResponse, QueryRealisationRequest, QueryRealisationResponse
+from pynixd.store_layout import StoreLayout
 from pynixd.store_path import DrvOutput, StorePath
 
 if TYPE_CHECKING:
@@ -111,7 +112,7 @@ def _leaf() -> Derivation:
 
 class FakeLocalStore:
     def __init__(self, *, takes_text: bool = True) -> None:
-        self.store_path = "/"
+        self.layout = StoreLayout.chroot(None)
         self.takes_text = takes_text
         self.added: list[tuple[str, str, set[str]]] = []
 

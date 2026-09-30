@@ -40,8 +40,6 @@ from typing import TYPE_CHECKING, ClassVar, TypedDict
 
 import anyio
 
-from nix_daemon_protocol.store_dir import on_disk
-
 from .serde import BasicDerivation, DerivationOutput, OutputKind
 from .store_path import DrvOutput, StorePath
 from .utils import compress_hash, nix32_encode
@@ -50,6 +48,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Collection
 
     from nix_daemon_protocol.aliases import OutputMap, StorePathSet
+
+    from .store_layout import StoreLayout
 
 
 # Recursive type for input drv nodes in unparse.
@@ -1008,7 +1008,7 @@ class _Parser:
 
 async def to_basic_derivation(
     parsed: Derivation,
-    store_path: Path,
+    layout: StoreLayout,
     output_cache: OutputMap | None = None,
 ) -> BasicDerivation:
     """Convert a Derivation to a BasicDerivation (wire protocol format).
@@ -1019,7 +1019,7 @@ async def to_basic_derivation(
 
     Args:
         parsed: The parsed .drv file
-        store_path: Store root for reading referenced .drv files
+        layout: The store that holds the referenced .drv files
         output_cache: Optional {drv_path: {output_name: output_path}} cache
             from the DB to skip reading input .drv files from disk.
     """
@@ -1048,7 +1048,7 @@ async def to_basic_derivation(
             continue
 
         try:
-            input_parsed = await read_drv_file(drv_path)
+            input_parsed = await read_drv_file(drv_path, layout)
         except FileNotFoundError:
             input_parsed = None
 
@@ -1078,21 +1078,18 @@ def parse_drv(content: str) -> Derivation:
     return _Parser(content).parse_derivation()
 
 
-async def read_drv_file(drv_store_path: StorePath | str) -> Derivation | None:
+async def read_drv_file(drv_store_path: StorePath | str, layout: StoreLayout) -> Derivation | None:
     """Read and parse a `.drv` file from the file system of the store.
-
-    This took the root of the store as well, and it no longer does.
-    `real_store_dir()` holds that value for the process, so a caller that
-    passed a different root got an answer from the store of the process
-    anyway, and the argument said otherwise.
 
     Args:
         drv_store_path: A whole store path, such as `/nix/store/xxx.drv`.
+        layout: The store that holds it: which directory its paths name,
+            and which directory holds the files.
 
     Returns:
         The parsed derivation, or `None` when the file is not there.
     """
-    # `on_disk` and not `store_path / str(drv_store_path).lstrip("/")`.
+    # The layout's two directories, and not `root / str(drv_store_path).lstrip("/")`.
     #
     # That line assumed every store path starts with `/nix/store/`, so removing
     # the first separator and joining the root gave `<root>/nix/store/xxx.drv`.
@@ -1107,7 +1104,11 @@ async def read_drv_file(drv_store_path: StorePath | str) -> Derivation | None:
     # `real_store_dir` is where the files are. `store_dir` is what a store path
     # says. A chroot store makes the two differ, and only the first one names a
     # file. Issue Lillecarl/nanopynix#173.
-    path = anyio.Path(on_disk(str(drv_store_path)))
+    name = str(drv_store_path)
+    prefix = f"{layout.store_dir}/"
+    if not name.startswith(prefix):
+        raise ValueError(f"{name!r} is not a path of the store at {layout.store_dir}")
+    path = anyio.Path(layout.real_store_dir / name[len(prefix) :])
     if not await path.exists():
         return None
     content = await path.read_text()

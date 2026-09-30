@@ -33,6 +33,7 @@ from pynixd.goals.ensure import EnsureDerivedPathGoal
 from pynixd.goals.results import GoalResult, goal_success
 from pynixd.goals.substitute import SubstituteAttempt
 from pynixd.serde import BuildMode, DrvOutput as SerdeDrvOutput, IsValidPathResponse, Realisation
+from pynixd.store_layout import StoreLayout
 from pynixd.store_path import DrvOutput, StorePath
 from pynixd.utils import nix32_encode
 
@@ -84,8 +85,8 @@ def _derivation() -> Derivation:
 class FakeLocalStore:
     """A store that holds the derivation, and the outputs it is told to hold."""
 
-    def __init__(self, store_path: str = "/", valid: frozenset[str] = frozenset()) -> None:
-        self.store_path = store_path
+    def __init__(self, valid: frozenset[str] = frozenset()) -> None:
+        self.layout = StoreLayout.chroot(None)
         self.valid = valid
 
     async def read_derivation(self, drv_path: str) -> Derivation | None:

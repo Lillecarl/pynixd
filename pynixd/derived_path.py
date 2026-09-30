@@ -25,16 +25,9 @@ build that derivation and take output ``lib``.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Self
+from typing import Self
 
-from .drv_parser import read_drv_file
 from .store_path import StorePath
-
-if TYPE_CHECKING:
-    from pathlib import Path
-
-    from .drv_parser import Derivation
-
 
 # ── OutputsSpec ─────────────────────────────────────────────────────
 
@@ -242,10 +235,6 @@ class DerivedPath:
         For opaque paths this returns the path itself.
         """
         return self._drv_path
-
-    async def to_derivation(self, store_path: Path) -> Derivation | None:
-        """Read the derivation file for the underlying ``.drv`` path."""
-        return await read_drv_file(self._drv_path)
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, DerivedPath):

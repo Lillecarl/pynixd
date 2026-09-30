@@ -37,6 +37,7 @@ from pynixd.serde import (
     QueryRealisationRequest,
     QueryRealisationResponse,
 )
+from pynixd.store_layout import StoreLayout
 from pynixd.store_path import DrvOutput, StorePath
 
 if TYPE_CHECKING:
@@ -94,7 +95,7 @@ class FakeClient:
 
 class FakeLocalStore:
     def __init__(self) -> None:
-        self.store_path = "/"
+        self.layout = StoreLayout.chroot(None)
 
     async def add_text_to_store(self, name: str, text: str, references: set[str]) -> str:
         """Answer the path of the resolved derivation, as the daemon does."""

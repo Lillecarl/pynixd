@@ -38,6 +38,7 @@ from pynixd.serde import (
     QueryRealisationResponse,
     Realisation,
 )
+from pynixd.store_layout import StoreLayout
 from pynixd.store_path import StorePath
 
 if TYPE_CHECKING:
@@ -74,7 +75,7 @@ class FakeLocalStore:
     """A store that answers one realisation, and holds the path it names."""
 
     def __init__(self, *, realisation_id: str | None, valid: bool) -> None:
-        self.store_path = "/"
+        self.layout = StoreLayout.chroot(None)
         self.realisation_id = realisation_id
         self.valid = valid
         self.asked: list[str] = []

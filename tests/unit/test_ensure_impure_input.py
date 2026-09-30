@@ -26,6 +26,7 @@ from pynixd.goals.ensure import EnsureDerivedPathGoal
 from pynixd.goals.results import GoalResult, goal_success
 from pynixd.goals.substitute import SubstituteAttempt
 from pynixd.serde import BuildMode, IsValidPathResponse, QueryRealisationRequest, QueryRealisationResponse
+from pynixd.store_layout import StoreLayout
 from pynixd.store_path import DrvOutput, StorePath
 
 if TYPE_CHECKING:
@@ -85,7 +86,7 @@ _DERIVATIONS = {
 
 class FakeLocalStore:
     def __init__(self) -> None:
-        self.store_path = "/"
+        self.layout = StoreLayout.chroot(None)
 
     async def read_derivation(self, drv_path: str) -> Derivation | None:
         make = _DERIVATIONS.get(str(drv_path))

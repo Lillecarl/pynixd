@@ -39,6 +39,7 @@ from pynixd.serde import (
     RegisterDrvOutputRequest,
     Signature,
 )
+from pynixd.store_layout import StoreLayout
 from pynixd.store_path import StorePath
 
 if TYPE_CHECKING:
@@ -119,7 +120,7 @@ class FakeLocalStore:
     """A store that holds the output of the input derivation, and no other."""
 
     def __init__(self) -> None:
-        self.store_path = "/"
+        self.layout = StoreLayout.chroot(None)
         self.valid: set[str] = {BASE_OUT}
         self.registered: list[Realisation] = []
         self.added: list[tuple[str, str, set[str]]] = []

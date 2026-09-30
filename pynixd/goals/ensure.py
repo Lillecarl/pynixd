@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import TYPE_CHECKING, TypeVar
 
 import structlog
@@ -457,7 +456,6 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         if failed_inputs is not None:
             return failed_inputs
 
-        store_path = Path(self.engine.ctx.local_store.store_path)
         dynamic_paths = {}
         for result in child_results:
             dynamic_paths.update(result.dynamic_paths)
@@ -478,7 +476,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         elif parsed.input_drvs:
             basic = resolve_derivation(parsed, domain_drv_path, await self._input_paths(parsed, dynamic_paths))
         else:
-            basic = await to_basic_derivation(parsed, store_path)
+            basic = await to_basic_derivation(parsed, self.engine.ctx.local_store.layout)
 
         # **Every output of the derivation goes on the wire, and the wanted
         # ones alone do not.** `BuildDerivation` carries no set of wanted
