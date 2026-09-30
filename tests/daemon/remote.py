@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 
 from daemon_helpers import SERVERS, as_tester, differences, instantiate, path_info, store_path
-from uml_runner import Machines
+from vivarium_runner import Machines
 
 
 def far(name: str) -> str:

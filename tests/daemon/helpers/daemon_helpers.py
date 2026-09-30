@@ -11,7 +11,7 @@ import json
 import re
 import shlex
 
-from uml_runner import Machine
+from vivarium_runner import Machine
 
 SERVERS = ("daemon", "control")
 

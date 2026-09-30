@@ -10,7 +10,7 @@ of them correctly on its own.
 from __future__ import annotations
 
 from daemon_helpers import SERVERS, as_tester
-from uml_runner import Machines
+from vivarium_runner import Machines
 
 SOCKET = "/nix/var/nix/daemon-socket/socket"
 

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 
-from uml_runner import Machines
+from vivarium_runner import Machines
 
 ALLOWED_LEAKS = 0
 """The one leak this check has found belongs to `tests/parity`: a

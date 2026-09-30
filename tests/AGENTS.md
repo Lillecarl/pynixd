@@ -4,8 +4,8 @@
 
 ```sh
 nix build --file . tests.guest                        # QEMU, needs /dev/kvm
-nix run --file . tests.guest.run -- --out ./o         # the same, by hand
-nix run --file . tests.guest.run -- --out ./o --only unit --break-on-failure
+nix run --file . tests.guest.driver -- --out ./o         # the same, by hand
+nix run --file . tests.guest.driver -- --out ./o --only unit --break-on-failure
 ```
 
 One NixOS guest, one phase per suite, poweroff. The phases are
@@ -22,7 +22,7 @@ whose output keeps a failed run: `phases.json`, `junit.xml`,
 `events.jsonl`, each suite's log under `artifacts/<suite>/`, and
 each guest's process census. Every test of every suite is a case in `junit.xml`,
 because each suite writes JUnit to `/artifacts/junit/`, and
-user-mode-nixos reads it back. Read them there rather than running it
+vivarium reads it back. Read them there rather than running it
 again:
 
 ```sh
@@ -32,7 +32,7 @@ jq -c 'select(.kind == "case" and .data.outcome == "failed") | .text' $a/events.
 ```
 
 `--break-on-failure` keeps the guest up after a failing suite, and
-`uml ctl --out ./o exec ...` reaches in. See user-mode-nixos's
+`vivarium ctl --out ./o exec ...` reaches in. See vivarium's
 AGENTS.md.
 
 Two things a test in there must respect:
@@ -51,7 +51,7 @@ run.
 `tests/guest/` holds the phase scripts: `prepare.py`, `suite.py` (one
 script for every suite, told apart by `vms.phase`) and `leaks.py`.
 `tests/derivations/guest/` declares the phases and the suites. They live
-here rather than in user-mode-nixos: that repository is the library, and
+here rather than in vivarium: that repository is the library, and
 a test about pynixd belongs beside pynixd.
 
 ## `@pytest.mark.asyncio`

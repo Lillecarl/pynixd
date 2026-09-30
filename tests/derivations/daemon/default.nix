@@ -20,11 +20,11 @@
   pkgs,
   lib ? pkgs.lib,
   package,
-  user-mode-nixos,
+  vivarium,
 }:
 
 let
-  uml = import (user-mode-nixos + "/lib.nix") { inherit pkgs lib; };
+  vivariumLib = import (vivarium + "/lib.nix") { inherit pkgs lib; };
   keys = import (pkgs.path + "/nixos/tests/ssh-keys.nix") pkgs;
 
   /*
@@ -33,7 +33,7 @@ let
     expression gives the same derivation on every guest, so the two
     servers' answers compare byte for byte.
 
-    Not a `.drv` named here: `mkSession` registers the closure of
+    Not a `.drv` named here: `mkTest` registers the closure of
     `settings` with each guest, and a `.drv`'s closure is every input
     derivation's `.drv`, which a garbage-collected host no longer has.
     Measured: `keyutils-1.6.3.drv does not exist`. busybox's output is the
@@ -48,7 +48,7 @@ let
   };
 
   common = name: {
-    boot.uml = {
+    vivarium = {
       memory = "1024M";
       lan = {
         network = segment;
@@ -73,7 +73,7 @@ let
   server = name: {
     imports = [ (common name) ];
     services.openssh.enable = true;
-    # 22 as well: user-mode-nixos moves sshd to `boot.uml.sshPort` for the
+    # 22 as well: vivarium moves sshd to `vivarium.sshPort` for the
     # host's forward, and a client on the segment dials 22 like anywhere.
     services.openssh.ports = [ 22 ];
     # `stranger` is the user outside `allowed-users` that `untrusted` needs.
@@ -85,7 +85,7 @@ let
     users.users.stranger.isNormalUser = true;
   };
 in
-uml.mkSession (
+vivariumLib.mkTest (
   { config, ... }:
   {
     name = "pynixd-daemon";
@@ -162,7 +162,7 @@ uml.mkSession (
           mode = "replace";
           inherit package;
         };
-        boot.uml.backend = lib.mkIf (config.resolved.backend.value == "mixed") "uml";
+        vivarium.backend = lib.mkIf (config.resolved.backend.value == "mixed") "uml";
       };
       control = server "control";
       client = {

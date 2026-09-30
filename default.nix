@@ -46,7 +46,7 @@ let
     name = "pynixd-specifictest";
     testArgs = "";
   };
-  uml-runner = (import (sources.user-mode-nixos + "/lib.nix") { inherit pkgs; }).runner;
+  vivarium-runner = (import (sources.vivarium + "/lib.nix") { inherit pkgs; }).runner;
 
   nanopynix = import sources.nanopynix { };
 
@@ -68,7 +68,7 @@ let
     it for `ekn`.
 
     Every root here is a real pyproject project, which is why this works at
-    all: `uml-runner` carries one at `pkgs/uml-runner`, and it is what
+    all: `vivarium-runner` carries one at `pkgs/vivarium-runner`, and it is what
     the phase scripts in `tests/guest/` import.
 
     **pynixd itself does not depend on any of this, and must not.**  The
@@ -80,12 +80,12 @@ let
     projectRoots = [
       ./.
       ./nix-daemon-protocol
-      (sources.user-mode-nixos + "/pkgs/uml-runner")
+      (sources.vivarium + "/pkgs/vivarium-runner")
     ];
     overlay = pySelf: _pyPrev: {
       pynixd = pySelf.callPackage (mkProject ./.) { };
       nix-daemon-protocol = pySelf.callPackage (mkProject ./nix-daemon-protocol) { };
-      uml-runner = pySelf.callPackage (mkProject (sources.user-mode-nixos + "/pkgs/uml-runner")) { };
+      vivarium-runner = pySelf.callPackage (mkProject (sources.vivarium + "/pkgs/vivarium-runner")) { };
     };
   };
 
@@ -106,7 +106,7 @@ let
       "docs"
     ];
     nanopynix-testing = [ ];
-    uml-runner = [ ];
+    vivarium-runner = [ ];
   };
 
   pyinstance = pkgs.python3.withPackages (
@@ -120,7 +120,7 @@ let
       # `devEnv` gets the same package from its own pyproject root, because
       # the two environments resolve by different machinery: this one is
       # nixpkgs, and that one is pyproject.nix.
-      uml-runner
+      vivarium-runner
     ]
   );
 
@@ -349,7 +349,7 @@ package
     guest = pkgs.callPackage ./tests/derivations/guest {
       pynixd-lib = library;
       src = lib.cleanSource ./.;
-      inherit (sources) user-mode-nixos;
+      inherit (sources) vivarium;
     };
 
     # pynixd as the Nix daemon of a guest, against nix-daemon on another,
@@ -357,7 +357,7 @@ package
     # `--builders`.
     daemon = pkgs.callPackage ./tests/derivations/daemon {
       inherit package;
-      inherit (sources) user-mode-nixos;
+      inherit (sources) vivarium;
     };
   };
 }

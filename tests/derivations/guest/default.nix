@@ -7,18 +7,18 @@
 #
 # QEMU by default. `PYNIXD_GUEST_BACKEND=uml` runs the same session under
 # User-Mode Linux. These suites once panicked a UML guest in `munmap`;
-# user-mode-nixos issue #8 traced that to io_uring, which uvloop uses and
+# vivarium issue #8 traced that to io_uring, which uvloop uses and
 # UML's memory manager cannot map, and a UML guest now has it disabled.
 {
   pkgs,
   lib ? pkgs.lib,
   pynixd-lib,
   src,
-  user-mode-nixos,
+  vivarium,
 }:
 
 let
-  uml = import (user-mode-nixos + "/lib.nix") { inherit pkgs lib; };
+  vivariumLib = import (vivarium + "/lib.nix") { inherit pkgs lib; };
 
   # The same set the packaged check builds, so the guest runs what ships
   # rather than what the tree says.
@@ -67,7 +67,7 @@ let
     };
   };
 in
-uml.mkSession (
+vivariumLib.mkTest (
   { config, ... }:
   {
     name = "pynixd";
@@ -82,7 +82,7 @@ uml.mkSession (
     /*
       What the scripts need that only Nix knows.
 
-      `mkSession` registers the closure of everything here with the guest's
+      `mkTest` registers the closure of everything here with the guest's
       Nix database, so these are valid paths in there rather than files Nix
       goes looking for a substituter for.
     */
@@ -117,7 +117,7 @@ uml.mkSession (
     # One guest per suite, named after it, so events.jsonl says
     # `machine=unit` and a suite's files land in artifacts/unit/.
     nodes = lib.genAttrs (lib.attrNames suites) (_: {
-      boot.uml = {
+      vivarium = {
         # `tests/unit` peaks well above the default 128M, and an agent that
         # is OOM-killed partway through looks exactly like a hang.
         memory = "3072M";

@@ -6,14 +6,14 @@ per suite: `tests/unit` and `nix-daemon-protocol/tests` interfere, and one
 process for both is how 57 failures once hid behind a green run of 684.
 Issue #33.
 
-The suite writes JUnit to `/artifacts/junit/`, and user-mode-nixos reads
+The suite writes JUnit to `/artifacts/junit/`, and vivarium reads
 it back when the phase ends, so every test is a case of this run -- in its
 `junit.xml` and in `events.jsonl` -- and not only a line in a log.
 """
 
 from __future__ import annotations
 
-from uml_runner import Machines
+from vivarium_runner import Machines
 
 TIMEOUT = 2400
 """Seconds for one suite. Measured in a QEMU guest on an idle host:

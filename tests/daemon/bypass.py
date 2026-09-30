@@ -10,7 +10,7 @@ the earlier phases and fail here.
 from __future__ import annotations
 
 from daemon_helpers import as_tester
-from uml_runner import Machines
+from vivarium_runner import Machines
 
 PROBE = "nix-store --query --hash {busybox}"
 

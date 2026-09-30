@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 
 from daemon_helpers import SERVERS, as_tester, attempt, errors, instantiate, store_path
-from uml_runner import Machines
+from vivarium_runner import Machines
 
 PROBES = {
     "restricted setting": "nix-store --option require-sigs false --query --hash {busybox}",

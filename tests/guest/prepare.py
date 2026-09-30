@@ -10,7 +10,7 @@ a directory and not the daemon.
 from __future__ import annotations
 
 import anyio
-from uml_runner import Machine, Machines
+from vivarium_runner import Machine, Machines
 
 
 async def test(vms: Machines) -> None:
