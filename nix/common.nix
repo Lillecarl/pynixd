@@ -15,8 +15,8 @@ let
   jsonFormat = pkgs.formats.json { };
 
   # Where every Nix client looks for the daemon, and where nix-daemon moves
-  # to in `replace` mode. The same directory, so nix-daemon.socket's own
-  # `ConditionPathIsReadWrite` still holds.
+  # to in `replace` mode. The same directory, so the upstream socket keeps
+  # nix-daemon.socket's `ConditionPathIsReadWrite`.
   daemonSocket = "/nix/var/nix/daemon-socket/socket";
   upstreamSocket = "/nix/var/nix/daemon-socket/upstream";
 in
@@ -47,7 +47,10 @@ in
 
         `replace`: pynixd takes nix-daemon's socket,
         `/nix/var/nix/daemon-socket/socket`, and nix-daemon moves to
-        `daemon-socket/upstream` behind it. Every client that uses the
+        `daemon-socket/upstream` behind it, as `nix-daemon-upstream.socket`
+        and `.service`. Nix's own two units are masked, so that
+        `switch-to-configuration` moves the sockets in both directions.
+        Every client that uses the
         daemon then talks to pynixd: `nix build` as a user, `ssh-ng://`
         through `nix-daemon --stdio`, remote builds. NixOS only.
 

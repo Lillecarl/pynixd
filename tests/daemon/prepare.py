@@ -23,7 +23,9 @@ async def test(vms: Machines) -> None:
     await vms.daemon.wait_for_unit("pynixd.service")
     for name in SERVERS:
         await vms[name].wait_for_unit("sshd.service")
-        await vms[name].wait_for_unit("nix-daemon.socket")
+    # `replace` masks nix-daemon.socket; see nix/nixos/default.nix.
+    await vms.daemon.wait_for_unit("nix-daemon-upstream.socket")
+    await vms.control.wait_for_unit("nix-daemon.socket")
 
     daemon = await holder(vms, "daemon")
     control = await holder(vms, "control")

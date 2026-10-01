@@ -20,9 +20,9 @@ async def test(vms: Machines) -> None:
     probe = PROBE.format(busybox=vms.settings["busybox"])
     await vm.succeed("systemctl stop pynixd.service")
     try:
-        state = (await vm.succeed("systemctl is-active nix-daemon.socket")).strip()
+        state = (await vm.succeed("systemctl is-active nix-daemon-upstream.socket")).strip()
         rc, output = await vm.execute(f"su - tester -c {probe!r}")
-        print(f"[test] pynixd stopped, nix-daemon.socket {state}: exit {rc}")
+        print(f"[test] pynixd stopped, nix-daemon-upstream.socket {state}: exit {rc}")
         if rc == 0:
             raise AssertionError(f"a user's request succeeded with pynixd stopped: {output!r}")
     finally:
