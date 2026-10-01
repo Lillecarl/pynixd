@@ -359,6 +359,7 @@ package
     # and pass unless the run fails. `nix run --file . tests.benchmark.driver
     # -- --out <abs>`.
     benchmark = pkgs.callPackage ./tests/derivations/benchmark {
+      inherit package;
       src = lib.cleanSource ./.;
       inherit (sources) vivarium;
       inherit devEnv;
