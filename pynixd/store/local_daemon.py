@@ -14,7 +14,7 @@ import signal
 import time
 from collections import deque
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import anyio
 import structlog
@@ -80,6 +80,18 @@ So the failure had no visible cause. The socket file existed, `_probe_socket`
 could not reach it, and pynixd waited the whole budget and then reported
 `(the daemon wrote nothing)` -- which was true of the daemon and said nothing
 about the fault. Issue #44."""
+
+
+def feature_matrix_from_nix_config(config: dict[str, Any]) -> dict[str, set[str]]:
+    """What a daemon builds, from the output of `nix config show --json`.
+
+    The daemon decides with these settings whether it can build a
+    derivation itself: `system` and `extra-platforms` for the platform,
+    `system-features` for every one of them.
+    """
+    systems = {config["system"]["value"], *config["extra-platforms"]["value"]}
+    features = set(config["system-features"]["value"])
+    return {system: set(features) for system in systems}
 
 
 def _refuse_a_socket_path_python_cannot_reach(socket_path: Path) -> None:
@@ -178,6 +190,7 @@ class LocalStore(DaemonStore):
         self.extra_env = spec.extra_env or {}
         self.extra_args = spec.extra_args or []
         self.settings = spec.settings or PynixdSettings()
+        self._probe_requested = spec.probe
 
         # Register atexit handler to ensure a private daemon is killed even
         # if close() is never called. The system daemon is never ours to kill.
@@ -194,6 +207,18 @@ class LocalStore(DaemonStore):
     async def start(self, sync_paths: bool = True) -> None:
         """Spawn managed daemon and initialize the store."""
         await self.ensure_daemon()
+        if not self.managed and self._feature_matrix is None and self._probe_requested is None:
+            # The machine's own daemon: its nix.conf says what it builds.
+            # Probing it with builds waits for free build slots before
+            # READY=1, and missed systemd's start timeout on a busy machine
+            # (#58).
+            self._feature_matrix = feature_matrix_from_nix_config(await self.read_nix_config())
+            self._probe = False
+            log.info(
+                "store_features_from_config",
+                store_id=self.store_id,
+                feature_matrix={k: sorted(v) for k, v in self._feature_matrix.items()},
+            )
         try:
             await super().start(sync_paths=sync_paths)
         except BaseException:
@@ -334,11 +359,12 @@ class LocalStore(DaemonStore):
         )
 
     async def trust_policy(self) -> TrustPolicy:
-        """`trusted-users`, `allowed-users` and `build-users-group`, as this store's Nix reads them.
+        """`trusted-users`, `allowed-users` and `build-users-group`, as this store's Nix reads them."""
+        return TrustPolicy.from_nix_config(await self.read_nix_config())
 
-        Read from `nix config show` in the daemon's environment, so includes,
-        `extra-` settings and `NIX_CONFIG` resolve as they do for nix-daemon.
-        """
+    async def read_nix_config(self) -> dict[str, Any]:
+        """`nix config show --json` in the daemon's environment, so includes,
+        `extra-` settings and `NIX_CONFIG` resolve as they do for nix-daemon."""
         env = os.environ.copy()
         env.update(self.extra_env)
         env.update(self.layout.daemon_environment())
@@ -359,7 +385,7 @@ class LocalStore(DaemonStore):
             raise RuntimeError(
                 f"`nix config show` failed with code {proc.returncode}: {stderr.decode(errors='replace')}"
             )
-        return TrustPolicy.from_nix_config(json.loads(stdout))
+        return json.loads(stdout)
 
     def _recent_output_text(self) -> str:
         """The last lines the daemon wrote, for a start-up error message.

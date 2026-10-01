@@ -567,6 +567,14 @@ class DaemonStore(Store):
 
         candidate_systems = existing_systems or set(PROBE_SYSTEMS)
         candidate_features = existing_features or set(KNOWN_FEATURES)
+        # Before the builds: a probe that waits for build slots is silent
+        # until `systems_probed` otherwise (#58).
+        log.info(
+            "store_probing",
+            store_id=self.store_id,
+            systems=sorted(candidate_systems),
+            features=sorted(candidate_features),
+        )
 
         # One limiter for both halves, because they run one after the other.
         # Built here and not in `__init__`: `anyio.CapacityLimiter` reads the

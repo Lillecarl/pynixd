@@ -88,6 +88,14 @@ async def test(vms: Machines) -> None:
     except Exception as error:
         problems.append(f"a user's build failed: {error}")
 
+    # The machine's own daemon is described by its nix.conf: probe builds
+    # before READY=1 wait for build slots on a busy machine (#58).
+    # Each probe leaves its output, `<hash>-probe-system-<system>` and
+    # `-probe-feature-<feature>`. pynixd's journal holds warnings only.
+    probes = (await vm.succeed("ls /nix/store | grep -- '-probe-' || true")).split()
+    if probes:
+        problems.append(f"pynixd probed the machine's own daemon with {len(probes)} builds: {probes[:3]}")
+
     # A client that comes while pynixd is down waits for it rather than
     # failing: the socket stays bound and starts pynixd (#59).
     if mode == "replace" and not problems:
