@@ -8,6 +8,10 @@ result
 
 #stuff
 .tmp
+
+#guest and test artifacts
+/out/
+/o/
 # Byte-compiled / optimized / DLL files
 __pycache__
 *.py[codz]
