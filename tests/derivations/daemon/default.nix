@@ -146,8 +146,11 @@ vivariumLib.mkTest (
           "local"
           "remote"
         ];
-        nodes = [ "daemon" ];
-        description = "a user's request fails with pynixd stopped";
+        nodes = [
+          "daemon"
+          "client"
+        ];
+        description = "a user's request fails with pynixd stopped, locally and over ssh-ng";
       };
     };
 
