@@ -50,6 +50,24 @@ def _handlers_using_a_transfer_connection() -> list[Path]:
     return sorted(path for path in _HANDLERS.glob("*.py") if _transfer_conn_calls(path))
 
 
+def _store_execute_calls(path: Path) -> list[ast.Call]:
+    """Every `local_store.execute(...)` call in the module at *path*."""
+    tree = ast.parse(path.read_text())
+    return [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "execute"
+        and isinstance(node.func.value, ast.Attribute)
+        and node.func.value.attr == "local_store"
+    ]
+
+
+def _passes_a_client(call: ast.Call) -> bool:
+    return any(keyword.arg == "client" for keyword in call.keywords) or len(call.args) >= 2
+
+
 def test_a_handler_that_writes_passes_the_options_of_the_client() -> None:
     """The call takes an argument, and the argument is not nothing."""
     bare: list[str] = []
@@ -103,3 +121,26 @@ def test_the_three_handlers_that_add_a_path_are_covered(name: str) -> None:
     assert path.is_file(), name
     assert _transfer_conn_calls(path), name
     assert name not in READ_ONLY_HANDLERS, name
+
+
+def test_a_handler_that_dispatches_to_the_store_passes_the_client() -> None:
+    """A nested call with no client discards the pooled connection.
+
+    `get_or_create_conn` drops an idle connection whose `applied_options` is a
+    set when the caller names none (`pool.py:196`), and the handler then pays a
+    fresh upstream handshake. `AddToStore` signed its path info through such a
+    call, so every derived path handshook again: the `AddToStore` half of a
+    NixOS system instantiation measured 80 s against 7 s when the client rode
+    along.
+    """
+    bare = [
+        path.name
+        for path in sorted(_HANDLERS.glob("*.py"))
+        for call in _store_execute_calls(path)
+        if not _passes_a_client(call)
+    ]
+
+    assert bare == [], (
+        f"these handlers dispatch to the store without the client's options: {sorted(set(bare))}. "
+        f"Add `client=ctx.proxy.client` so the pool reuses the connection."
+    )

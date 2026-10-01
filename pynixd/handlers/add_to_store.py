@@ -65,7 +65,11 @@ class AddToStoreHandler(Handler):
         # 5. Sign path info and update cache (outside conn so we don't re-enter the pool)
         if resp.info is not None:
             sign_req = SignPathInfoRequest(info=resp.info)
-            sign_resp = await ctx.proxy.local_store.execute(sign_req)
+            # The client's options ride along. Without them the nested call
+            # asks for a connection with no options, and the pool discards the
+            # idle connection that carries this client's set (`pool.py:196`),
+            # so every AddToStore pays a fresh upstream handshake.
+            sign_resp = await ctx.proxy.local_store.execute(sign_req, client=ctx.proxy.client)
             resp.info = sign_resp.info
 
             ctx.proxy.local_store.add_path_info(resp.info)
