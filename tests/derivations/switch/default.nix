@@ -1,0 +1,107 @@
+# A running NixOS machine moves to pynixd and back, by `switch-to-configuration`.
+#
+# `nix build --file . tests.switch` boots one guest with nix-daemon alone and
+# switches it through the configurations below, the way an operator does
+# with `nixos-rebuild switch`. After each switch the same checks run: the
+# switch exited 0, no unit failed, the right process holds each socket, and
+# a user's build works. A reboot hides every fault this test is for: it
+# starts each socket from the new configuration.
+{
+  pkgs,
+  lib ? pkgs.lib,
+  package,
+  vivarium,
+}:
+
+let
+  vivariumLib = import (vivarium + "/lib.nix") { inherit pkgs lib; };
+
+  pynixd = mode: {
+    imports = [ ../../../nix/nixos/default.nix ];
+    services.pynixd = {
+      enable = true;
+      inherit mode package;
+    };
+  };
+
+  # Each step: the configuration to switch to (null is the booted one), and
+  # the mode the machine is in after it. In order; each starts from the last.
+  steps = [
+    {
+      name = "stock";
+      to = false;
+      mode = "stock";
+    }
+    {
+      name = "stock-to-replace";
+      to = "replace";
+      mode = "replace";
+    }
+    {
+      name = "replace-to-stock";
+      to = null;
+      mode = "stock";
+    }
+    {
+      name = "stock-to-beside";
+      to = "beside";
+      mode = "beside";
+    }
+    {
+      name = "beside-to-replace";
+      to = "replace";
+      mode = "replace";
+    }
+    {
+      name = "replace-to-beside";
+      to = "beside";
+      mode = "beside";
+    }
+  ];
+in
+vivariumLib.mkTest {
+  name = "pynixd-switch";
+  backend = "uml";
+
+  pythonPath = [
+    ../../daemon/helpers
+    ../../switch
+  ];
+
+  settings = {
+    busybox = "${pkgs.busybox}";
+    system = pkgs.stdenv.hostPlatform.system;
+    # `to = false` is the booted system, checked before any switch.
+    steps = map (step: { inherit (step) name to mode; }) steps;
+  };
+
+  phases = lib.listToAttrs (
+    lib.imap0 (
+      index: step:
+      lib.nameValuePair step.name {
+        script = ../../switch/step.py;
+        after = if index == 0 then [ "boot" ] else [ (lib.elemAt steps (index - 1)).name ];
+        description = "${step.mode} after ${if step.to == false then "boot" else "a switch"}";
+      }
+    ) steps
+  );
+
+  nodes.machine = {
+    vivarium.memory = "1024M";
+    users.users.tester = {
+      isNormalUser = true;
+      uid = 1000;
+    };
+    environment.systemPackages = [ pkgs.iproute2 ];
+    nix.settings = {
+      experimental-features = [ "nix-command" ];
+      # No network; see tests/derivations/guest for the 75 seconds a
+      # substituter query costs without this.
+      substituters = lib.mkForce [ ];
+    };
+    vivarium.configurations = {
+      beside = pynixd "beside";
+      replace = pynixd "replace";
+    };
+  };
+}

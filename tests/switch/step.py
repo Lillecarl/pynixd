@@ -1,0 +1,95 @@
+"""One step of tests.switch: switch the machine, then check it is in its mode.
+
+`vms.phase` names the step, and the settings say where it goes and what the
+machine is after it. A switch that exits 0 proves nothing about sockets:
+switch-to-configuration does not restart a changed `.socket` unit
+(switch-to-configuration-ng `main.rs`, "FIXME: do something?"), so each
+check asks the machine who holds what.
+"""
+
+from __future__ import annotations
+
+import shlex
+
+from daemon_helpers import as_tester, instantiate, store_path
+from vivarium_runner import Machine, Machines
+
+DEFAULT = "/nix/var/nix/daemon-socket/socket"
+UPSTREAM = "/nix/var/nix/daemon-socket/upstream"
+BESIDE = "/run/pynixd/pynixd.sock"
+
+
+async def holder(vm: Machine, socket: str) -> str:
+    return (await vm.succeed(f"ss -xlpnH src {socket}")).strip()
+
+
+def is_pynixd(line: str) -> bool:
+    return "pynixd" in line or "python" in line
+
+
+async def build(vm: Machine, settings: dict, job: str, store: str | None = None) -> str:
+    drv = await instantiate(vm, settings, job)
+    where = f" --store {shlex.quote(store)}" if store else ""
+    return store_path(await as_tester(vm, f"nix-store{where} --realise {drv}"))
+
+
+async def test(vms: Machines) -> None:
+    vm = vms.machine
+    settings = vms.settings
+    name = vms.phase or ""
+    step = next(each for each in settings["steps"] if each["name"] == name)
+    mode = step["mode"]
+    problems: list[str] = []
+
+    if step["to"] is False:
+        await vm.wait_for_unit("multi-user.target")
+    else:
+        rc, out = await vm.switch_to(step["to"], check=False)
+        print(f"[test] switch to {step['to'] or 'the booted system'}: exit {rc}")
+        if rc != 0:
+            problems.append(f"switch-to-configuration exited {rc}:\n{out}")
+
+    failed = (await vm.succeed("systemctl --failed --no-legend --plain")).strip()
+    if failed:
+        problems.append(f"failed units: {failed}")
+
+    default = await holder(vm, DEFAULT)
+    upstream = await holder(vm, UPSTREAM)
+    print(f"[test] {DEFAULT}: {default or 'nobody'}")
+    print(f"[test] {UPSTREAM}: {upstream or 'nobody'}")
+    if mode == "replace":
+        if not is_pynixd(default):
+            problems.append(f"pynixd does not hold {DEFAULT}: {default!r}")
+        if "systemd" not in upstream:
+            problems.append(f"nix-daemon.socket is not on {UPSTREAM}: {upstream!r}")
+    else:
+        if "systemd" not in default:
+            problems.append(f"nix-daemon.socket does not hold {DEFAULT}: {default!r}")
+        if upstream:
+            problems.append(f"something still listens on {UPSTREAM}: {upstream!r}")
+
+    pynixd = await vm.unit_state("pynixd.service")
+    want = "inactive" if mode == "stock" else "active"
+    if pynixd != want:
+        problems.append(f"pynixd.service is {pynixd}, not {want}")
+
+    if mode == "beside":
+        beside = await holder(vm, BESIDE)
+        if not is_pynixd(beside):
+            problems.append(f"pynixd does not hold {BESIDE}: {beside!r}")
+
+    # A user's build through the default socket, whoever holds it. Root
+    # would open the store directly and reach no daemon at all.
+    try:
+        print(f"[test] tester built {await build(vm, settings, name)}")
+        if mode == "beside":
+            out = await build(vm, settings, f"{name}-beside", f"unix://{BESIDE}")
+            print(f"[test] tester built {out} through {BESIDE}")
+    except Exception as error:
+        problems.append(f"a user's build failed: {error}")
+
+    if problems:
+        journal = await vm.succeed(
+            "journalctl --no-pager -n 60 -u pynixd.service -u nix-daemon.socket -u nix-daemon.service"
+        )
+        raise AssertionError(f"{name}:\n- " + "\n- ".join(problems) + f"\n\n{journal}")

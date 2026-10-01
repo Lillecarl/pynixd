@@ -360,5 +360,11 @@ package
       inherit package;
       inherit (sources) vivarium;
     };
+
+    # A running machine switched to pynixd and back, in each mode.
+    switch = pkgs.callPackage ./tests/derivations/switch {
+      inherit package;
+      inherit (sources) vivarium;
+    };
   };
 }
