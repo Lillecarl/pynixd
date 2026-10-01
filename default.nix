@@ -355,6 +355,15 @@ package
       src = lib.cleanSource ./.;
     };
 
+    # The performance benchmarks, in a guest. Not a gate: they print numbers
+    # and pass unless the run fails. `nix run --file . tests.benchmark.driver
+    # -- --out <abs>`.
+    benchmark = pkgs.callPackage ./tests/derivations/benchmark {
+      src = lib.cleanSource ./.;
+      inherit (sources) vivarium;
+      inherit devEnv;
+    };
+
     # The same suites in a guest, where cleanup is a poweroff rather than
     # a promise.
     guest = pkgs.callPackage ./tests/derivations/guest {
