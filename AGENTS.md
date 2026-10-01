@@ -14,7 +14,7 @@ This document defines the foundational architectural patterns and engineering st
 
 Important Nix protocol version support matrix:
 Builder stores: >= 1.32 (nixbuild.net is 1.32)
-Local stores: >= 1.35 (Lix is 1.35)
+Local stores: >= 1.35 (Lix speaks 1.35). Supported, but untested: the guest sessions run Nix >= 2.34 (`supportedNixFloor`) only.
 Pynixd will adversise 1.38 support even if local_store is 1.35 and translate where appropriate
 
 1. **Server Dispatch** (`OpRequest.handle(proxy)`): 
@@ -204,7 +204,7 @@ paragraph names a file of Nix.
 - **`run_captured(cmd, **kwargs)`** — runs a subprocess, returns `(rc, stdout, stderr)`.
 - **`run_logged(cmd, **kwargs)`** — runs a subprocess, streams output through structlog in real-time.
 - Both helpers auto-set `NIX_SSHOPTS` if not already present.
-- Use `env.str("NIX_BIN", "nix")` and `env.str("LIX_BIN", "nix")` from the `environs` singleton for binary paths.
+- Use `env.str("NIX_BIN", "nix")` from the `environs` singleton for the Nix binary.
 
 ### Test Design
 - Keep tests simple and explicit. Avoid over-engineered abstractions.

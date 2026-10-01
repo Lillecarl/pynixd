@@ -23,7 +23,6 @@ pkgs.runCommand "pynixd-pytest"
     allowSubstitutes = false;
     buildInputs = [
       pkgs.nix
-      pkgs.lix
       pkgs.openssh
       pkgs.bash
       pytestEnv
@@ -43,9 +42,7 @@ pkgs.runCommand "pynixd-pytest"
     # Make nixpkgs available for test expressions that use <nixpkgs>
     export NIX_PATH="nixpkgs=${pkgs.path}"
 
-    # Point tests at the Nix/Lix binaries
     export NIX_BIN=${pkgs.nix}/bin/nix
-    export LIX_BIN=${pkgs.lix}/bin/nix
 
     # Copy source to a writable directory
     cp -r ${src} $HOME/src

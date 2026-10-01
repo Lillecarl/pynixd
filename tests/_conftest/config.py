@@ -44,9 +44,8 @@ log = structlog.get_logger(__name__)
 # stricter answer than "the one on PATH" buys nothing.
 NIX_BIN = env.path("NIX_BIN", None) or Path(shutil.which("nix") or "nix")
 
-# One binary, for the client, for the local store and for the builder. This
-# project supported Lix as well, through `LIX_BIN` and the `--client-bin`,
-# `--local-bin` and `--builder-bin` options, and it does not any more.
+# One binary, for the client, for the local store and for the builder. No
+# test runs Lix, though pynixd supports its protocol, 1.35.
 CLIENT_BIN: Path = NIX_BIN
 
 
