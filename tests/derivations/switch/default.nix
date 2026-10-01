@@ -11,6 +11,9 @@
   lib ? pkgs.lib,
   package,
   vivarium,
+  # Every supported Nix, by attribute name. Replace mode moves through each
+  # and back: a new Nix changes nix-daemon's unit under a running pynixd.
+  nixVersions,
 }:
 
 let
@@ -57,6 +60,19 @@ let
       to = "beside";
       mode = "beside";
     }
+  ]
+  ++ lib.mapAttrsToList (version: nix: {
+    name = "to-replace-${version}";
+    to = "replace-${version}";
+    mode = "replace";
+    nix = nix.version;
+  }) nixVersions
+  ++ [
+    {
+      name = "back-to-replace";
+      to = "replace";
+      mode = "replace";
+    }
   ];
 in
 vivariumLib.mkTest {
@@ -72,7 +88,13 @@ vivariumLib.mkTest {
     busybox = "${pkgs.busybox}";
     system = pkgs.stdenv.hostPlatform.system;
     # `to = false` is the booted system, checked before any switch.
-    steps = map (step: { inherit (step) name to mode; }) steps;
+    steps = map (
+      step:
+      {
+        inherit (step) name to mode;
+        nix = step.nix or null;
+      }
+    ) steps;
   };
 
   phases = lib.listToAttrs (
@@ -102,6 +124,14 @@ vivariumLib.mkTest {
     vivarium.configurations = {
       beside = pynixd "beside";
       replace = pynixd "replace";
-    };
+    }
+    // lib.mapAttrs' (
+      version: nix:
+      lib.nameValuePair "replace-${version}" {
+        imports = [ (pynixd "replace") ];
+        # Above `tests.switchByNix`'s mkForce on every guest's Nix.
+        nix.package = lib.mkOverride 40 nix;
+      }
+    ) nixVersions;
   };
 }

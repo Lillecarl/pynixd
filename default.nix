@@ -177,20 +177,31 @@ let
   */
   supportedNixFloor = "2.34";
 
-  nixFunctionalTests =
+  # Every `nixVersions.nix_2_*` at or above the floor, by attribute name.
+  supportedNix =
     let
       named = lib.filterAttrs (name: _: lib.hasPrefix "nix_2_" name) pkgs.nixVersions;
-      # `tryEval`, because a removed version is still an attribute and reading
-      # its `version` throws: `error: nix_2_10 has been removed`.  Asking the
-      # floor without this filter fails the whole evaluation of this file.
-      supported = lib.filterAttrs (
-        _: nix:
-        let
-          version = builtins.tryEval (lib.versions.majorMinor nix.version);
-        in
-        version.success && lib.versionAtLeast version.value supportedNixFloor
-      ) named;
     in
+    # `tryEval`, because a removed version is still an attribute and reading
+    # its `version` throws: `error: nix_2_10 has been removed`.  Asking the
+    # floor without this filter fails the whole evaluation of this file.
+    lib.filterAttrs (
+      _: nix:
+      let
+        version = builtins.tryEval (lib.versions.majorMinor nix.version);
+      in
+      version.success && lib.versionAtLeast version.value supportedNixFloor
+    ) named;
+
+  # A guest session once for each supported Nix, as every guest's
+  # `nix.package`: the daemon pynixd fronts and the client both.
+  byNix =
+    test:
+    lib.mapAttrs (
+      _: nix: test.extend { modules = [ { defaults.nix.package = lib.mkForce nix; } ]; }
+    ) supportedNix;
+
+  nixFunctionalTests =
     lib.mapAttrs (
       version: nix:
       pkgs.callPackage ./nix/functional-tests/package.nix {
@@ -198,7 +209,7 @@ let
         pynixd = package;
         wirelogPython = pyinstance;
       }
-    ) supported;
+    ) supportedNix;
 
   # The workflow schema, the steps a job asks for by name, and the writer
   # that turns a workflow value into YAML. It takes `lib` and nothing else,
@@ -335,7 +346,7 @@ package
   };
   nixosModule = import ./nix/nixos/default.nix;
 
-  tests = {
+  tests = rec {
     simple = pkgs.callPackage ./tests/derivations/simple {
       pynixd-lib = library;
     };
@@ -365,6 +376,10 @@ package
     switch = pkgs.callPackage ./tests/derivations/switch {
       inherit package;
       inherit (sources) vivarium;
+      nixVersions = supportedNix;
     };
+
+    daemonByNix = byNix daemon;
+    switchByNix = byNix switch;
   };
 }

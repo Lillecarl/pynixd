@@ -68,6 +68,15 @@ async def test(vms: Machines) -> None:
         if upstream:
             problems.append(f"something still listens on {UPSTREAM}: {upstream!r}")
 
+    if step.get("nix"):
+        # The daemon that answered the build above, not the one configured.
+        pid = (await vm.succeed("systemctl show -P MainPID nix-daemon-upstream.service")).strip()
+        running = await vm.succeed(f"$(readlink /proc/{pid}/exe) --version")
+        if step["nix"] not in running:
+            problems.append(f"nix-daemon-upstream runs {running.strip()!r}, not {step['nix']}")
+        else:
+            print(f"[test] nix-daemon-upstream runs {running.strip()}")
+
     pynixd = await vm.unit_state("pynixd.service")
     want = "inactive" if mode == "stock" else "active"
     if pynixd != want:
