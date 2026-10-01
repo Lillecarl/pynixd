@@ -18,7 +18,8 @@ PROBE = "nix-store --query --hash {busybox}"
 async def test(vms: Machines) -> None:
     vm = vms.daemon
     probe = PROBE.format(busybox=vms.settings["busybox"])
-    await vm.succeed("systemctl stop pynixd.service")
+    # The socket too: it would start pynixd again for the request.
+    await vm.succeed("systemctl stop pynixd.socket pynixd.service")
     try:
         state = (await vm.succeed("systemctl is-active nix-daemon-upstream.socket")).strip()
         rc, output = await vm.execute(f"su - tester -c {probe!r}")
@@ -26,6 +27,6 @@ async def test(vms: Machines) -> None:
         if rc == 0:
             raise AssertionError(f"a user's request succeeded with pynixd stopped: {output!r}")
     finally:
-        await vm.succeed("systemctl start pynixd.service")
+        await vm.succeed("systemctl start pynixd.socket pynixd.service")
     await vm.wait_for_unit("pynixd.service")
     print(f"[test] pynixd started again: {(await as_tester(vm, probe)).strip()}")

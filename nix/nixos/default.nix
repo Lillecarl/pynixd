@@ -76,6 +76,21 @@ in
       # PATH is made from `path` again here.
       environment = removeAttrs daemon.environment [ "PATH" ];
     };
+    /*
+      The default socket is bound in `sockets.target`, before any ordinary
+      service, and pynixd takes it over (`inherited_listener`). A client
+      that comes before pynixd is ready waits in the backlog. Without it, a
+      unit ordered only `After=nix-daemon.socket`, such as home-manager's,
+      finds no daemon. Nix then opens the store directly, which a user
+      cannot: "opening lock file .../big-lock: Permission denied" (#59).
+    */
+    systemd.sockets.pynixd = lib.mkIf replace {
+      wantedBy = [ "sockets.target" ];
+      before = [ "multi-user.target" ];
+      listenStreams = [ common.daemonSocket ];
+      socketConfig.SocketMode = "0666";
+    };
+
     # Without build users, the roots daemon starts with the daemon.
     systemd.sockets.nix-roots-daemon.wantedBy = lib.mkIf (
       replace && config.nix.daemonUser != "root"
@@ -88,15 +103,24 @@ in
       wantedBy = [ "multi-user.target" ];
       # No `wants` on the daemon service: its socket starts it, and a
       # service started on its own takes the socket's path itself (#60).
+      # `pynixd.socket` as a requirement, not only through sockets.target:
+      # switch-to-configuration starts a new service before a new socket,
+      # and the socket of a running service refuses to start.
       after =
         if replace then
-          [ "nix-daemon-upstream.socket" ]
+          [
+            "pynixd.socket"
+            "nix-daemon-upstream.socket"
+          ]
         else
           [
             "nix-daemon.socket"
             "nix-daemon.service"
           ];
-      requires = lib.mkIf replace [ "nix-daemon-upstream.socket" ];
+      requires = lib.mkIf replace [
+        "pynixd.socket"
+        "nix-daemon-upstream.socket"
+      ];
       # In `replace` mode this is the daemon, so it is up before anything
       # that uses one.
       before = lib.mkIf replace [ "multi-user.target" ];

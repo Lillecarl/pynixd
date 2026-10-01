@@ -88,8 +88,22 @@ async def test(vms: Machines) -> None:
     except Exception as error:
         problems.append(f"a user's build failed: {error}")
 
+    # A client that comes while pynixd is down waits for it rather than
+    # failing: the socket stays bound and starts pynixd (#59).
+    if mode == "replace" and not problems:
+        await vm.succeed("systemctl stop pynixd.service")
+        try:
+            out = await build(vm, settings, f"{name}-early")
+            print(f"[test] with pynixd.service stopped, tester built {out}")
+        except Exception as error:
+            problems.append(f"a build while pynixd was stopped failed: {error}")
+        state = await vm.unit_state("pynixd.service")
+        if state != "active":
+            problems.append(f"the socket did not start pynixd.service: {state}")
+
     if problems:
         journal = await vm.succeed(
-            "journalctl --no-pager -n 60 -u pynixd.service -u nix-daemon.socket -u nix-daemon.service"
+            "journalctl --no-pager -n 60 -u pynixd.service -u pynixd.socket -u nix-daemon.socket"
+            " -u nix-daemon.service -u nix-daemon-upstream.socket -u nix-daemon-upstream.service"
         )
         raise AssertionError(f"{name}:\n- " + "\n- ".join(problems) + f"\n\n{journal}")

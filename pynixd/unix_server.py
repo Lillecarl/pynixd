@@ -8,6 +8,8 @@ for each client. Used for testing (avoids SSH) and local daemon mode.
 from __future__ import annotations
 
 import asyncio
+import os
+import socket
 from typing import TYPE_CHECKING
 
 import anyio
@@ -25,6 +27,27 @@ if TYPE_CHECKING:
     from .context import PynixdContext
 
 log = structlog.get_logger(__name__)
+
+SD_LISTEN_FDS_START = 3
+
+
+def inherited_listener(socket_path: Path) -> socket.socket | None:
+    """The socket systemd passed for `socket_path`, if it passed one.
+
+    `sd_listen_fds(3)`: descriptors from 3 on, for this pid only. A socket
+    unit binds the path before pynixd starts, so a client that connects
+    early waits in the backlog. Without it, a user's Nix finds no daemon
+    and fails on the store it cannot open (#59).
+    """
+    if os.environ.get("LISTEN_PID") != str(os.getpid()):
+        return None
+    count = int(os.environ.get("LISTEN_FDS", "0"))
+    for fd in range(SD_LISTEN_FDS_START, SD_LISTEN_FDS_START + count):
+        sock = socket.socket(fileno=fd)
+        if sock.family == socket.AF_UNIX and sock.getsockname() == str(socket_path):
+            return sock
+        sock.detach()
+    return None
 
 
 async def start_unix_server(
@@ -73,6 +96,14 @@ async def start_unix_server(
             log.exception("unix_proxy_session_failed")
         finally:
             writer.close()
+
+    inherited = inherited_listener(socket_path)
+    if inherited is not None:
+        # The path is systemd's: removing it on close would break the
+        # socket unit for the next start.
+        server = await asyncio.start_unix_server(handle_client, sock=inherited, limit=2**18, cleanup_socket=False)
+        log.info("unix_server_listening", socket_path=socket_path, inherited=True)
+        return server
 
     # Clean up stale socket
     sock = anyio.Path(socket_path)
