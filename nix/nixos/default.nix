@@ -65,6 +65,10 @@ in
         ConditionPathIsReadWrite = "/nix/var/nix/daemon-socket";
       };
       listenStreams = [ common.upstreamSocket ];
+      # Nix 2.35 takes only a descriptor named `nix-daemon.socket` in
+      # LISTEN_FDNAMES (`serveUnixSocket`, `activationName`); under this
+      # unit's own name it listened on nothing and every client hung.
+      socketConfig.FileDescriptorName = "nix-daemon.socket";
     };
     systemd.services.nix-daemon-upstream = lib.mkIf replace {
       inherit (daemon)
