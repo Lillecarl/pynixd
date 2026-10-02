@@ -53,9 +53,11 @@ class AddToStoreHandler(Handler):
 
             # 3. Forward framed NAR bytes from client to daemon
             started = time.monotonic()
-            await forward_framed(ctx.proxy.r, conn.w, on_bytes=metrics.NAR_ADD_BYTES.inc)
-            metrics.NAR_ADD_PATHS.inc()
-            metrics.NAR_ADD_DURATION.observe(time.monotonic() - started)
+            metered = ctx.proxy.metrics_enabled
+            await forward_framed(ctx.proxy.r, conn.w, on_bytes=metrics.NAR_ADD_BYTES.inc if metered else None)
+            if metered:
+                metrics.NAR_ADD_PATHS.inc()
+                metrics.NAR_ADD_DURATION.observe(time.monotonic() - started)
 
             # 4. Read response from daemon
             resp = await AddToStoreResponse.from_reader(

@@ -137,11 +137,26 @@ class DaemonProxy:
         self._encode_timing: dict[int, tuple[int, float]] = {}
         self._temp_roots: TempRoots | None = None
         self._sync_reader_ready = False
+        self._metrics_enabled = ctx.settings.metrics_enabled
+        # The Prometheus children for (op, result), looked up once. `.labels()`
+        # takes a lock and a dict lookup per call, and an operation pays two
+        # of them; the series are bounded (one op name each, two results), so
+        # holding the children changes nothing the scrape sees.
+        self._op_metrics: dict[tuple[str, str], tuple[Any, Any]] = {}
 
     @property
     def local_store(self) -> LocalStore:
         """The local Nix store for direct store operations."""
         return self.ctx.local_store
+
+    @property
+    def metrics_enabled(self) -> bool:
+        """Whether this session updates Prometheus metrics.
+
+        Read from the settings once per session: the switch restarts the
+        service, so it cannot change under a session.
+        """
+        return self._metrics_enabled
 
     def _version_for_the_client(self) -> str:
         """The version of the daemon that answers behind pynixd.
@@ -421,8 +436,17 @@ class DaemonProxy:
                 elapsed = time.monotonic() - t0
                 count, acc = self._op_timing.get(op_num, (0, 0.0))
                 self._op_timing[op_num] = (count + 1, acc + elapsed)
-                metrics.DAEMON_OPS.labels(op=op_name, result=result).inc()
-                metrics.DAEMON_OP_DURATION.labels(op=op_name).observe(elapsed)
+                if self._metrics_enabled:
+                    key = (op_name, result)
+                    counters = self._op_metrics.get(key)
+                    if counters is None:
+                        counters = (
+                            metrics.DAEMON_OPS.labels(op=op_name, result=result),
+                            metrics.DAEMON_OP_DURATION.labels(op=op_name),
+                        )
+                        self._op_metrics[key] = counters
+                    counters[0].inc()
+                    counters[1].observe(elapsed)
 
     # ── Dispatch ─────────────────────────────────────────────────────
 

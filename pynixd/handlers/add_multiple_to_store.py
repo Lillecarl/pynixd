@@ -78,7 +78,7 @@ class AddMultipleToStoreHandler(Handler):
 
             async with anyio.create_task_group() as tg:
                 tg.start_soon(_read_response)
-                infos.extend(await self._forward_stream(ctx.proxy.r, conn.w))
+                infos.extend(await self._forward_stream(ctx.proxy.r, conn.w, ctx.proxy.metrics_enabled))
 
             if not responses:
                 raise RuntimeError("the AddMultipleToStore reader task recorded no response")
@@ -93,6 +93,7 @@ class AddMultipleToStoreHandler(Handler):
         self,
         src: NixReader,
         dst: NixWriter,
+        metered: bool,
     ) -> list[ValidPathInfo]:
         """Forward AddMultipleToStore payload, snooping ValidPathInfos.
 
@@ -119,14 +120,19 @@ class AddMultipleToStoreHandler(Handler):
             fdst.write(await info.bytes_wire())
             # The same loop every other NAR path takes. `forward_raw` carries
             # the drain and the checkpoint, and why each is needed.
-            await forward_raw(fsrc, fdst, info.info.nar_size, on_bytes=metrics.NAR_FORWARD_BYTES.inc)
-            metrics.NAR_FORWARD_PATHS.inc()
+            await forward_raw(
+                fsrc, fdst, info.info.nar_size, on_bytes=metrics.NAR_FORWARD_BYTES.inc if metered else None
+            )
+            if metered:
+                metrics.NAR_FORWARD_PATHS.inc()
 
         await fdst.finalize()
-        metrics.NAR_FORWARD_DURATION.observe(time.monotonic() - started)
+        if metered:
+            metrics.NAR_FORWARD_DURATION.observe(time.monotonic() - started)
         try:
             await asyncio.wait_for(fsrc.ensure_eof(), timeout=10)
         except TimeoutError:
-            metrics.NAR_FORWARD_EOF_TIMEOUTS.inc()
+            if metered:
+                metrics.NAR_FORWARD_EOF_TIMEOUTS.inc()
             logger.warning("add_multiple_forward_source_eof_timeout", count=len(infos))
         return infos

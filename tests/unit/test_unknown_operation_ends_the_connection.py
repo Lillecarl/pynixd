@@ -51,6 +51,8 @@ class FakeProxy:
         self.errors: list[str] = []
         self.dispatched: list[int] = []
         self._op_timing: dict[int, tuple[int, float]] = {}
+        self._op_metrics: dict[tuple[str, str], tuple[object, object]] = {}
+        self._metrics_enabled = True
 
     async def _nothing(self) -> None:
         return None

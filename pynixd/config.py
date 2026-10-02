@@ -649,6 +649,16 @@ class PynixdSettings(BaseSettings):
     # Logging (the log-level threshold; filtering is handled by plugins)
     log_level: str = "WARNING"
 
+    # Update Prometheus metrics (`/metrics`) on the hot paths: per-operation
+    # counters and durations, per-transfer byte and path counters. On, because
+    # a daemon nobody watches is a daemon nobody can explain. Off for a local
+    # deployment that scrapes nothing: each `.labels()` takes a lock and a
+    # lookup, each `.observe()` walks buckets, and a build pays both for
+    # every one of its tens of thousands of operations. The internal
+    # per-session timing (`client_op_timing`) is not this switch and stays:
+    # it is a dict update, and the benchmark reads it.
+    metrics_enabled: bool = True
+
     # Sign paths added through `AddToStore` with pynixd's own keys, by relay
     # (`SignPathInfo`) or by decomposing (local sign, then `AddSignatures`).
     # Off by default: nothing populates the signing keys, and no daemon run

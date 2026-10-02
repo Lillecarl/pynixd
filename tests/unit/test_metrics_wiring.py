@@ -51,12 +51,14 @@ class FakeProxy:
     """Enough of `DaemonProxy` for `op_loop` to run, as in
     `test_unknown_operation_ends_the_connection.py`."""
 
-    def __init__(self, ops: Sequence[int], *, fail: bool = False) -> None:
+    def __init__(self, ops: Sequence[int], *, fail: bool = False, metrics_enabled: bool = True) -> None:
         self.r = FakeReader(ops)
         self.w = SimpleNamespace(drain=self._nothing)
         self.client = SimpleNamespace(flush=self._nothing)
         self.errors: list[str] = []
         self._op_timing: dict[int, tuple[int, float]] = {}
+        self._op_metrics: dict[tuple[str, str], tuple[object, object]] = {}
+        self._metrics_enabled = metrics_enabled
         self._fail = fail
 
     async def _nothing(self) -> None:
@@ -126,6 +128,40 @@ class TestDaemonOperations:
         }
         assert names
         assert all(not name.startswith("op_") for name in names)
+
+
+class TestTheMetricsSwitch:
+    """`metrics_enabled` off skips Prometheus, and nothing else."""
+
+    @pytest.mark.anyio
+    async def test_a_served_operation_updates_nothing(self) -> None:
+        ops_labels = {"op": "IsValidPath", "result": "ok"}
+        duration_labels = {"op": "IsValidPath"}
+        ops_before = _value("pynixd_daemon_ops_total", ops_labels)
+        duration_before = _value("pynixd_daemon_op_duration_seconds_count", duration_labels)
+
+        proxy = FakeProxy([_IS_VALID_PATH, _IS_VALID_PATH], metrics_enabled=False)
+        await proxy.run()
+
+        assert not proxy.errors
+        assert _value("pynixd_daemon_ops_total", ops_labels) - ops_before == 0
+        assert _value("pynixd_daemon_op_duration_seconds_count", duration_labels) - duration_before == 0
+
+    @pytest.mark.anyio
+    async def test_the_internal_timing_stays_on(self) -> None:
+        """The switch gates the scrape, not the session's own accounting."""
+        proxy = FakeProxy([_IS_VALID_PATH], metrics_enabled=False)
+        await proxy.run()
+
+        assert proxy._op_timing[_IS_VALID_PATH][0] == 1
+
+    @pytest.mark.anyio
+    async def test_children_are_looked_up_once_per_series(self) -> None:
+        """`.labels()` takes a lock per call; the loop holds the child."""
+        proxy = FakeProxy([_IS_VALID_PATH, _IS_VALID_PATH])
+        await proxy.run()
+
+        assert list(proxy._op_metrics) == [("IsValidPath", "ok")]
 
 
 class FakePool:
