@@ -134,6 +134,7 @@ class DaemonProxy:
         of a fixed few words and never an address."""
         self._op_timing: dict[int, tuple[int, float]] = {}
         self._temp_roots: TempRoots | None = None
+        self._sync_reader_ready = False
 
     @property
     def local_store(self) -> LocalStore:
@@ -202,6 +203,7 @@ class DaemonProxy:
         metrics.DAEMON_SESSIONS.labels(transport=self.transport).inc()
         try:
             await self.handshake()
+            self._open_sync_reader()
             await self.op_loop()
         except (EOFError, BrokenPipeError, ConnectionError, OSError) + ssh_connection_lost():
             log.debug("client_disconnected")
@@ -211,6 +213,7 @@ class DaemonProxy:
             metrics.DAEMON_SESSIONS.labels(transport=self.transport).dec()
             if self._temp_roots is not None:
                 await self._temp_roots.close()
+            self._close_sync_reader()
             if self._op_timing:
                 total_time = sum(t for _, t in self._op_timing.values())
                 total_ops = sum(n for n, _ in self._op_timing.values())
@@ -513,6 +516,31 @@ class DaemonProxy:
         log.warning("unhandled_op", op_num=op_num)
         await self.send_error(f"Unhandled operation: {op_num}")
         return None
+
+    # ── Store database reads ─────────────────────────────────────────
+
+    def _open_sync_reader(self) -> None:
+        """Give this session its own read-only store-DB connection.
+
+        One connection for each client, so a slow query of one session cannot
+        wait behind the query of another, and the read then runs on the event
+        loop without a thread hop. `SyncReader` has the measurement. A store
+        with no readable database gives `None`, and every read uses the pooled
+        connection.
+        """
+        if self._sync_reader_ready:
+            return
+        self._sync_reader_ready = True
+        db = getattr(self.local_store, "db", None)
+        if db is None:
+            return
+        self.client.sync_reader = db.sync_reader()
+
+    def _close_sync_reader(self) -> None:
+        reader = self.client.sync_reader
+        if reader is not None:
+            reader.close()
+            self.client.sync_reader = None
 
     # ── Temporary roots ──────────────────────────────────────────────
 

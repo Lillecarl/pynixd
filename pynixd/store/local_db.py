@@ -119,13 +119,26 @@ class LocalDBStore(LocalStore):
     # ── Fast-path overrides ────────────────────────────────────────
 
     async def is_valid_path(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
-        """IsValidPath — fast-path via SQLite lookup."""
+        """IsValidPath — fast-path via SQLite lookup.
+
+        The synchronous reader of the session answers this when it has one.
+        It skips the `aiosqlite` thread hop, which is most of the cost of the
+        query: one build sends an `IsValidPath` for every derivation of its
+        closure. A reader that cannot answer reports `None`, and the pooled
+        connection answers instead.
+        """
         if not self.db.active:
             return None
 
         path_str = str(request.path)
 
         from pynixd.serde import IsValidPathResponse
+
+        reader = getattr(client, "sync_reader", None)
+        if reader is not None:
+            valid = reader.is_valid_path(path_str)
+            if valid is not None:
+                return IsValidPathResponse(valid=valid)
 
         from .queries import IS_VALID_PATH
 

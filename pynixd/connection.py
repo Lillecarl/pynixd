@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from nix_daemon_protocol.wire_message import WireModel
     from nix_daemon_protocol.wire_ops import WireRequest
 
+    from .local_store_db import SyncReader
     from .serde import SetOptionsRequest
     from .wire import (
         NixReader,
@@ -83,6 +84,15 @@ class ClientConn:
 
         `Connection.call` reads this and applies the set to the connection it
         holds, when that connection carries another set.
+        """
+        self.sync_reader: SyncReader | None = None
+        """The read-only connection this session reads the store DB over.
+
+        `DaemonProxy` fills it in from `LocalStoreDB.sync_reader`, and closes
+        it when the session ends. It is `None` when the store has no readable
+        database, and every read then uses the pooled `aiosqlite` connection.
+        It lives here because it belongs to one client, and the operations
+        that read the store DB already receive this object as `client`.
         """
 
     async def send(self, msg: WireModel) -> None:

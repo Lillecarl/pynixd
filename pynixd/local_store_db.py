@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sqlite3
 import time
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
@@ -39,6 +40,7 @@ from .db_migrations import (
     SchemaState,
     apply_migrations,
 )
+from .store.queries import IS_VALID_PATH
 from .store_layout import StoreLayout
 from .store_path import StorePath
 
@@ -121,6 +123,86 @@ WHERE pname = ?
 _DEFAULT_REFERENCE_FLUSH_INTERVAL = 5.0
 
 
+class SyncReader:
+    """One synchronous read-only `sqlite3` connection for one client session.
+
+    **The point is to keep a `SELECT` off a thread hop.** A read through the
+    pool goes to `aiosqlite`, which runs every statement on a worker thread
+    and wakes the event loop when it answers. Measured on this machine, that
+    hop is 59 us for one `SELECT 1 FROM ValidPaths WHERE path = ?`, while the
+    same query on a synchronous connection is 3.2 us (18x). A build sends one
+    `IsValidPath` for every derivation of its closure, so the hop is the cost
+    that the fast path was meant to remove.
+
+    **It belongs to a session, not to the store.** A build is a burst of
+    reads, and SQLite serialises statements on one connection, so a shared
+    connection would let one client's slow query wait behind another's. One
+    connection for each client keeps that wait out of the other sessions, and
+    it is what makes running the query on the event loop safe in the first
+    place: the only work it can block is the client that asked for it.
+
+    The connection is read-only, and it reads a store database that holds a
+    rollback journal or a WAL. In WAL a reader never blocks the writer; in a
+    rollback journal a running `SELECT` takes a shared lock that a writer
+    waits behind. A single statement over an indexed `path` is short, and the
+    write path of `pynixd` is on the same event loop, so the lock is held for
+    as long as a Python call and not for a thread hop.
+    """
+
+    def __init__(self, db_path: Path) -> None:
+        self.db_path = db_path
+        self._conn: sqlite3.Connection | None = None
+        self._unavailable = False
+
+    def _connection(self) -> sqlite3.Connection | None:
+        if self._unavailable:
+            return None
+        if self._conn is None:
+            try:
+                conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
+                # A read must never be what stops a store from working. The
+                # write path of the store is Nix's, and pynixd waits behind it
+                # here rather than failing the query.
+                conn.execute("PRAGMA busy_timeout = 5000")
+            except sqlite3.Error as exc:
+                self._unavailable = True
+                log.warning(
+                    "sync_reader_unavailable",
+                    db_path=str(self.db_path),
+                    error=str(exc),
+                    detail="reads of this store go back to the pooled aiosqlite connection",
+                )
+                return None
+            self._conn = conn
+        return self._conn
+
+    def is_valid_path(self, path: str) -> bool | None:
+        """Whether `ValidPaths` holds `path`, or `None` when no read happened.
+
+        `None` says that this connection could not answer, and the caller
+        must use the pooled connection instead. It is the same answer over
+        every failure, because the fast path is an optimization and a store
+        that a client may still build from must never be reported invalid.
+        """
+        conn = self._connection()
+        if conn is None:
+            return None
+        try:
+            cursor = conn.execute(IS_VALID_PATH, (path,))
+        except sqlite3.Error:
+            log.debug("sync_reader_query_failed", exc_info=True)
+            return None
+        try:
+            return cursor.fetchone() is not None
+        finally:
+            cursor.close()
+
+    def close(self) -> None:
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
+
+
 class LocalStoreDB:
     """Connection pool and dispatcher for Nix store SQLite.
 
@@ -200,6 +282,20 @@ class LocalStoreDB:
     @property
     def active(self) -> bool:
         return self.db_path is not None
+
+    def sync_reader(self) -> SyncReader | None:
+        """A read-only connection for one client session, or `None` when none.
+
+        The caller owns it and closes it when the session ends. A store with
+        no readable database gets `None`, and every caller then keeps the
+        pooled `aiosqlite` path. The connection is opened by the first query,
+        and `SyncReader` refuses and reports `None` from there if the store
+        will not give one, so a store that only `aiosqlite` can read still
+        answers every query over the pool.
+        """
+        if not self.active or self.db_path is None:
+            return None
+        return SyncReader(self.db_path)
 
     @asynccontextmanager
     async def acquire_conn(self) -> AsyncIterator[aiosqlite.Connection]:
