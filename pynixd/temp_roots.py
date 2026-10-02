@@ -89,20 +89,28 @@ class TempRoots:
     async def add(self, path: str | StorePath) -> None:
         """Hold `path` against the collector until `close`.
 
-        The common case does no waiting: the roots file and the GC lock are
-        already open, and the shared lock is non-blocking, so the write runs
-        on the event loop. A session adds one root for each derivation of a
-        build, and a thread hop for each of those would cost more than the
-        syscalls it carries.
+        The common case does no waiting and takes no lock: the roots file and
+        the GC lock are already open, and the shared lock is non-blocking, so
+        the write runs on the event loop. A session adds one root for each
+        derivation of a build, and the `anyio` lock and a thread hop for each
+        of those cost more than the syscalls they carry.
+
+        **The lock is for the collector path alone.** One `TempRoots` belongs
+        to one client session, and the proxy dispatches the operations of a
+        session one at a time, so nothing runs `add` beside `add`. Only the
+        collector path can wait, and `close` can then race it, so that path
+        keeps the lock and the thread hop.
 
         The collector running is the case that waits, over its socket. That
         runs in a worker thread, so the event loop is free while it does.
         """
         root = str(StorePath(str(path)))
+        if self._disabled:
+            return
+        if self._add_inline(root):
+            return
         async with self._lock:
             if self._disabled:
-                return
-            if self._add_inline(root):
                 return
             await run_sync(self._add, root)
 
