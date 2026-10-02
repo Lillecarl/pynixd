@@ -238,21 +238,6 @@ def _find_reader(ann: type, version: int = 0, features: frozenset[str] = frozens
     raise TypeError(f"No reader for {ann}")
 
 
-async def _write_value(val: Any, ann: type, ctx: WriteContext) -> None:
-    """Write one value, through the writer cached for its annotation.
-
-    **The writer is looked up once for each annotation, and not for each
-    value.** This used to decide the shape on every call: `get_origin`,
-    `get_args`, and `is_wire_scalar` on each value, and the last one runs
-    `issubclass` against a `runtime_checkable` protocol, which inspects the
-    caller's module (`typing._allow_reckless_class_checks`). Measured on one
-    `IsValidPathResponse`, encoding it takes 1.7 us here against 4.3 us for the
-    reflection-per-value form. `_find_reader` already caches the read side;
-    this gives the write side the same treatment.
-    """
-    await _find_writer(ann, ctx.version, ctx.features)(val, ctx)
-
-
 @functools.lru_cache(maxsize=256)
 def _find_writer(ann: type, version: int = 0, features: frozenset[str] = frozenset()) -> Any:
     """Look up an async writer for a wire type, mirroring `_find_reader`.
@@ -530,6 +515,41 @@ def _wire_fields(
     return result
 
 
+@functools.lru_cache(maxsize=256)
+def _wire_plan(
+    cls: type[BaseModel],
+    version: int = 0,
+    features: frozenset[str] = frozenset(),
+) -> tuple[tuple, tuple, tuple]:
+    """One resolved codec per (model, version, features): readers, writers, defaults.
+
+    A session negotiates one version and one feature set, and then decodes
+    thousands of operations under them. `_wire_fields` already caches the
+    field list, but every operation still paid a lookup per field
+    (`_find_reader`, `_find_writer`), a pass over `model_fields` for the
+    defaults, and the gating walk that the cache made redundant. This
+    resolves all of it once: the per-operation path below is one cache
+    lookup and straight-line reads and writes.
+
+    The dynamic half stays dynamic. `wire_depends_on` reads the values of
+    the operation, so it still runs per operation, and a default factory
+    still runs per operation -- the factory is shared, its product is not.
+    """
+    read_steps = []
+    write_steps = []
+    for name, ann, wire_depends_on, serialize, deserialize in _wire_fields(cls, version, features):
+        read_steps.append((name, _find_reader(ann, version, features), wire_depends_on, deserialize))
+        write_steps.append((name, _find_writer(ann, version, features), wire_depends_on, serialize))
+
+    defaults = []
+    for name, field in cls.model_fields.items():
+        if field.default is not PydanticUndefined:
+            defaults.append((name, False, field.default))
+        elif field.default_factory is not None:
+            defaults.append((name, True, field.default_factory))
+    return (tuple(read_steps), tuple(write_steps), tuple(defaults))
+
+
 # ── Base class ──
 
 
@@ -557,42 +577,35 @@ class WireModel(BaseModel):
 
     async def to_writer(self, ctx: WriteContext) -> None:
         """Write all non-ClassVar fields in declaration order."""
-        for name, ann, wire_depends_on, serialize, _deserialize in _wire_fields(
-            type(self), version=ctx.version, features=ctx.features
-        ):
+        _read_steps, write_steps, _defaults = _wire_plan(type(self), version=ctx.version, features=ctx.features)
+        for name, writer, wire_depends_on, serialize in write_steps:
             if not serialize:
                 continue
             if wire_depends_on is not None and not wire_depends_on(self):
                 continue
 
-            val = getattr(self, name)
-            await _write_value(val, ann, ctx)
+            await writer(getattr(self, name), ctx)
 
     @classmethod
     async def from_reader(cls, ctx: ReadContext):
         """Read all non-ClassVar fields in declaration order."""
         with deserialization_scope(ctx, cls):
+            read_steps, _write_steps, defaults = _wire_plan(cls, version=ctx.version, features=ctx.features)
             obj = cls.__new__(cls)
             # Initialize Pydantic internals (bypassed __init__)
             object.__setattr__(obj, "__pydantic_fields_set__", set())
             object.__setattr__(obj, "__pydantic_extra__", None)
             object.__setattr__(obj, "__pydantic_private__", None)
             # Set defaults for version-gated and conditional fields
-            for name, field in cls.model_fields.items():
-                if field.default is not PydanticUndefined:
-                    object.__setattr__(obj, name, field.default)
-                elif field.default_factory is not None:
-                    object.__setattr__(obj, name, field.default_factory())  # pyright: ignore[reportCallIssue]
+            for name, is_factory, value in defaults:
+                object.__setattr__(obj, name, value() if is_factory else value)  # pyright: ignore[reportCallIssue]
 
-            for name, ann, wire_depends_on, _serialize, deserialize in _wire_fields(
-                cls, version=ctx.version, features=ctx.features
-            ):
+            for name, reader, wire_depends_on, deserialize in read_steps:
                 if not deserialize:
                     continue
                 if wire_depends_on is not None and not wire_depends_on(obj):
                     continue
 
-                reader = _find_reader(ann, version=ctx.version, features=ctx.features)
                 object.__setattr__(obj, name, await reader(ctx))
                 obj.__pydantic_fields_set__.add(name)
 
