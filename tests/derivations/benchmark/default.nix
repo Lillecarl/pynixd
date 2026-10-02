@@ -45,6 +45,10 @@ vivariumLib.mkTest {
       enable = true;
       mode = "replace";
       inherit package;
+      # The `system` phase reads pynixd's own `client_op_timing` line, which is
+      # logged at session close and at `info`. `log_level` defaults to
+      # `WARNING`, so without this the op breakdown is always empty.
+      settings.log_level = "info";
     };
 
     # The builds run as a user. Root's `nix` opens the store directly and

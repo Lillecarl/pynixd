@@ -149,9 +149,38 @@ async def _system(vms: Machines) -> None:
     # each operation. A tester who cannot write the store's database reaches
     # the daemon for all of it, so this is the load on the front-end. The
     # largest `total_ops` is the build; a small session is an eval.
+    #
+    # pynixd logs one JSON record per session at close. `python -c` parses
+    # each one, sorts by `total_ops`, and prints the two largest with their
+    # breakdown, so a build is not lost under the eval sessions around it.
     breakdown = await vm.succeed(
         "journalctl -u pynixd --no-pager -o cat "
-        "| grep client_op_timing | sed 's/.*breakdown/breakdown/' "
-        "| tail -3 || true"
+        "| grep client_op_timing "
+        r"""| python3 -c 'import sys, json
+rows = []
+for line in sys.stdin:
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    rec = json.loads(line)
+    rows.append((
+        rec.get("total_ops", 0),
+        rec.get("total_time", ""),
+        rec.get("total_encode", ""),
+        rec.get("breakdown", {}),
+        rec.get("encode_breakdown", {}),
+    ))
+rows.sort(reverse=True)
+for total_ops, total_time, total_encode, ops, encode in rows[:2]:
+    print(f"session total_ops={total_ops} dispatch={total_time} encode={total_encode}")
+    for name, value in sorted(ops.items(), key=lambda kv: kv[1], reverse=True):
+        print(f"    {name:28} {value}")
+    top = sorted(encode.items(), key=lambda kv: kv[1], reverse=True)[:5]
+    if top:
+        print("    encode:")
+        for name, value in top:
+            print(f"        {name:24} {value}")
+'"""
+        " || true"
     )
     print(f"[benchmark] pynixd op breakdown:\n{breakdown.strip()}")

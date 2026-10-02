@@ -133,6 +133,7 @@ class DaemonProxy:
         """Which listener accepted this session. A metric label, so it is one
         of a fixed few words and never an address."""
         self._op_timing: dict[int, tuple[int, float]] = {}
+        self._encode_timing: dict[int, tuple[int, float]] = {}
         self._temp_roots: TempRoots | None = None
         self._sync_reader_ready = False
 
@@ -217,17 +218,37 @@ class DaemonProxy:
             if self._op_timing:
                 total_time = sum(t for _, t in self._op_timing.values())
                 total_ops = sum(n for n, _ in self._op_timing.values())
+                total_encode = sum(t for _, t in self._encode_timing.values())
                 breakdown = {}
                 for op_num, (count, acc_time) in sorted(self._op_timing.items()):
                     req_cls = WIRE_REGISTRY.get(op_num)
                     name = req_cls.name if req_cls else f"op_{op_num}"
                     breakdown[name] = f"x{count} {acc_time:.3f}s"
+                encode = {}
+                for op_num, (count, acc_time) in sorted(self._encode_timing.items()):
+                    req_cls = WIRE_REGISTRY.get(op_num)
+                    name = req_cls.name if req_cls else f"op_{op_num}"
+                    encode[name] = f"x{count} {acc_time:.3f}s"
                 log.info(
                     "client_op_timing",
                     total_ops=total_ops,
                     total_time=f"{total_time:.3f}s",
+                    total_encode=f"{total_encode:.3f}s",
                     breakdown=breakdown,
+                    encode_breakdown=encode,
                 )
+
+    def _note_encode_time(self, op_num: int, started: float) -> None:
+        """Record the time to encode and write the response above `dispatch`.
+
+        `_op_timing` measures `dispatch` alone, and a response is encoded and
+        written after it returns. For a response stream of 16 000 small ops,
+        that half is worth measuring separately: it is the cost of the shape
+        pynixd writes, and the client pays it again to decode.
+        """
+        elapsed = time.monotonic() - started
+        count, acc = self._encode_timing.get(op_num, (0, 0.0))
+        self._encode_timing[op_num] = (count + 1, acc + elapsed)
 
     # ── Handshake ────────────────────────────────────────────────────
 
@@ -378,8 +399,10 @@ class DaemonProxy:
 
                 if response is not None:
                     await self.client.flush()
+                    t_encoded = time.monotonic()
                     await response.to_writer(WriteContext.from_proxy(self))
                     await self.w.drain()
+                    self._note_encode_time(op_num, t_encoded)
                 # else: already handled (streaming, error, etc.)
 
             except ClosingError as ex:
