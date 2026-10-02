@@ -10,6 +10,7 @@ Write functions are sync (writer.write() buffers; callers await drain()).
 
 from __future__ import annotations
 
+import asyncio
 import os
 import struct
 from typing import TYPE_CHECKING, Protocol
@@ -35,7 +36,6 @@ from .constants import (
 from .serde.context import ReadContext
 
 if TYPE_CHECKING:
-    import asyncio
     from collections.abc import AsyncIterator, Callable, Iterable
 
     import asyncssh
@@ -194,6 +194,20 @@ class SSHNixReader(NixReader):
 
 
 class UnixNixReader(NixReader):
+    # Read ahead, because `StreamReader.readexactly` is one await per call and
+    # the protocol makes three of them for every string: the 8-byte length, the
+    # payload, and its padding. A build sends thousands of store paths, so the
+    # reader spends its time suspended between fields rather than parsing them.
+    # Measured at fccc0f8d, the AddTempRoot decode of a 16000-op build was
+    # 0.98 s, almost all of it inside `readexactly`. One larger read serves
+    # many small ones from memory.
+    #
+    # **Safe only because nothing else reads `self.reader`.** A byte held here
+    # is invisible to anything that reads the stream directly, so a second
+    # reader would lose it. `_transport_is_dirty` counts this buffer for the
+    # same reason. Check both before giving another caller the stream.
+    _READAHEAD = _UNIX_READ_AHEAD
+
     def __init__(
         self,
         reader: asyncio.StreamReader,
@@ -201,11 +215,43 @@ class UnixNixReader(NixReader):
     ) -> None:
         super().__init__(identifier=identifier)
         self.reader = reader
+        self._buf: bytes = b""
+        self._pos = 0
 
     async def readexactly(self, n: int) -> bytes:
-        return await self.reader.readexactly(n)
+        if (len(self._buf) - self._pos) >= n:
+            out = self._buf[self._pos : self._pos + n]
+            self._pos += n
+            return out
+
+        head = self._buf[self._pos :]
+        self._buf = b""
+        self._pos = 0
+        need = n - len(head)
+
+        # A read at least as large as the read-ahead goes straight through.
+        # Buffering it would copy the payload to no purpose.
+        if need >= self._READAHEAD:
+            return head + await self.reader.readexactly(need)
+
+        parts = [head]
+        while need > 0:
+            chunk = await self.reader.read(self._READAHEAD)
+            if not chunk:
+                raise asyncio.IncompleteReadError(b"".join(parts), n)
+            if len(chunk) >= need:
+                parts.append(chunk[:need])
+                self._buf = chunk
+                self._pos = need
+                need = 0
+            else:
+                parts.append(chunk)
+                need -= len(chunk)
+        return b"".join(parts)
 
     def _transport_is_dirty(self) -> bool:
+        if (len(self._buf) - self._pos) > 0:
+            return True
         return bool(self.reader._buffer)  # type: ignore[attr-defined]
 
 
