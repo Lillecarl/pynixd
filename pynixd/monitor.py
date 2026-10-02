@@ -86,6 +86,13 @@ class ResourceGate:
 
     async def wait_mem_clear(self, timeout: float = 5.0) -> None:  # noqa: ASYNC109
         """Wait for Memory pressure to drop below threshold."""
+        # The common case costs one flag read. `fail_after` builds two cancel
+        # scopes and `Event.wait` checkpoints, measured 0.07 s of the
+        # AddToStore flame, all to discover no pressure. A set flag is what
+        # `wait` answers with, so returning here changes nothing but the
+        # scaffolding; a pressured gate takes the slow path below.
+        if self.mem_clear.is_set():
+            return
         try:
             with anyio.fail_after(timeout):
                 await self.mem_clear.wait()
