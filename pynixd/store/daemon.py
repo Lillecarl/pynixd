@@ -816,8 +816,20 @@ class DaemonStore(Store):
         return await self.call(request, client=client, suppress_last=suppress_last)
 
     async def collect_garbage(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
-        """CollectGarbage (op 20) — delegate to daemon."""
-        return await self.call(request, client=client, suppress_last=suppress_last)
+        """CollectGarbage (op 20) — delegate to daemon, and forget what it deleted.
+
+        A collected path stays in `path_info_cache` for 300 s, and
+        `QueryPathInfo` answers `valid=True` from it. Deletion is the only
+        daemon-mediated write that nothing invalidated: `nix store delete`
+        is this operation with `DELETE_SPECIFIC`, and `nix-collect-garbage`
+        is it with `DELETE_DEAD`. The response names every deleted path, so
+        each one is forgotten individually rather than clearing the cache
+        that the live paths still use.
+        """
+        response = await self.call(request, client=client, suppress_last=suppress_last)
+        for path in response.paths_deleted:
+            self.forget_path_info(path)
+        return response
 
     async def query_all_valid_paths(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """QueryAllValidPaths (op 23) — delegate to daemon."""

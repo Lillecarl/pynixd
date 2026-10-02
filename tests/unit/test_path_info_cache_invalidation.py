@@ -28,6 +28,8 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from nix_daemon_protocol.collect_garbage import CollectGarbageRequest, CollectGarbageResponse
+from nix_daemon_protocol.protocol import GCAction
 from nix_daemon_protocol.signature import Signature
 from pynixd.serde import (
     AddSignaturesRequest,
@@ -47,9 +49,9 @@ if TYPE_CHECKING:
 PATH = "/nix/store/00000000000000000000000000000001-thing"
 
 
-def _info(*signatures: str) -> ValidPathInfo:
+def _info(*signatures: str, path: str = PATH) -> ValidPathInfo:
     return ValidPathInfo(
-        path=StorePath(path=PATH),
+        path=StorePath(path=path),
         info=UnkeyedValidPathInfo(
             deriver=StorePath(path=""),
             nar_hash=NARHash("0" * 64),
@@ -74,6 +76,8 @@ class RecordingStore(DaemonStore):
 
         super().__init__(LocalSocketStoreSpec(store_id=StoreId("test")))
         self.sent: list[str] = []
+        # Paths the fake daemon reports as deleted, for `collect_garbage`.
+        self.deleted: set[StorePath] = set()
         # `features` is a read-only property over `_features`, which the
         # handshake fills in. No handshake runs here, so this writes it.
         self._features: set[str] = set()
@@ -91,6 +95,8 @@ class RecordingStore(DaemonStore):
     ) -> Any:
         del client, suppress_last, raise_on_error, skip_probe
         self.sent.append(type(request).__name__)
+        if isinstance(request, CollectGarbageRequest):
+            return CollectGarbageResponse(paths_deleted=set(self.deleted), bytes_freed=0, obsolete=0)
         return None
 
 
@@ -148,3 +154,33 @@ def test_forgetting_a_path_that_was_never_cached_is_not_an_error(store: Recordin
     store.forget_path_info(PATH)
 
     assert store.get_path_info(PATH) is None
+
+
+@pytest.mark.anyio
+async def test_collect_garbage_forgets_only_what_it_deleted(store: RecordingStore) -> None:
+    """A collected path stayed cached for 300 s and answered `valid=True`.
+
+    Deletion is `CollectGarbage` in every shape: `nix store delete` is
+    `DELETE_SPECIFIC` and `nix-collect-garbage` is `DELETE_DEAD`. The live
+    paths keep their entries; only the deleted ones are forgotten.
+    """
+    store.add_path_info(_info("old"))
+    other = "/nix/store/00000000000000000000000000000002-thing"
+    store.add_path_info(_info("old", path=other))
+    store.deleted = {StorePath(path=PATH)}
+
+    await store.collect_garbage(
+        CollectGarbageRequest(
+            action=GCAction.DELETE_DEAD,
+            paths_to_delete=set(),
+            ignore_liveness=0,
+            max_freed=0,
+            obsolete1=0,
+            obsolete2=0,
+            obsolete3=0,
+        )
+    )
+
+    assert store.sent == ["CollectGarbageRequest"], "it must still reach the daemon"
+    assert store.get_path_info(PATH) is None
+    assert store.get_path_info(other) is not None
