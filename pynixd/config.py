@@ -649,6 +649,15 @@ class PynixdSettings(BaseSettings):
     # Logging (the log-level threshold; filtering is handled by plugins)
     log_level: str = "WARNING"
 
+    # Sign paths added through `AddToStore` with pynixd's own keys, by relay
+    # (`SignPathInfo`) or by decomposing (local sign, then `AddSignatures`).
+    # Off by default: nothing populates the signing keys, and no daemon run
+    # here advertises `SignPathInfo`, so the step costs a pool acquire and an
+    # upstream round trip per added path and adds zero signatures -- measured
+    # 0.49 s of the 0.93 s AddToStore flame. An operator with signing keys
+    # sets this true, and added paths carry pynixd's signature again.
+    sign_added_paths: bool = False
+
     @classmethod
     def settings_customise_sources(
         cls,

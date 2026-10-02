@@ -62,16 +62,31 @@ class AddToStoreHandler(Handler):
                 ReadContext.from_conn(conn),
             )
 
-        # 5. Sign path info and update cache (outside conn so we don't re-enter the pool)
-        if resp.info is not None:
-            sign_req = SignPathInfoRequest(info=resp.info)
-            # The client's options ride along. Without them the nested call
-            # asks for a connection with no options, and the pool discards the
-            # idle connection that carries this client's set (`pool.py:196`),
-            # so every AddToStore pays a fresh upstream handshake.
-            sign_resp = await ctx.proxy.local_store.execute(sign_req, client=ctx.proxy.client)
-            resp.info = sign_resp.info
+            # 5. Sign the path info over the transfer connection, idle now that
+            # the NAR and the response crossed it. Signing through the store
+            # acquires a second pooled connection, and the acquire alone --
+            # a slots wait, a memory-gate wait, a cancel scope -- measured
+            # 0.49 s of the 0.93 s AddToStore flame.
+            #
+            # The client's options ride along. Without them the sign call asks
+            # for a connection with no options, and the pool discards the idle
+            # connection that carries this client's set (`pool.py:196`), so
+            # every AddToStore pays a fresh upstream handshake.
+            #
+            # No signing keys are configured anywhere, so this step adds zero
+            # signatures unless the operator sets `sign_added_paths`. The
+            # cache update below stays either way: it holds what the daemon
+            # answered, signed by whoever signs.
+            if resp.info is not None:
+                if ctx.proxy.local_store.settings.sign_added_paths:
+                    sign_resp = await ctx.proxy.local_store.sign_path_info(
+                        SignPathInfoRequest(info=resp.info),
+                        client=ctx.proxy.client,
+                        conn=conn,
+                    )
+                    resp.info = sign_resp.info
 
-            ctx.proxy.local_store.add_path_info(resp.info)
+                ctx.proxy.local_store.forget_path_info(resp.info.path)
+                ctx.proxy.local_store.add_path_info(resp.info)
 
         return resp
