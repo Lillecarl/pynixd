@@ -200,6 +200,19 @@ class TestTheReaderQueryPathInfo:
         finally:
             reader.close()
 
+    def test_a_path_with_no_references_reads_one_row(self, tmp_path: Path) -> None:
+        """The left join keeps the row and yields a null reference: no refs."""
+        reader = SyncReader(_store_db_with_info(tmp_path))
+        try:
+            found = reader.query_path_info(LIBC)
+            assert found is not None
+            row, refs = found
+            assert row is not None
+            assert row[0] == LIBC
+            assert refs == []
+        finally:
+            reader.close()
+
     def test_a_database_that_is_not_there_reports_no_answer(self, tmp_path: Path) -> None:
         """`None`: no read happened, so the caller falls back to the pool."""
         reader = SyncReader(tmp_path / "nowhere" / "db.sqlite")

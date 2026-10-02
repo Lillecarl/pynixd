@@ -7,15 +7,12 @@ LocalDBStore for SQLite fast-path queries.
 
 IS_VALID_PATH = "SELECT 1 FROM ValidPaths WHERE path = ? LIMIT 1"
 
-QUERY_PATH_INFO = """
-SELECT path, deriver, hash, registrationTime, narSize, ultimate, sigs, ca
-FROM ValidPaths WHERE path = ?
-"""
-
-QUERY_REFERENCES = """
-SELECT vp.path FROM Refs r
-JOIN ValidPaths vp ON r.reference = vp.id
-WHERE r.referrer = (SELECT id FROM ValidPaths WHERE path = ?)
+QUERY_PATH_INFO_WITH_REFS = """
+SELECT v.path, v.deriver, v.hash, v.registrationTime, v.narSize, v.ultimate, v.sigs, v.ca, vp.path
+FROM ValidPaths v
+LEFT JOIN Refs r ON r.referrer = v.id
+LEFT JOIN ValidPaths vp ON vp.id = r.reference
+WHERE v.path = ?
 """
 
 QUERY_ALL_VALID_PATHS = "SELECT path FROM ValidPaths"

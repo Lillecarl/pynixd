@@ -40,7 +40,7 @@ from .db_migrations import (
     SchemaState,
     apply_migrations,
 )
-from .store.queries import IS_VALID_PATH, QUERY_PATH_INFO, QUERY_REFERENCES
+from .store.queries import IS_VALID_PATH, QUERY_PATH_INFO_WITH_REFS
 from .store_layout import StoreLayout
 from .store_path import StorePath
 
@@ -200,35 +200,29 @@ class SyncReader:
     def query_path_info(self, path: str) -> tuple[tuple | None, list[str]] | None:
         """The `ValidPaths` row and reference paths for `path`.
 
-        `None` when no read happened, and the caller must use the pooled
-        connection instead -- the same contract as `is_valid_path`. A
-        `(None, [])` pair means the read happened and the path is not valid,
-        so the caller answers `valid=False` without a second query.
+        One statement carries both: the info columns repeat on every row
+        and the last column holds one reference, so a path with no
+        references reads back as a single row with a null reference. `None`
+        when no read happened, and the caller must use the pooled connection
+        instead -- the same contract as `is_valid_path`. A `(None, [])` pair
+        means the read happened and the path is not valid, so the caller
+        answers `valid=False`.
         """
         conn = self._connection()
         if conn is None:
             return None
         try:
-            cursor = conn.execute(QUERY_PATH_INFO, (path,))
+            cursor = conn.execute(QUERY_PATH_INFO_WITH_REFS, (path,))
         except sqlite3.Error:
             log.debug("sync_reader_query_failed", exc_info=True)
             return None
         try:
-            row = cursor.fetchone()
+            rows = cursor.fetchall()
         finally:
             cursor.close()
-        if row is None:
+        if not rows:
             return (None, [])
-        try:
-            cursor = conn.execute(QUERY_REFERENCES, (path,))
-        except sqlite3.Error:
-            log.debug("sync_reader_query_failed", exc_info=True)
-            return None
-        try:
-            refs = [r[0] for r in cursor.fetchall()]
-        finally:
-            cursor.close()
-        return (tuple(row), refs)
+        return (tuple(rows[0][:8]), [r[8] for r in rows if r[8] is not None])
 
     def close(self) -> None:
         if self._conn is not None:

@@ -263,7 +263,7 @@ class LocalDBStore(LocalStore):
 
         from pynixd.serde import QueryPathInfoResponse
 
-        from .queries import QUERY_PATH_INFO, QUERY_REFERENCES
+        from .queries import QUERY_PATH_INFO_WITH_REFS
 
         reader = getattr(client, "sync_reader", None)
         if reader is not None:
@@ -274,16 +274,12 @@ class LocalDBStore(LocalStore):
                     return QueryPathInfoResponse.fast(valid=False)
                 return _path_info_response(row, ref_paths)
 
-        async with self.db.execute(QUERY_PATH_INFO, (str(request.path),)) as cursor:
-            row = await cursor.fetchone()
-        if row is None:
+        async with self.db.execute(QUERY_PATH_INFO_WITH_REFS, (str(request.path),)) as cursor:
+            rows = [tuple(r) for r in await cursor.fetchall()]
+        if not rows:
             return QueryPathInfoResponse.fast(valid=False)
 
-        async with self.db.execute(QUERY_REFERENCES, (str(request.path),)) as cursor:
-            ref_rows = await cursor.fetchall()
-        refs = {r[0] for r in ref_rows}
-
-        return _path_info_response(tuple(row), refs)
+        return _path_info_response(rows[0][:8], {r[8] for r in rows if r[8] is not None})
 
     async def query_all_valid_paths(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """QueryAllValidPaths — fast-path via SQLite."""
