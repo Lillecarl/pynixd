@@ -516,6 +516,23 @@ def _wire_fields(
 
 
 @functools.lru_cache(maxsize=256)
+def _compiled_or_none(cls: type, version: int = 0, features: frozenset[str] = frozenset()) -> Any:
+    """The compiled codec for (model, version, features), or `None`.
+
+    A model with a custom codec refuses, and the refusal is cached like the
+    codec: every operation looks this up, and a refusal that recompiled its
+    `TypeError` each time would cost what the cache exists to remove. The
+    import is lazy because the compiler imports this module.
+    """
+    from .experimental_compiled import compile_codec
+
+    try:
+        return compile_codec(cls, version, features)
+    except TypeError:
+        return None
+
+
+@functools.lru_cache(maxsize=256)
 def _wire_plan(
     cls: type[BaseModel],
     version: int = 0,
@@ -577,6 +594,10 @@ class WireModel(BaseModel):
 
     async def to_writer(self, ctx: WriteContext) -> None:
         """Write all non-ClassVar fields in declaration order."""
+        codec = _compiled_or_none(type(self), version=ctx.version, features=ctx.features)
+        if codec is not None:
+            await codec.write(self, ctx)
+            return
         _read_steps, write_steps, _defaults = _wire_plan(type(self), version=ctx.version, features=ctx.features)
         for name, writer, wire_depends_on, serialize in write_steps:
             if not serialize:
@@ -589,6 +610,9 @@ class WireModel(BaseModel):
     @classmethod
     async def from_reader(cls, ctx: ReadContext):
         """Read all non-ClassVar fields in declaration order."""
+        codec = _compiled_or_none(cls, version=ctx.version, features=ctx.features)
+        if codec is not None:
+            return await codec.read(ctx)
         with deserialization_scope(ctx, cls):
             read_steps, _write_steps, defaults = _wire_plan(cls, version=ctx.version, features=ctx.features)
             obj = cls.__new__(cls)

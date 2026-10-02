@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Self
 from .constants import MINIMUM_REMOTE_PROTOCOL, proto_str
 from .exceptions import UnsupportedProtocolVersion
 from .logs import WireLogs
-from .wire_message import WireField, WireModel, _wire_plan
+from .wire_message import WireField, WireModel, _compiled_or_none, _wire_plan
 
 if TYPE_CHECKING:
     from .context import ReadContext, WriteContext
@@ -47,6 +47,11 @@ class WireRequest(WireModel):
 
     async def to_writer(self, ctx: WriteContext) -> None:
         """Write op code then body."""
+        codec = _compiled_or_none(type(self), version=ctx.version, features=ctx.features)
+        if codec is not None:
+            # The compiled request writes the prelude itself.
+            await codec.write(self, ctx)
+            return
         if ctx.version and ctx.version < self.min_protocol:
             raise UnsupportedProtocolVersion(
                 f"{self.name} requires daemon protocol >= {proto_str(self.min_protocol)}, got {proto_str(ctx.version)}",

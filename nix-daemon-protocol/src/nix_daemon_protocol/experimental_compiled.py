@@ -28,7 +28,7 @@ from .context import ReadContext, WriteContext
 from .exceptions import UnsupportedProtocolVersion
 from .logging import deserialization_scope
 from .wire_integer import WireUInt64
-from .wire_message import WireModel, _wire_fields
+from .wire_message import WireModel, _nested_context, _wire_fields
 from .wire_ops import WireRequest
 from .wire_scalar import WireScalarLike, is_wire_scalar
 
@@ -75,7 +75,15 @@ class _Scalar:
 
 
 @dataclass(frozen=True)
-class _OptionalStorePath:
+class _OptionalScalar:
+    """An optional scalar: absent travels as the empty string, both ways.
+
+    This is the compile-time form of the rule in `_find_reader` /
+    `_find_writer` (issue Lillecarl/nanopynix#194): Nix spells an absent
+    scalar as `""`, so writing `None` emits `""` and reading `""` answers
+    `None`. It holds for every scalar rather than for `StorePath` alone.
+    """
+
     value: WireNode
 
 
@@ -102,7 +110,7 @@ class _WireString:
     direct_field: str | None
 
 
-WireNode = _Primitive | _Integer | _Enum | _Scalar | _OptionalStorePath | _Sequence | _Mapping | _Model | _WireString
+WireNode = _Primitive | _Integer | _Enum | _Scalar | _OptionalScalar | _Sequence | _Mapping | _Model | _WireString
 
 
 @dataclass(frozen=True)
@@ -148,8 +156,8 @@ def _wire_node(annotation: type) -> WireNode:
         non_none = tuple(arg for arg in arguments if arg is not type(None))
         if len(non_none) == 1:
             value = _wire_node(non_none[0])
-            if non_none[0].__name__ == "StorePath":
-                return _OptionalStorePath(value)
+            if is_wire_scalar(non_none[0]):
+                return _OptionalScalar(value)
             return value
     if origin is list:
         return _Sequence("list", _wire_node(arguments[0]))
@@ -166,13 +174,13 @@ def _wire_node(annotation: type) -> WireNode:
     raise TypeError(f"No wire node for {annotation}")
 
 
-def _wire_schema(model: type[WireModel], version: int) -> WireSchema:
+def _wire_schema(model: type[WireModel], version: int, features: frozenset[str]) -> WireSchema:
     return WireSchema(
         model=model,
         version=version,
         fields=tuple(
             _Field(name, _wire_node(annotation), predicate, serialize, deserialize)
-            for name, annotation, predicate, serialize, deserialize in _wire_fields(model, version)
+            for name, annotation, predicate, serialize, deserialize in _wire_fields(model, version, features)
         ),
     )
 
@@ -204,9 +212,10 @@ def _reader_method(method: str) -> ast.Attribute:
 class _AstLowerer:
     """Lower ``WireSchema`` values to direct Python AST statements."""
 
-    def __init__(self, version: int, direction: str) -> None:
+    def __init__(self, version: int, direction: str, features: frozenset[str]) -> None:
         self.version = version
         self.direction = direction
+        self.features = features
         self.adapters: list[Writer | Reader | type[WireUInt64] | Callable[[str], WireScalarLike]] = []
         self.codecs: list[CompiledCodec] = []
         self.enums: list[type[IntEnum]] = []
@@ -236,8 +245,8 @@ class _AstLowerer:
         if isinstance(node, _Enum):
             return [ast.Expr(_call(_ctx_method("uint64"), _attribute(value, "value")))]
         if isinstance(node, _Scalar):
-            return [ast.Expr(_call(_ctx_method("string"), value))]
-        if isinstance(node, _OptionalStorePath):
+            return [ast.Expr(_call(_ctx_method("string"), _call(_attribute(value, "to_wire"))))]
+        if isinstance(node, _OptionalScalar):
             return [
                 ast.If(
                     test=ast.Compare(value, [ast.Is()], [ast.Constant(None)]),
@@ -272,7 +281,9 @@ class _AstLowerer:
                     ast.Expr(
                         ast.Await(
                             _call(
-                                _attribute(self._codec(compile_codec(node.model, self.version)), "write"),
+                                _attribute(
+                                    self._codec(compile_codec(node.model, self.version, self.features)), "write"
+                                ),
                                 value,
                                 _name("ctx"),
                             )
@@ -280,7 +291,11 @@ class _AstLowerer:
                     )
                 ]
             return [
-                ast.Expr(ast.Await(_call(self._adapter(_writer_for(node.model, self.version)), value, _name("ctx"))))
+                ast.Expr(
+                    ast.Await(
+                        _call(self._adapter(_writer_for(node.model, self.version, self.features)), value, _name("ctx"))
+                    )
+                )
             ]
         raise TypeError(f"No writer for {node}")
 
@@ -312,8 +327,13 @@ class _AstLowerer:
                     ),
                 )
             ]
-        if isinstance(node, _OptionalStorePath):
-            return self.read_value(node.value, target)
+        if isinstance(node, _OptionalScalar):
+            # The read half of the rule above: an empty wire string answers
+            # `None`, spelled exactly as the generic codec spells it.
+            return [
+                *self.read_value(node.value, target),
+                ast.Assign([target], ast.BoolOp(ast.Or(), [target_value, ast.Constant(None)])),
+            ]
         if isinstance(node, _Sequence):
             item = self.local("item")
             initial = ast.List([], ast.Load()) if node.kind == "list" else ast.Call(_name("set"), [], [])
@@ -347,19 +367,35 @@ class _AstLowerer:
                 ),
             ]
         if isinstance(node, _Model):
+            # The nested read strips the context exactly as `_read_nested`
+            # does: the log sink, the buffering and the error tolerance stay
+            # behind, or every message arrives twice and a refused operation
+            # reads as a hit (issues #46 and #47).
+            nested = _call(_name("_nested_context"), _name("ctx"))
             if _can_compile(node.model):
-                call = _call(_attribute(self._codec(compile_codec(node.model, self.version)), "read"), _name("ctx"))
+                call = _call(
+                    _attribute(self._codec(compile_codec(node.model, self.version, self.features)), "read"),
+                    nested,
+                )
             else:
-                call = _call(self._adapter(_reader_for(node.model, self.version)), _name("ctx"))
+                call = _call(self._adapter(_reader_for(node.model, self.version, self.features)), nested)
             return [ast.Assign([target], ast.Await(call))]
         raise TypeError(f"No reader for {node}")
 
 
 def _can_compile(model: type[WireModel]) -> bool:
-    """Whether ``model`` has declarative fields plus an understood prelude."""
-    return (
-        model.to_writer is WireModel.to_writer and model.from_reader.__func__ is WireModel.from_reader.__func__
-    ) or issubclass(model, WireRequest)
+    """Whether ``model`` has declarative fields plus an understood prelude.
+
+    The codec methods must be exactly the base pair -- or exactly the request
+    pair, whose prelude the compiler emits itself. A subclass with its own
+    override of either method is refused: compiling it would silently run the
+    generic shape instead of the override.
+    """
+    base_pair = model.to_writer is WireModel.to_writer and model.from_reader.__func__ is WireModel.from_reader.__func__
+    request_pair = (
+        model.to_writer is WireRequest.to_writer and model.from_reader.__func__ is WireRequest.from_reader.__func__
+    )
+    return base_pair or request_pair
 
 
 async def _write_request_prelude(value: WireRequest, ctx: WriteContext) -> None:
@@ -372,7 +408,7 @@ async def _write_request_prelude(value: WireRequest, ctx: WriteContext) -> None:
 
 
 @functools.cache
-def _writer_for(annotation: type, version: int) -> Writer:
+def _writer_for(annotation: type, version: int, features: frozenset[str]) -> Writer:
     """Specialize a write closure once for an annotation/version pair."""
     from .wire_string import WireString
 
@@ -412,7 +448,7 @@ def _writer_for(annotation: type, version: int) -> Writer:
     if origin is types.UnionType:
         non_none = tuple(arg for arg in arguments if arg is not type(None))
         if len(non_none) == 1:
-            writer = _writer_for(non_none[0], version)
+            writer = _writer_for(non_none[0], version, features)
             if non_none[0].__name__ == "StorePath":
 
                 async def write_optional_store_path(value: Any, ctx: WriteContext) -> None:
@@ -424,7 +460,7 @@ def _writer_for(annotation: type, version: int) -> Writer:
                 return write_optional_store_path
             return writer
     if origin is list:
-        writer = _writer_for(arguments[0], version)
+        writer = _writer_for(arguments[0], version, features)
 
         async def write_list(value: list[Any], ctx: WriteContext) -> None:
             ctx.writer.write_uint64(len(value))
@@ -433,7 +469,7 @@ def _writer_for(annotation: type, version: int) -> Writer:
 
         return write_list
     if origin is set:
-        writer = _writer_for(arguments[0], version)
+        writer = _writer_for(arguments[0], version, features)
 
         async def write_set(value: set[Any], ctx: WriteContext) -> None:
             ctx.writer.write_uint64(len(value))
@@ -442,8 +478,8 @@ def _writer_for(annotation: type, version: int) -> Writer:
 
         return write_set
     if origin is dict:
-        key_writer = _writer_for(arguments[0], version)
-        value_writer = _writer_for(arguments[1], version)
+        key_writer = _writer_for(arguments[0], version, features)
+        value_writer = _writer_for(arguments[1], version, features)
 
         async def write_dict(value: dict[Any, Any], ctx: WriteContext) -> None:
             ctx.writer.write_uint64(len(value))
@@ -460,7 +496,7 @@ def _writer_for(annotation: type, version: int) -> Writer:
         return write_wire_string
     if isinstance(annotation, type) and issubclass(annotation, WireModel):
         if _can_compile(annotation):
-            codec = compile_codec(annotation, version)
+            codec = compile_codec(annotation, version, features)
             return codec.write
 
         async def write_custom_model(value: WireModel, ctx: WriteContext) -> None:
@@ -471,7 +507,7 @@ def _writer_for(annotation: type, version: int) -> Writer:
 
 
 @functools.cache
-def _reader_for(annotation: type, version: int) -> Reader:
+def _reader_for(annotation: type, version: int, features: frozenset[str]) -> Reader:
     """Specialize a read closure once for an annotation/version pair."""
     from .wire_string import WireString
 
@@ -511,24 +547,24 @@ def _reader_for(annotation: type, version: int) -> Reader:
     if origin is types.UnionType:
         non_none = tuple(arg for arg in arguments if arg is not type(None))
         if len(non_none) == 1:
-            return _reader_for(non_none[0], version)
+            return _reader_for(non_none[0], version, features)
     if origin is list:
-        reader = _reader_for(arguments[0], version)
+        reader = _reader_for(arguments[0], version, features)
 
         async def read_list(ctx: ReadContext) -> list[Any]:
             return [await reader(ctx) for _ in range(await ctx.reader.read_uint64())]
 
         return read_list
     if origin is set:
-        reader = _reader_for(arguments[0], version)
+        reader = _reader_for(arguments[0], version, features)
 
         async def read_set(ctx: ReadContext) -> set[Any]:
             return {await reader(ctx) for _ in range(await ctx.reader.read_uint64())}
 
         return read_set
     if origin is dict:
-        key_reader = _reader_for(arguments[0], version)
-        value_reader = _reader_for(arguments[1], version)
+        key_reader = _reader_for(arguments[0], version, features)
+        value_reader = _reader_for(arguments[1], version, features)
 
         async def read_dict(ctx: ReadContext) -> dict[Any, Any]:
             result = {}
@@ -571,7 +607,7 @@ def _reader_for(annotation: type, version: int) -> Reader:
         return read_wire_string
     if isinstance(annotation, type) and issubclass(annotation, WireModel):
         if _can_compile(annotation):
-            codec = compile_codec(annotation, version)
+            codec = compile_codec(annotation, version, features)
             return codec.read
 
         async def read_custom_model(ctx: ReadContext) -> WireModel:
@@ -582,7 +618,7 @@ def _reader_for(annotation: type, version: int) -> Reader:
 
 
 @functools.cache
-def compile_codec(model: type[WireModel], version: int) -> CompiledCodec:
+def compile_codec(model: type[WireModel], version: int, features: frozenset[str] = frozenset()) -> CompiledCodec:
     """Compile ``model`` for one protocol version using trusted local metadata.
 
     The emitted source is retained on the result to make the experiment
@@ -592,7 +628,7 @@ def compile_codec(model: type[WireModel], version: int) -> CompiledCodec:
     if not _can_compile(model):
         raise TypeError(f"{model.__name__} has a custom codec and cannot be compiled")
 
-    schema = _wire_schema(model, version)
+    schema = _wire_schema(model, version, features)
     fields = schema.fields
     write_predicates = tuple(
         predicate
@@ -610,7 +646,7 @@ def compile_codec(model: type[WireModel], version: int) -> CompiledCodec:
     write_body: list[ast.stmt] = []
     if issubclass(model, WireRequest):
         write_body.append(ast.Expr(ast.Await(_call(_name("request_prelude"), _name("value"), _name("ctx")))))
-    write_emitter = _AstLowerer(version, "write")
+    write_emitter = _AstLowerer(version, "write", features)
     predicate_index = 0
     for field in fields:
         if not field.serialize:
@@ -659,7 +695,7 @@ def compile_codec(model: type[WireModel], version: int) -> CompiledCodec:
             ("__pydantic_private__", ast.Constant(None)),
         )
     )
-    read_emitter = _AstLowerer(version, "read")
+    read_emitter = _AstLowerer(version, "read", features)
     predicate_index = 0
     for field in fields:
         if not field.deserialize:
@@ -721,6 +757,7 @@ def compile_codec(model: type[WireModel], version: int) -> CompiledCodec:
         name: field.default_factory for name, field in model.model_fields.items() if field.default_factory is not None
     }
     namespace: dict[str, Any] = {
+        "_nested_context": _nested_context,
         "deserialization_scope": deserialization_scope,
         "defaults": defaults,
         "factories": factories,
