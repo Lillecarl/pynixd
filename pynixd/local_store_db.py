@@ -40,7 +40,7 @@ from .db_migrations import (
     SchemaState,
     apply_migrations,
 )
-from .store.queries import IS_VALID_PATH
+from .store.queries import IS_VALID_PATH, QUERY_PATH_INFO, QUERY_REFERENCES
 from .store_layout import StoreLayout
 from .store_path import StorePath
 
@@ -196,6 +196,39 @@ class SyncReader:
             return cursor.fetchone() is not None
         finally:
             cursor.close()
+
+    def query_path_info(self, path: str) -> tuple[tuple | None, list[str]] | None:
+        """The `ValidPaths` row and reference paths for `path`.
+
+        `None` when no read happened, and the caller must use the pooled
+        connection instead -- the same contract as `is_valid_path`. A
+        `(None, [])` pair means the read happened and the path is not valid,
+        so the caller answers `valid=False` without a second query.
+        """
+        conn = self._connection()
+        if conn is None:
+            return None
+        try:
+            cursor = conn.execute(QUERY_PATH_INFO, (path,))
+        except sqlite3.Error:
+            log.debug("sync_reader_query_failed", exc_info=True)
+            return None
+        try:
+            row = cursor.fetchone()
+        finally:
+            cursor.close()
+        if row is None:
+            return (None, [])
+        try:
+            cursor = conn.execute(QUERY_REFERENCES, (path,))
+        except sqlite3.Error:
+            log.debug("sync_reader_query_failed", exc_info=True)
+            return None
+        try:
+            refs = [r[0] for r in cursor.fetchall()]
+        finally:
+            cursor.close()
+        return (tuple(row), refs)
 
     def close(self) -> None:
         if self._conn is not None:

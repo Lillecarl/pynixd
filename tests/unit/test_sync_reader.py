@@ -5,6 +5,10 @@ query is the hot path of a build. Read through the pooled `aiosqlite`
 connection, each one costs a thread hop; the synchronous reader removes it.
 Measured on dynhetz: 59 us for the hop, 3.2 us for the query itself.
 
+A closure query sends one `QueryPathInfo` per path instead, and it paid two
+hops per path. The reader answers that too, and both readers land in one
+response builder so the two paths cannot diverge.
+
 The reader belongs to one client session, so a slow query of one session does
 not wait behind the query of another. `DaemonProxy` creates it and closes it.
 """
@@ -16,9 +20,11 @@ from contextlib import closing
 from typing import TYPE_CHECKING
 
 import pytest
+from cachetools import TTLCache
 
+from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from pynixd.local_store_db import LocalStoreDB, SyncReader
-from pynixd.serde import IsValidPathRequest, StorePath
+from pynixd.serde import IsValidPathRequest, QueryPathInfoRequest, StorePath
 from pynixd.store.local_db import LocalDBStore
 from pynixd.store_layout import StoreLayout
 
@@ -26,7 +32,8 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 HELLO = "/nix/store/00000000000000000000000000000001-hello"
-GONE = "/nix/store/00000000000000000000000000000002-gone"
+LIBC = "/nix/store/00000000000000000000000000000002-libc"
+GONE = "/nix/store/00000000000000000000000000000003-gone"
 
 
 def _store_db(tmp_path: Path) -> Path:
@@ -40,6 +47,32 @@ def _store_db(tmp_path: Path) -> Path:
             "deriver TEXT, registrationTime INTEGER)",
         )
         conn.execute("INSERT INTO ValidPaths (id, path, registrationTime) VALUES (1, ?, 0)", (HELLO,))
+    return db_path
+
+
+def _store_db_with_info(tmp_path: Path) -> Path:
+    """A store database where `HELLO` carries path info and references `LIBC`."""
+    db_path = tmp_path / "nix" / "var" / "nix" / "db" / "db.sqlite"
+    db_path.parent.mkdir(parents=True)
+    with closing(sqlite3.connect(db_path)) as conn, conn:
+        conn.execute(
+            "CREATE TABLE ValidPaths ("
+            "id INTEGER PRIMARY KEY, path TEXT UNIQUE NOT NULL, "
+            "deriver TEXT, hash TEXT, registrationTime INTEGER, "
+            "narSize INTEGER, ultimate INTEGER, sigs TEXT, ca TEXT)",
+        )
+        conn.execute("CREATE TABLE Refs (referrer INTEGER, reference INTEGER)")
+        conn.execute(
+            "INSERT INTO ValidPaths (id, path, deriver, hash, registrationTime, narSize, ultimate, sigs, ca)"
+            " VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (HELLO, "", "sha256:deadbeef", 1700000000, 12345, 1, "cache.example-1:abc", ""),
+        )
+        conn.execute(
+            "INSERT INTO ValidPaths (id, path, deriver, hash, registrationTime, narSize, ultimate, sigs, ca)"
+            " VALUES (2, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (LIBC, "", "sha256:feedface", 1700000000, 999, 1, "", ""),
+        )
+        conn.execute("INSERT INTO Refs (referrer, reference) VALUES (1, 2)")
     return db_path
 
 
@@ -81,6 +114,7 @@ class TestTheStoreUsesTheSessionReader:
         async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
             store = LocalDBStore.__new__(LocalDBStore)
             store.db = db
+            store.path_info_cache = TTLCache[str, ValidPathInfo](maxsize=10000, ttl=300)
 
             class Client:
                 sync_reader = db.sync_reader()
@@ -102,6 +136,7 @@ class TestTheStoreUsesTheSessionReader:
         async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
             store = LocalDBStore.__new__(LocalDBStore)
             store.db = db
+            store.path_info_cache = TTLCache[str, ValidPathInfo](maxsize=10000, ttl=300)
 
             held = await store.is_valid_path(IsValidPathRequest(path=StorePath(path=HELLO)), client=None)
             gone = await store.is_valid_path(IsValidPathRequest(path=StorePath(path=GONE)), client=None)
@@ -142,3 +177,97 @@ class TestThePoolGivesOutAReader:
                     one.close()
                 if two is not None:
                     two.close()
+
+
+class TestTheReaderQueryPathInfo:
+    def test_a_path_info_row_with_its_references(self, tmp_path: Path) -> None:
+        reader = SyncReader(_store_db_with_info(tmp_path))
+        try:
+            found = reader.query_path_info(HELLO)
+            assert found is not None
+            row, refs = found
+            assert row is not None
+            assert row[0] == HELLO
+            assert refs == [LIBC]
+        finally:
+            reader.close()
+
+    def test_a_path_the_store_does_not_hold(self, tmp_path: Path) -> None:
+        """`(None, [])`: the read happened, so the caller answers invalid."""
+        reader = SyncReader(_store_db_with_info(tmp_path))
+        try:
+            assert reader.query_path_info(GONE) == (None, [])
+        finally:
+            reader.close()
+
+    def test_a_database_that_is_not_there_reports_no_answer(self, tmp_path: Path) -> None:
+        """`None`: no read happened, so the caller falls back to the pool."""
+        reader = SyncReader(tmp_path / "nowhere" / "db.sqlite")
+        try:
+            assert reader.query_path_info(HELLO) is None
+        finally:
+            reader.close()
+
+
+@pytest.mark.anyio
+class TestTheStoreUsesTheReaderForPathInfo:
+    async def test_the_session_reader_answers_query_path_info(self, tmp_path: Path) -> None:
+        _store_db_with_info(tmp_path)
+        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
+            store = LocalDBStore.__new__(LocalDBStore)
+            store.db = db
+            store.path_info_cache = TTLCache[str, ValidPathInfo](maxsize=10000, ttl=300)
+
+            class Client:
+                sync_reader = db.sync_reader()
+
+            client = Client()
+            try:
+                held = await store.query_path_info(QueryPathInfoRequest(path=StorePath(path=HELLO)), client=client)
+                gone = await store.query_path_info(QueryPathInfoRequest(path=StorePath(path=GONE)), client=client)
+            finally:
+                if client.sync_reader is not None:
+                    client.sync_reader.close()
+
+            assert held.valid is True
+            assert {str(r) for r in held.info.references} == {LIBC}
+            assert str(held.info.nar_hash) != ""
+            assert gone.valid is False
+
+    async def test_the_reader_matches_the_pooled_connection(self, tmp_path: Path) -> None:
+        """Both paths land in one builder, so their answers are identical."""
+        _store_db_with_info(tmp_path)
+        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
+            store = LocalDBStore.__new__(LocalDBStore)
+            store.db = db
+            store.path_info_cache = TTLCache[str, ValidPathInfo](maxsize=10000, ttl=300)
+
+            class Client:
+                sync_reader = db.sync_reader()
+
+            client = Client()
+            try:
+                via_reader = await store.query_path_info(
+                    QueryPathInfoRequest(path=StorePath(path=HELLO)), client=client
+                )
+            finally:
+                if client.sync_reader is not None:
+                    client.sync_reader.close()
+            via_pool = await store.query_path_info(QueryPathInfoRequest(path=StorePath(path=HELLO)), client=None)
+
+            assert via_reader.model_dump() == via_pool.model_dump()
+
+    async def test_a_session_without_a_reader_still_answers(self, tmp_path: Path) -> None:
+        """The pooled connection is the fallback, and it must stay correct."""
+        _store_db_with_info(tmp_path)
+        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
+            store = LocalDBStore.__new__(LocalDBStore)
+            store.db = db
+            store.path_info_cache = TTLCache[str, ValidPathInfo](maxsize=10000, ttl=300)
+
+            held = await store.query_path_info(QueryPathInfoRequest(path=StorePath(path=HELLO)), client=None)
+            gone = await store.query_path_info(QueryPathInfoRequest(path=StorePath(path=GONE)), client=None)
+
+            assert held.valid is True
+            assert {str(r) for r in held.info.references} == {LIBC}
+            assert gone.valid is False

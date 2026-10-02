@@ -75,6 +75,40 @@ def _path_field_names(cls: type) -> tuple[str, ...]:
     return tuple(name for name, field in fields.items() if _may_hold_paths(field.annotation))
 
 
+def _path_info_response(row: tuple, ref_paths: list[str] | set[str]) -> Any:
+    """Answer a `QueryPathInfo` from a `ValidPaths` row and its references.
+
+    Both the synchronous reader and the pooled connection land here, so the
+    two paths cannot diverge in what they build. The imports stay local:
+    `pynixd.serde` cannot be imported at module level without a cycle.
+    """
+    from nix_daemon_protocol.content_address import ContentAddress
+    from nix_daemon_protocol.nar_hash import NARHash
+    from nix_daemon_protocol.path_info import UnkeyedValidPathInfo
+    from nix_daemon_protocol.signature import Signature
+    from nix_daemon_protocol.wire_time import Time
+    from pynixd.serde import QueryPathInfoResponse, StorePath
+
+    _path, deriver, nar_hash, reg_time, nar_size, ultimate, sigs, ca = row
+
+    sig_set: set = set()
+    if sigs:
+        for s in sigs.split():
+            sig_set.add(Signature(**Signature.from_str(s)))
+
+    info = UnkeyedValidPathInfo(
+        deriver=StorePath(path=deriver or ""),
+        nar_hash=NARHash(hash=nar_hash),
+        references={StorePath(path=r) for r in ref_paths},  # type: ignore[arg-type]
+        registration_time=Time(ts=reg_time),
+        nar_size=nar_size or 0,
+        ultimate=bool(ultimate),
+        sigs=sig_set,
+        ca=ContentAddress(value=ca or ""),
+    )
+    return QueryPathInfoResponse.fast(valid=True, info=info)
+
+
 def referenced_paths(request: object) -> set[str]:
     """Every store path that a request names in its own fields.
 
@@ -212,49 +246,44 @@ class LocalDBStore(LocalStore):
         return IsValidPathResponse.fast(valid=False)
 
     async def query_path_info(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
-        """QueryPathInfo — fast-path via SQLite, with in-memory cache check."""
+        """QueryPathInfo — fast-path via SQLite, with in-memory cache check.
+
+        The synchronous reader of the session answers this when it has one,
+        for the same reason as `is_valid_path`: two pooled queries are two
+        thread hops, and a closure query sends thousands of these. A reader
+        that cannot answer reports `None`, and the pooled connection answers
+        instead. Both land in `_path_info_response`, so they build the same
+        answer.
+        """
         cached = self.get_path_info(request.path)
         if cached is not None:
             from pynixd.serde import QueryPathInfoResponse
 
             return QueryPathInfoResponse.fast(valid=True, info=cached.info)
 
-        from nix_daemon_protocol.content_address import ContentAddress
-        from nix_daemon_protocol.nar_hash import NARHash
-        from nix_daemon_protocol.path_info import UnkeyedValidPathInfo
-        from nix_daemon_protocol.signature import Signature
-        from nix_daemon_protocol.wire_time import Time
-        from pynixd.serde import QueryPathInfoResponse, StorePath
+        from pynixd.serde import QueryPathInfoResponse
 
         from .queries import QUERY_PATH_INFO, QUERY_REFERENCES
+
+        reader = getattr(client, "sync_reader", None)
+        if reader is not None:
+            found = reader.query_path_info(str(request.path))
+            if found is not None:
+                row, ref_paths = found
+                if row is None:
+                    return QueryPathInfoResponse.fast(valid=False)
+                return _path_info_response(row, ref_paths)
 
         async with self.db.execute(QUERY_PATH_INFO, (str(request.path),)) as cursor:
             row = await cursor.fetchone()
         if row is None:
             return QueryPathInfoResponse.fast(valid=False)
 
-        _path, deriver, nar_hash, reg_time, nar_size, ultimate, sigs, ca = row
-
         async with self.db.execute(QUERY_REFERENCES, (str(request.path),)) as cursor:
             ref_rows = await cursor.fetchall()
         refs = {r[0] for r in ref_rows}
 
-        sig_set: set = set()
-        if sigs:
-            for s in sigs.split():
-                sig_set.add(Signature(**Signature.from_str(s)))
-
-        info = UnkeyedValidPathInfo(
-            deriver=StorePath(path=deriver or ""),
-            nar_hash=NARHash(hash=nar_hash),
-            references={StorePath(path=r) for r in refs},  # type: ignore[arg-type]
-            registration_time=Time(ts=reg_time),
-            nar_size=nar_size or 0,
-            ultimate=bool(ultimate),
-            sigs=sig_set,
-            ca=ContentAddress(value=ca or ""),
-        )
-        return QueryPathInfoResponse.fast(valid=True, info=info)
+        return _path_info_response(tuple(row), refs)
 
     async def query_all_valid_paths(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """QueryAllValidPaths — fast-path via SQLite."""
