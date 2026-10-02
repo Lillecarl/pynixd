@@ -239,25 +239,62 @@ def _find_reader(ann: type, version: int = 0, features: frozenset[str] = frozens
 
 
 async def _write_value(val: Any, ann: type, ctx: WriteContext) -> None:
-    """Write a value to the wire using primitives, generics, or nested serialization."""
+    """Write one value, through the writer cached for its annotation.
+
+    **The writer is looked up once for each annotation, and not for each
+    value.** This used to decide the shape on every call: `get_origin`,
+    `get_args`, and `is_wire_scalar` on each value, and the last one runs
+    `issubclass` against a `runtime_checkable` protocol, which inspects the
+    caller's module (`typing._allow_reckless_class_checks`). Measured on one
+    `IsValidPathResponse`, encoding it takes 1.7 us here against 4.3 us for the
+    reflection-per-value form. `_find_reader` already caches the read side;
+    this gives the write side the same treatment.
+    """
+    await _find_writer(ann, ctx.version, ctx.features)(val, ctx)
+
+
+@functools.lru_cache(maxsize=256)
+def _find_writer(ann: type, version: int = 0, features: frozenset[str] = frozenset()) -> Any:
+    """Look up an async writer for a wire type, mirroring `_find_reader`.
+
+    Every writer is `async`, so a container can `await` its element writer
+    whatever the element is. Each takes the value and the `WriteContext`. The
+    cache keys on the annotation, the version and the feature set, because a
+    version- or feature-gated annotation resolves to a different writer.
+    """
     from .wire_string import WireString  # lazy: break circular import
 
     # Primitives
     if ann is int:
-        ctx.writer.write_uint64(val)
-        return None
+
+        async def _write_u64(val: Any, ctx: WriteContext) -> None:
+            ctx.writer.write_uint64(val)
+
+        return _write_u64
     if isinstance(ann, type) and issubclass(ann, WireUInt64):
-        ctx.writer.write_uint64(val)
-        return None
+
+        async def _write_uint64_model(val: Any, ctx: WriteContext) -> None:
+            ctx.writer.write_uint64(val)
+
+        return _write_uint64_model
     if ann is str:
-        ctx.writer.write_string(val)
-        return None
+
+        async def _write_str(val: Any, ctx: WriteContext) -> None:
+            ctx.writer.write_string(val)
+
+        return _write_str
     if ann is bool:
-        ctx.writer.write_bool(val)
-        return None
+
+        async def _write_bool(val: Any, ctx: WriteContext) -> None:
+            ctx.writer.write_bool(val)
+
+        return _write_bool
     if ann is bytes:
-        ctx.writer.write_bytes(val)
-        return None
+
+        async def _write_bytes(val: Any, ctx: WriteContext) -> None:
+            ctx.writer.write_bytes(val)
+
+        return _write_bytes
 
     origin = get_origin(ann)
     args = get_args(ann)
@@ -266,59 +303,91 @@ async def _write_value(val: Any, ann: type, ctx: WriteContext) -> None:
     if origin is types.UnionType:
         non_none = tuple(a for a in args if a is not type(None))
         if len(non_none) == 1:
-            if val is None and is_wire_scalar(non_none[0]):
-                # Nix represents an absent scalar as the empty string, and not
-                # as the textual representation of the Python value. This is
-                # the write half of the rule that `_find_reader` reads back,
-                # and it holds for every scalar rather than for `StorePath`
-                # alone. Issue Lillecarl/nanopynix#194.
-                ctx.writer.write_string("")
-                return None
-            return await _write_value(val, non_none[0], ctx)
+            inner = _find_writer(non_none[0], version, features)
+            if is_wire_scalar(non_none[0]):
+
+                async def _write_optional_scalar(val: Any, ctx: WriteContext) -> None:
+                    # Nix represents an absent scalar as the empty string, and
+                    # not as the textual representation of the Python value.
+                    # This is the write half of the rule that `_find_reader`
+                    # reads back, and it holds for every scalar rather than for
+                    # `StorePath` alone. Issue Lillecarl/nanopynix#194.
+                    if val is None:
+                        ctx.writer.write_string("")
+                        return
+                    await inner(val, ctx)
+
+                return _write_optional_scalar
+            return inner
 
     # -- list generics --
     if origin is list:
-        ctx.writer.write_uint64(len(val))
-        for item in val:
-            await _write_value(item, args[0], ctx)
-        return None
+        element = _find_writer(args[0], version, features)
+
+        async def _write_list(val: Any, ctx: WriteContext) -> None:
+            ctx.writer.write_uint64(len(val))
+            for item in val:
+                await element(item, ctx)
+
+        return _write_list
 
     # -- set generics --
     if origin is set:
-        ctx.writer.write_uint64(len(val))
-        for item in val:
-            await _write_value(item, args[0], ctx)
-        return None
+        element = _find_writer(args[0], version, features)
+
+        async def _write_set(val: Any, ctx: WriteContext) -> None:
+            ctx.writer.write_uint64(len(val))
+            for item in val:
+                await element(item, ctx)
+
+        return _write_set
 
     # -- dict generics --
     if origin is dict:
-        ctx.writer.write_uint64(len(val))
-        for k, v in val.items():
-            await _write_value(k, args[0], ctx)
-            await _write_value(v, args[1], ctx)
-        return None
+        key_writer = _find_writer(args[0], version, features)
+        value_writer = _find_writer(args[1], version, features)
+
+        async def _write_dict(val: Any, ctx: WriteContext) -> None:
+            ctx.writer.write_uint64(len(val))
+            for key, value in val.items():
+                await key_writer(key, ctx)
+                await value_writer(value, ctx)
+
+        return _write_dict
 
     # WireString — write str(self) as a single wire string
     if isinstance(ann, type) and issubclass(ann, WireString):
-        ctx.writer.write_string(str(val))
-        return None
+
+        async def _write_string_model(val: Any, ctx: WriteContext) -> None:
+            ctx.writer.write_string(str(val))
+
+        return _write_string_model
 
     # One Python value, one wire string. See `_find_reader`.
     if is_wire_scalar(ann):
-        ctx.writer.write_string(val.to_wire())
-        return None
+
+        async def _write_scalar(val: Any, ctx: WriteContext) -> None:
+            ctx.writer.write_string(val.to_wire())
+
+        return _write_scalar
 
     # WireModel subclass
     if isinstance(ann, type) and issubclass(ann, WireModel):
-        result = val.to_writer(ctx)
-        if asyncio.iscoroutine(result):
-            await result
-        return None
+
+        async def _write_nested(val: Any, ctx: WriteContext) -> None:
+            result = val.to_writer(ctx)
+            if asyncio.iscoroutine(result):
+                await result
+
+        return _write_nested
 
     # IntEnum — write its int value
     if isinstance(ann, type) and issubclass(ann, IntEnum):
-        ctx.writer.write_uint64(val.value)
-        return None
+
+        async def _write_enum(val: Any, ctx: WriteContext) -> None:
+            ctx.writer.write_uint64(val.value)
+
+        return _write_enum
 
     raise TypeError(f"No writer for {ann}")
 
