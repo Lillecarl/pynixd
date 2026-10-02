@@ -15,7 +15,7 @@ import types
 from collections.abc import Callable, Iterable  # noqa: TC003
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Any, ClassVar, Self, get_args, get_origin, get_type_hints
+from typing import Any, ClassVar, NamedTuple, Self, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel, ConfigDict
 from pydantic import Field as PydanticField
@@ -25,6 +25,15 @@ from .context import ReadContext, WriteContext
 from .logging import deserialization_scope
 from .wire_integer import WireUInt64
 from .wire_scalar import is_wire_scalar
+
+
+class WirePlan(NamedTuple):
+    """One resolved codec per (model, version, features)."""
+
+    read_steps: tuple
+    write_steps: tuple
+    defaults: tuple
+
 
 # ── Helpers ──
 
@@ -125,7 +134,7 @@ def _find_reader(ann: type, version: int = 0, features: frozenset[str] = frozens
             inner = _find_reader(non_none[0], version, features)
             if is_wire_scalar(non_none[0]):
                 # Nix writes an absent scalar as the empty string, which
-                # `_write_value` below answers for `None`. Without this the
+                # `_write_optional_scalar` below answers for `None`. Without this the
                 # value comes back as the empty scalar rather than as `None`,
                 # so a caller that tests `is None` never takes that branch.
                 # The bytes do not move; only the Python value does. Issue Lillecarl/nanopynix#194.
@@ -226,14 +235,6 @@ def _find_reader(ann: type, version: int = 0, features: frozenset[str] = frozens
             return await ann.from_reader(_nested_context(ctx))
 
         return _read_nested
-
-    # IntEnum — read uint64, construct via enum
-    if isinstance(ann, type) and issubclass(ann, IntEnum):
-
-        async def _read_enum(ctx):
-            return ann(await ctx.reader.read_uint64())
-
-        return _read_enum
 
     raise TypeError(f"No reader for {ann}")
 
@@ -521,14 +522,16 @@ def _compiled_or_none(cls: type, version: int = 0, features: frozenset[str] = fr
 
     A model with a custom codec refuses, and the refusal is cached like the
     codec: every operation looks this up, and a refusal that recompiled its
-    `TypeError` each time would cost what the cache exists to remove. The
-    import is lazy because the compiler imports this module.
+    error each time would cost what the cache exists to remove. Only the
+    deliberate refusal is caught: any other error is a compiler bug, and a
+    silent fallback would hide it. The import is lazy because the compiler
+    imports this module.
     """
-    from .experimental_compiled import compile_codec
+    from .experimental_compiled import NotCompilableError, compile_codec
 
     try:
         return compile_codec(cls, version, features)
-    except TypeError:
+    except NotCompilableError:
         return None
 
 
@@ -537,7 +540,7 @@ def _wire_plan(
     cls: type[BaseModel],
     version: int = 0,
     features: frozenset[str] = frozenset(),
-) -> tuple[tuple, tuple, tuple]:
+) -> WirePlan:
     """One resolved codec per (model, version, features): readers, writers, defaults.
 
     A session negotiates one version and one feature set, and then decodes
@@ -564,7 +567,7 @@ def _wire_plan(
             defaults.append((name, False, field.default))
         elif field.default_factory is not None:
             defaults.append((name, True, field.default_factory))
-    return (tuple(read_steps), tuple(write_steps), tuple(defaults))
+    return WirePlan(tuple(read_steps), tuple(write_steps), tuple(defaults))
 
 
 # ── Base class ──
@@ -598,8 +601,12 @@ class WireModel(BaseModel):
         if codec is not None:
             await codec.write(self, ctx)
             return
-        _read_steps, write_steps, _defaults = _wire_plan(type(self), version=ctx.version, features=ctx.features)
-        for name, writer, wire_depends_on, serialize in write_steps:
+        await self._write_body(ctx)
+
+    async def _write_body(self, ctx: WriteContext) -> None:
+        """Write the body fields through the resolved plan, no prelude."""
+        plan = _wire_plan(type(self), version=ctx.version, features=ctx.features)
+        for name, writer, wire_depends_on, serialize in plan.write_steps:
             if not serialize:
                 continue
             if wire_depends_on is not None and not wire_depends_on(self):
@@ -614,17 +621,17 @@ class WireModel(BaseModel):
         if codec is not None:
             return await codec.read(ctx)
         with deserialization_scope(ctx, cls):
-            read_steps, _write_steps, defaults = _wire_plan(cls, version=ctx.version, features=ctx.features)
+            plan = _wire_plan(cls, version=ctx.version, features=ctx.features)
             obj = cls.__new__(cls)
             # Initialize Pydantic internals (bypassed __init__)
             object.__setattr__(obj, "__pydantic_fields_set__", set())
             object.__setattr__(obj, "__pydantic_extra__", None)
             object.__setattr__(obj, "__pydantic_private__", None)
             # Set defaults for version-gated and conditional fields
-            for name, is_factory, value in defaults:
+            for name, is_factory, value in plan.defaults:
                 object.__setattr__(obj, name, value() if is_factory else value)  # pyright: ignore[reportCallIssue]
 
-            for name, reader, wire_depends_on, deserialize in read_steps:
+            for name, reader, wire_depends_on, deserialize in plan.read_steps:
                 if not deserialize:
                     continue
                 if wire_depends_on is not None and not wire_depends_on(obj):

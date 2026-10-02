@@ -54,6 +54,15 @@ class CompiledCodec:
         self.schema = schema
 
 
+class NotCompilableError(TypeError):
+    """A model the compiler refuses on purpose: it has a custom codec.
+
+    A subclass of `TypeError`, so existing callers that catch the refusal
+    broadly keep working. `_compiled_or_none` catches only this: any other
+    `TypeError` is a compiler bug, and a silent fallback would hide it.
+    """
+
+
 @dataclass(frozen=True)
 class _Primitive:
     method: str
@@ -449,15 +458,15 @@ def _writer_for(annotation: type, version: int, features: frozenset[str]) -> Wri
         non_none = tuple(arg for arg in arguments if arg is not type(None))
         if len(non_none) == 1:
             writer = _writer_for(non_none[0], version, features)
-            if non_none[0].__name__ == "StorePath":
+            if isinstance(non_none[0], type) and is_wire_scalar(non_none[0]):
 
-                async def write_optional_store_path(value: Any, ctx: WriteContext) -> None:
+                async def write_optional_scalar(value: Any, ctx: WriteContext) -> None:
                     if value is None:
                         ctx.writer.write_string("")
                     else:
                         await writer(value, ctx)
 
-                return write_optional_store_path
+                return write_optional_scalar
             return writer
     if origin is list:
         writer = _writer_for(arguments[0], version, features)
@@ -547,7 +556,18 @@ def _reader_for(annotation: type, version: int, features: frozenset[str]) -> Rea
     if origin is types.UnionType:
         non_none = tuple(arg for arg in arguments if arg is not type(None))
         if len(non_none) == 1:
-            return _reader_for(non_none[0], version, features)
+            inner = _reader_for(non_none[0], version, features)
+            if isinstance(non_none[0], type) and is_wire_scalar(non_none[0]):
+                # Nix writes an absent scalar as the empty string. The
+                # falsiness contract is `_find_reader`'s in `wire_message`:
+                # every scalar is falsy exactly when its wire string is
+                # empty, so emptiness is the test for absence.
+                async def read_optional_scalar(ctx: ReadContext) -> Any:
+                    value = await inner(ctx)
+                    return value or None
+
+                return read_optional_scalar
+            return inner
     if origin is list:
         reader = _reader_for(arguments[0], version, features)
 
@@ -626,7 +646,7 @@ def compile_codec(model: type[WireModel], version: int, features: frozenset[str]
     package model fields; no protocol input is ever evaluated as Python code.
     """
     if not _can_compile(model):
-        raise TypeError(f"{model.__name__} has a custom codec and cannot be compiled")
+        raise NotCompilableError(f"{model.__name__} has a custom codec and cannot be compiled")
 
     schema = _wire_schema(model, version, features)
     fields = schema.fields

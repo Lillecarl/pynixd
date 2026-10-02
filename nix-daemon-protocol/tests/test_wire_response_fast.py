@@ -40,6 +40,8 @@ async def test_fast_logs_are_fresh_per_response() -> None:
     assert len(first.logs.messages) == 1
     assert second.logs.messages == []
     assert isinstance(second.logs.messages, list)
+    assert second.logs is not first.logs
+    assert second.logs.messages is not first.logs.messages
 
 
 async def test_fast_reports_the_fields_it_set() -> None:

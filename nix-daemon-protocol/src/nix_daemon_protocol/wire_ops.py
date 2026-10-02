@@ -46,7 +46,7 @@ class WireRequest(WireModel):
             WIRE_REGISTRY[cls.op] = cls
 
     async def to_writer(self, ctx: WriteContext) -> None:
-        """Write op code then body."""
+        """Write op code then body, resolving the codec once."""
         codec = _compiled_or_none(type(self), version=ctx.version, features=ctx.features)
         if codec is not None:
             # The compiled request writes the prelude itself.
@@ -57,7 +57,7 @@ class WireRequest(WireModel):
                 f"{self.name} requires daemon protocol >= {proto_str(self.min_protocol)}, got {proto_str(ctx.version)}",
             )
         ctx.writer.write_uint64(self.op)
-        await super().to_writer(ctx)
+        await self._write_body(ctx)
 
     @classmethod
     async def from_reader(cls, ctx: ReadContext):
@@ -85,11 +85,19 @@ class WireResponse(WireModel):
     def fast(cls, **body: Any) -> Self:
         """Build a response the daemon answers with, without validation.
 
-        `IsValidPathResponse(valid=True)` costs a full pydantic validation --
-        measured 0.06 s of one profile -- and the values the daemon passes
-        are already the declared types, so there is nothing to coerce and
-        nothing to refuse. This sets the body, fills the defaults the plan
-        resolved, and gives the response fresh empty logs.
+        Only for values that are already the declared types: the daemon
+        decoded them from the wire, parsed them from a store, or holds them
+        as constants. There is nothing to coerce and nothing to refuse, so
+        a full pydantic validation only re-checks what an earlier boundary
+        already proved. Anything built from untrusted input -- a remote
+        `.narinfo`, a client string -- goes through the validated
+        constructor instead.
+
+        The plan resolves at version 0 with no features, and only its
+        defaults are kept: field defaults are static values, so no version
+        resolves different ones, and the encode still gates fields under the
+        negotiated version. This sets the body, fills those defaults, and
+        gives the response fresh empty logs.
 
         The logs are fresh per response and not shared: `query_missing` and
         `set_options` append to the logs of the response they build, and a
@@ -98,7 +106,11 @@ class WireResponse(WireModel):
         empty log needs no validation, and `model_construct` cost half of
         this constructor.
         """
-        _read_steps, _write_steps, defaults = _wire_plan(cls, 0, frozenset())
+        fields = cls.model_fields
+        for name in body:
+            if name not in fields:
+                raise TypeError(f"{cls.__name__} has no field {name!r}")
+        plan = _wire_plan(cls, 0, frozenset())
         obj = cls.__new__(cls)
         object.__setattr__(obj, "__pydantic_fields_set__", set(body) | {"logs"})
         object.__setattr__(obj, "__pydantic_extra__", None)
@@ -109,7 +121,7 @@ class WireResponse(WireModel):
         object.__setattr__(logs, "__pydantic_private__", None)
         object.__setattr__(logs, "messages", [])
         object.__setattr__(obj, "logs", logs)
-        for name, is_factory, value in defaults:
+        for name, is_factory, value in plan.defaults:
             if name == "logs" or name in body:
                 continue
             object.__setattr__(obj, name, value() if is_factory else value)
