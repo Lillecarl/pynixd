@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import time
 from typing import TYPE_CHECKING, ClassVar
 
 import anyio
@@ -78,7 +77,7 @@ class AddMultipleToStoreHandler(Handler):
 
             async with anyio.create_task_group() as tg:
                 tg.start_soon(_read_response)
-                infos.extend(await self._forward_stream(ctx.proxy.r, conn.w, ctx.proxy.metrics_enabled))
+                infos.extend(await self._forward_stream(ctx.proxy.r, conn.w, metered=ctx.proxy.metrics_enabled))
 
             if not responses:
                 raise RuntimeError("the AddMultipleToStore reader task recorded no response")
@@ -93,6 +92,7 @@ class AddMultipleToStoreHandler(Handler):
         self,
         src: NixReader,
         dst: NixWriter,
+        *,
         metered: bool,
     ) -> list[ValidPathInfo]:
         """Forward AddMultipleToStore payload, snooping ValidPathInfos.
@@ -107,7 +107,12 @@ class AddMultipleToStoreHandler(Handler):
         fdst.write_uint64(expected)
         logger.debug("add_multiple_forward_start", expected=expected)
 
-        started = time.monotonic()
+        meter = metrics.TransferMeter(
+            enabled=metered,
+            byte_counter=metrics.NAR_FORWARD_BYTES,
+            path_counter=metrics.NAR_FORWARD_PATHS,
+            duration=metrics.NAR_FORWARD_DURATION,
+        )
         infos: list[ValidPathInfo] = []
         for _ in range(expected):
             # Per path as well as per chunk. A transfer of many small paths
@@ -120,15 +125,10 @@ class AddMultipleToStoreHandler(Handler):
             fdst.write(await info.bytes_wire())
             # The same loop every other NAR path takes. `forward_raw` carries
             # the drain and the checkpoint, and why each is needed.
-            await forward_raw(
-                fsrc, fdst, info.info.nar_size, on_bytes=metrics.NAR_FORWARD_BYTES.inc if metered else None
-            )
-            if metered:
-                metrics.NAR_FORWARD_PATHS.inc()
+            await forward_raw(fsrc, fdst, info.info.nar_size, on_bytes=meter.on_bytes)
+            meter.finish()
 
         await fdst.finalize()
-        if metered:
-            metrics.NAR_FORWARD_DURATION.observe(time.monotonic() - started)
         try:
             await asyncio.wait_for(fsrc.ensure_eof(), timeout=10)
         except TimeoutError:

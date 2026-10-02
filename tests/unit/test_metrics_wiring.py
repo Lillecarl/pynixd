@@ -12,18 +12,15 @@ ran first.
 from __future__ import annotations
 
 import gc
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 
 import pytest
 from prometheus_client import REGISTRY
 
 from pynixd import metrics
-from pynixd.proxy import DaemonProxy
+from tests.unit.loop_proxy import LoopProxy as FakeProxy
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-
     from pynixd.store.pool import ConnectionPool
 
 
@@ -35,45 +32,6 @@ def _value(name: str, labels: dict[str, str]) -> float:
     """
     got = REGISTRY.get_sample_value(name, labels)
     return 0.0 if got is None else got
-
-
-class FakeReader:
-    def __init__(self, ops: Sequence[int]) -> None:
-        self.remaining = list(ops)
-
-    async def read_uint64(self) -> int:
-        if not self.remaining:
-            raise EOFError
-        return self.remaining.pop(0)
-
-
-class FakeProxy:
-    """Enough of `DaemonProxy` for `op_loop` to run, as in
-    `test_unknown_operation_ends_the_connection.py`."""
-
-    def __init__(self, ops: Sequence[int], *, fail: bool = False, metrics_enabled: bool = True) -> None:
-        self.r = FakeReader(ops)
-        self.w = SimpleNamespace(drain=self._nothing)
-        self.client = SimpleNamespace(flush=self._nothing)
-        self.errors: list[str] = []
-        self._op_timing: dict[int, tuple[int, float]] = {}
-        self._op_metrics: dict[tuple[str, str], tuple[object, object]] = {}
-        self._metrics_enabled = metrics_enabled
-        self._fail = fail
-
-    async def _nothing(self) -> None:
-        return None
-
-    async def send_error(self, text: str) -> None:
-        self.errors.append(text)
-
-    async def dispatch(self, op_num: int) -> None:
-        if self._fail:
-            raise RuntimeError("the store refused")
-        return None
-
-    async def run(self) -> None:
-        await DaemonProxy.op_loop(cast("DaemonProxy", self))
 
 
 _IS_VALID_PATH = 1

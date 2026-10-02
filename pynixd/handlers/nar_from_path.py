@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from typing import TYPE_CHECKING, ClassVar
 
 import structlog
@@ -50,8 +49,12 @@ class NarFromPathHandler(Handler):
         logger.debug("nar_from_path_streaming", path=req.path, size=nar_size)
 
         # 3. Forward request to daemon (serde), stream NAR to client
-        started = time.monotonic()
-        metered = ctx.proxy.metrics_enabled
+        meter = metrics.TransferMeter(
+            enabled=ctx.proxy.metrics_enabled,
+            byte_counter=metrics.NAR_SERVE_BYTES,
+            path_counter=metrics.NAR_SERVE_PATHS,
+            duration=metrics.NAR_SERVE_DURATION,
+        )
         async with store.transfer_conn() as conn:
             await req.to_writer(WriteContext.from_conn(conn))
             await conn.w.drain()
@@ -67,17 +70,14 @@ class NarFromPathHandler(Handler):
 
             # 6. Stream unframed NAR bytes from daemon to client
             if nar_size > 0:
-                await wire.forward_raw(
-                    conn.r, ctx.proxy.w, nar_size, on_bytes=metrics.NAR_SERVE_BYTES.inc if metered else None
-                )
+                await wire.forward_raw(conn.r, ctx.proxy.w, nar_size, on_bytes=meter.on_bytes)
             else:
-                # No nar_size to count against, so the bytes land on the
-                # counter only once the parse has walked the whole archive.
+                # No nar_size to count against, and the parse reports no
+                # lengths, so these bytes stay off the byte counter. The
+                # path and the duration still count in `finish` below.
                 await wire.stream_parse_nar(conn.r, ctx.proxy.w)
 
         await ctx.proxy.w.drain()
-        if metered:
-            metrics.NAR_SERVE_PATHS.inc()
-            metrics.NAR_SERVE_DURATION.observe(time.monotonic() - started)
+        meter.finish()
         logger.debug("responded_op")
         return

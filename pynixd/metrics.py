@@ -16,9 +16,11 @@ from __future__ import annotations
 
 import json
 import os
+import time
+from collections.abc import Callable
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 from weakref import WeakSet
 
 import structlog
@@ -142,6 +144,54 @@ DAEMON_OP_DURATION = Histogram(
     ["op"],
     buckets=(0.001, 0.005, 0.025, 0.1, 0.5, 2.5, 10, 60, 300, 600),
 )
+
+
+class OpSeries(NamedTuple):
+    """The Prometheus children for one (operation, result) series.
+
+    `.labels()` takes a lock and a lookup per call, and an operation pays
+    two of them. The series are bounded (one op name each, two results), so
+    a session resolves each series once and holds the children.
+    """
+
+    ops: Counter
+    duration: Histogram
+
+    def observe(self, elapsed: float) -> None:
+        self.ops.inc()
+        self.duration.observe(elapsed)
+
+
+def op_series(op: str, result: str) -> OpSeries:
+    """Resolve the children for (op, result)."""
+    return OpSeries(DAEMON_OPS.labels(op=op, result=result), DAEMON_OP_DURATION.labels(op=op))
+
+
+class TransferMeter:
+    """Count the bytes, paths and duration of one NAR transfer.
+
+    Off when the session disabled metrics: `on_bytes` is then None, so the
+    transfer loop pays no call per chunk, and `finish` records nothing.
+    """
+
+    def __init__(self, *, enabled: bool, byte_counter: Counter, path_counter: Counter, duration: Histogram) -> None:
+        self._enabled = enabled
+        self._byte_counter = byte_counter
+        self._path_counter = path_counter
+        self._duration = duration
+        self._started = time.monotonic()
+
+    @property
+    def on_bytes(self) -> Callable[[int], None] | None:
+        """The chunk callback for the transfer loop, or None when disabled."""
+        return self._byte_counter.inc if self._enabled else None
+
+    def finish(self) -> None:
+        """Count the path and its duration, unless disabled."""
+        if self._enabled:
+            self._path_counter.inc()
+            self._duration.observe(time.monotonic() - self._started)
+
 
 DAEMON_SESSIONS = Gauge(
     "pynixd_daemon_sessions",

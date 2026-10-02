@@ -67,6 +67,11 @@ class TempRoots:
     no operation in the daemon protocol that removes a temporary root, so the
     only way to release one is to let go of the file.
 
+    Every method runs on the session task: `add` from dispatch, `close`
+    after the operation loop ends. The two never run together, so the lock
+    below guards only the collector path against itself, and not `add`
+    against `close`.
+
     pynixd degrades to nothing when it cannot write the directory, which
     happens when it serves the system store as an unprivileged user. The
     client then gets the same answer that a non-admin client got before: the
@@ -95,11 +100,11 @@ class TempRoots:
         derivation of a build, and the `anyio` lock and a thread hop for each
         of those cost more than the syscalls they carry.
 
-        **The lock is for the collector path alone.** One `TempRoots` belongs
-        to one client session, and the proxy dispatches the operations of a
-        session one at a time, so nothing runs `add` beside `add`. Only the
-        collector path can wait, and `close` can then race it, so that path
-        keeps the lock and the thread hop.
+        **The lock is for the collector path alone.** The proxy dispatches
+        the operations of a session one at a time and closes the roots after
+        the loop, so nothing runs `add` beside `add` and nothing runs `add`
+        beside `close`. Only the collector path can wait, so that path keeps
+        the lock and the thread hop.
 
         The collector running is the case that waits, over its socket. That
         runs in a worker thread, so the event loop is free while it does.
@@ -129,10 +134,11 @@ class TempRoots:
     # the collector runs.
 
     def _add_inline(self, root: str) -> bool:
-        """Write `root` without waiting, and say whether that worked.
+        """Write `root` without waiting, and say whether the thread path is unneeded.
 
-        False means the collector is running, so the root needs its socket
-        and the caller must hand the work to a thread.
+        True means written, or disabled: either way there is nothing for a
+        worker thread to do. False means the collector is running, so the
+        root needs its socket and the caller must hand the work to a thread.
         """
         try:
             return self._write_root(root)

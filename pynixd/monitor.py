@@ -85,12 +85,17 @@ class ResourceGate:
         self.io_clear.set()
 
     async def wait_mem_clear(self, timeout: float = 5.0) -> None:  # noqa: ASYNC109
-        """Wait for Memory pressure to drop below threshold."""
-        # The common case costs one flag read. `fail_after` builds two cancel
-        # scopes and `Event.wait` checkpoints, measured 0.07 s of the
-        # AddToStore flame, all to discover no pressure. A set flag is what
-        # `wait` answers with, so returning here changes nothing but the
-        # scaffolding; a pressured gate takes the slow path below.
+        """Wait for Memory pressure to drop below threshold.
+
+        The common case costs one flag read: a set flag is what `wait`
+        answers with, so returning here changes nothing but the cancel
+        scopes. A pressured gate takes the slow path below. This answers
+        the same as waiting on the event would -- `wait` on a set event
+        returns at once, and a `clear` that swaps the event after either
+        check lets one operation through either way. Memory alone gets the
+        fast path because it is the only flag the pool waits on; cpu and io
+        have no waiters.
+        """
         if self.mem_clear.is_set():
             return
         try:

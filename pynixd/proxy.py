@@ -138,11 +138,8 @@ class DaemonProxy:
         self._temp_roots: TempRoots | None = None
         self._sync_reader_ready = False
         self._metrics_enabled = ctx.settings.metrics_enabled
-        # The Prometheus children for (op, result), looked up once. `.labels()`
-        # takes a lock and a dict lookup per call, and an operation pays two
-        # of them; the series are bounded (one op name each, two results), so
-        # holding the children changes nothing the scrape sees.
-        self._op_metrics: dict[tuple[str, str], tuple[Any, Any]] = {}
+        # The Prometheus children for (op, result), looked up once per series.
+        self._op_metrics: dict[tuple[str, str], metrics.OpSeries] = {}
 
     @property
     def local_store(self) -> LocalStore:
@@ -438,15 +435,11 @@ class DaemonProxy:
                 self._op_timing[op_num] = (count + 1, acc + elapsed)
                 if self._metrics_enabled:
                     key = (op_name, result)
-                    counters = self._op_metrics.get(key)
-                    if counters is None:
-                        counters = (
-                            metrics.DAEMON_OPS.labels(op=op_name, result=result),
-                            metrics.DAEMON_OP_DURATION.labels(op=op_name),
-                        )
-                        self._op_metrics[key] = counters
-                    counters[0].inc()
-                    counters[1].observe(elapsed)
+                    series = self._op_metrics.get(key)
+                    if series is None:
+                        series = metrics.op_series(op_name, result)
+                        self._op_metrics[key] = series
+                    series.observe(elapsed)
 
     # ── Dispatch ─────────────────────────────────────────────────────
 
@@ -520,6 +513,7 @@ class DaemonProxy:
                 return None
             if self.store_for_output_path(str(request.path)) is None:
                 return None
+            # A constant of the declared type: nothing to coerce or refuse.
             return IsValidPathResponse.fast(valid=True)
 
         if isinstance(request, QueryValidPathsRequest):

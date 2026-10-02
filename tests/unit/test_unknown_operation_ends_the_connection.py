@@ -10,62 +10,15 @@ Issue Lillecarl/nanopynix#193.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-from typing import TYPE_CHECKING, cast
-
 import pytest
 
 from nix_daemon_protocol.operations import STANDARD_OPERATIONS
 from nix_daemon_protocol.wire_ops import WIRE_REGISTRY
 from pynixd.handlers._base import HANDLER_REGISTRY
-from pynixd.proxy import DaemonProxy
-
-if TYPE_CHECKING:
-    from collections.abc import Sequence
+from tests.unit.loop_proxy import LoopProxy as FakeProxy
 
 _UNKNOWN_OP = 4242
 """No operation of Nix carries this code, and none is reserved for it."""
-
-
-class FakeReader:
-    """A reader that answers a list of operation codes, then end of file."""
-
-    def __init__(self, ops: Sequence[int]) -> None:
-        self.remaining = list(ops)
-        self.reads = 0
-
-    async def read_uint64(self) -> int:
-        self.reads += 1
-        if not self.remaining:
-            raise EOFError
-        return self.remaining.pop(0)
-
-
-class FakeProxy:
-    """Enough of `DaemonProxy` for the loop to run."""
-
-    def __init__(self, ops: Sequence[int]) -> None:
-        self.r = FakeReader(ops)
-        self.w = SimpleNamespace(drain=self._nothing)
-        self.client = SimpleNamespace(flush=self._nothing)
-        self.errors: list[str] = []
-        self.dispatched: list[int] = []
-        self._op_timing: dict[int, tuple[int, float]] = {}
-        self._op_metrics: dict[tuple[str, str], tuple[object, object]] = {}
-        self._metrics_enabled = True
-
-    async def _nothing(self) -> None:
-        return None
-
-    async def send_error(self, text: str) -> None:
-        self.errors.append(text)
-
-    async def dispatch(self, op_num: int) -> None:
-        self.dispatched.append(op_num)
-        return None
-
-    async def run(self) -> None:
-        await DaemonProxy.op_loop(cast("DaemonProxy", self))
 
 
 @pytest.mark.anyio
@@ -77,6 +30,10 @@ async def test_an_unknown_operation_ends_the_loop() -> None:
 
     assert proxy.errors == [f"Unsupported operation: {_UNKNOWN_OP}"]
     assert proxy.dispatched == []
+    # The close happens before dispatch, so the unknown op leaves no timing
+    # and no metric series behind.
+    assert proxy._op_timing == {}
+    assert proxy._op_metrics == {}
     # One read, and not two: the code of `IsValidPath` after it stays unread,
     # because that byte could equally be an argument of the unknown operation.
     assert proxy.r.reads == 1

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from typing import TYPE_CHECKING, ClassVar
 
 import structlog
@@ -59,12 +58,14 @@ class AddToStoreNarHandler(Handler):
             await conn.w.drain()
 
             # 3. Forward framed NAR bytes from client to daemon
-            started = time.monotonic()
-            metered = ctx.proxy.metrics_enabled
-            await forward_framed(ctx.proxy.r, conn.w, on_bytes=metrics.NAR_ADD_BYTES.inc if metered else None)
-            if metered:
-                metrics.NAR_ADD_PATHS.inc()
-                metrics.NAR_ADD_DURATION.observe(time.monotonic() - started)
+            meter = metrics.TransferMeter(
+                enabled=ctx.proxy.metrics_enabled,
+                byte_counter=metrics.NAR_ADD_BYTES,
+                path_counter=metrics.NAR_ADD_PATHS,
+                duration=metrics.NAR_ADD_DURATION,
+            )
+            await forward_framed(ctx.proxy.r, conn.w, on_bytes=meter.on_bytes)
+            meter.finish()
 
             # 4. Read response from daemon
             return await AddToStoreNarResponse.from_reader(

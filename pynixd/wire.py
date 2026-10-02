@@ -198,9 +198,7 @@ class UnixNixReader(NixReader):
     # the protocol makes three of them for every string: the 8-byte length, the
     # payload, and its padding. A build sends thousands of store paths, so the
     # reader spends its time suspended between fields rather than parsing them.
-    # Measured at fccc0f8d, the AddTempRoot decode of a 16000-op build was
-    # 0.98 s, almost all of it inside `readexactly`. One larger read serves
-    # many small ones from memory.
+    # One larger read serves many small ones from memory.
     #
     # **Safe only because nothing else reads `self.reader`.** A byte held here
     # is invisible to anything that reads the stream directly, so a second
@@ -274,13 +272,6 @@ class NixWriter:
     # thousands of store paths paid that sum tens of thousands of times over
     # a buffer that only grew. The cost is quadratic in the number of values,
     # and none of it suspends, so the event loop runs nothing throughout.
-    #
-    # Measured at 61bcef7d, one QueryValidPaths over a Unix socket: 4000
-    # paths stalled the loop 0.82s and 8000 stalled it 3.28s. Doubling the
-    # count quadrupled the stall. `health_loop_lag_max` is 5s and a liveness
-    # probe times out at 10, so the process stops answering `/healthz` at all
-    # -- not even to say it is unhealthy. `pynixd-drafts/loop-stall.md` in
-    # the umbrella holds the numbers and the reproduction.
     #
     # One large write per flush makes the buffer a handful of chunks whatever
     # the op carries, so the sum is over a handful of lengths.

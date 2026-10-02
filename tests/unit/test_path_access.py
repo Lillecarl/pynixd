@@ -112,6 +112,7 @@ class _Shapes(BaseModel):
     maybe: StorePath | None = None
     many: list[StorePath] = []
     mapping: dict[str, str] = {}
+    paths_by_name: dict[str, StorePath] = {}
     nested: _Nested | None = None
     count: int = 0
     name: str = ""
@@ -142,11 +143,24 @@ class TestTheFieldFilter:
             maybe=StorePath(path=LIBC),
             many=[StorePath(path=HELLO)],
             mapping={"path": HELLO},
+            paths_by_name={"hello": StorePath(path=HELLO)},
             nested=_Nested(path=StorePath(path=LIBC)),
             count=3,
             name=HELLO,
         )
         assert referenced_paths(full) == _full_scan(full) == {HELLO, LIBC}
+
+    def test_a_mapping_of_paths_stays_uncounted_by_both(self) -> None:
+        """The runtime never unwraps a mapping, and neither does the filter.
+
+        A mapping that holds paths is uncounted twice over, on purpose and
+        in both places. If either side ever learns to scan mappings, this
+        fails, and the other side and the contract in `local_db.py` change
+        with it.
+        """
+        only_a_map = _Shapes(path=StorePath(path=""), paths_by_name={"hello": StorePath(path=HELLO)})
+        assert _path_field_names(_Shapes) == ("path", "maybe", "many")
+        assert referenced_paths(only_a_map) == _full_scan(only_a_map) == set()
 
     def test_the_filter_matches_the_full_scan_when_empty(self) -> None:
         assert (

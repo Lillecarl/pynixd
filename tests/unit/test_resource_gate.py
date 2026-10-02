@@ -1,10 +1,8 @@
 """`ResourceGate.wait_mem_clear` answers a clear gate without scaffolding.
 
-`fail_after` builds two cancel scopes and `Event.wait` checkpoints, all to
-discover no pressure -- measured 0.07 s of the AddToStore flame. A set flag
-returns at once; a pressured gate still waits for the release or the
-timeout. These pin the three answers, not the speed: the benchmark measures
-that.
+A set flag returns at once; a pressured gate still waits for the release
+or the timeout. These pin the three answers, not the speed: the benchmark
+measures that.
 """
 
 from __future__ import annotations
