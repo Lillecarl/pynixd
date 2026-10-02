@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from typing import TYPE_CHECKING, ClassVar
 
 import structlog
@@ -52,12 +51,14 @@ class AddToStoreHandler(Handler):
             await conn.w.drain()
 
             # 3. Forward framed NAR bytes from client to daemon
-            started = time.monotonic()
-            metered = ctx.proxy.metrics_enabled
-            await forward_framed(ctx.proxy.r, conn.w, on_bytes=metrics.NAR_ADD_BYTES.inc if metered else None)
-            if metered:
-                metrics.NAR_ADD_PATHS.inc()
-                metrics.NAR_ADD_DURATION.observe(time.monotonic() - started)
+            meter = metrics.TransferMeter(
+                enabled=ctx.proxy.metrics_enabled,
+                byte_counter=metrics.NAR_ADD_BYTES,
+                path_counter=metrics.NAR_ADD_PATHS,
+                duration=metrics.NAR_ADD_DURATION,
+            )
+            await forward_framed(ctx.proxy.r, conn.w, on_bytes=meter.on_bytes)
+            meter.finish()
 
             # 4. Read response from daemon
             resp = await AddToStoreResponse.from_reader(
@@ -65,20 +66,15 @@ class AddToStoreHandler(Handler):
             )
 
             # 5. Sign the path info over the transfer connection, idle now that
-            # the NAR and the response crossed it. Signing through the store
-            # acquires a second pooled connection, and the acquire alone --
-            # a slots wait, a memory-gate wait, a cancel scope -- measured
-            # 0.49 s of the 0.93 s AddToStore flame.
-            #
-            # The client's options ride along. Without them the sign call asks
-            # for a connection with no options, and the pool discards the idle
+            # the NAR and the response crossed it. A sign through the store
+            # acquires a second pooled connection for the same work, and the
+            # client's options ride along: without them the sign asks for a
+            # connection with no options, and the pool discards the idle
             # connection that carries this client's set (`pool.py:196`), so
             # every AddToStore pays a fresh upstream handshake.
             #
-            # No signing keys are configured anywhere, so this step adds zero
-            # signatures unless the operator sets `sign_added_paths`. The
-            # cache update below stays either way: it holds what the daemon
-            # answered, signed by whoever signs.
+            # The cache update below stays whether signing runs or not: it
+            # holds what the daemon answered, signed by whoever signs.
             if resp.info is not None:
                 if ctx.proxy.local_store.settings.sign_added_paths:
                     sign_resp = await ctx.proxy.local_store.sign_path_info(
@@ -88,7 +84,6 @@ class AddToStoreHandler(Handler):
                     )
                     resp.info = sign_resp.info
 
-                ctx.proxy.local_store.forget_path_info(resp.info.path)
                 ctx.proxy.local_store.add_path_info(resp.info)
 
         return resp

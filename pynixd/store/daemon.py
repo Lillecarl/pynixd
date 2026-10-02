@@ -1034,17 +1034,15 @@ class DaemonStore(Store):
     ) -> Any:
         """SignPathInfo (op 107) — sign with local keys and relay to daemon.
 
-        `conn` is a connection the caller already holds. Signing over it
-        saves a pool acquire: a slots wait, a memory-gate wait and a cancel
-        scope, measured 0.49 s of the 0.93 s AddToStore flame, for a
+        `conn` is a connection the caller already holds, idle and carrying
+        the client's options. Signing over it saves a pool acquire for a
         connection that does the same work. `AddToStore` passes its transfer
         connection, idle once the NAR and the response crossed it.
         """
+        # The held connection or a pooled one: one call either way.
+        call = conn.call if conn is not None else self.call
         if "SignPathInfo" in self.features:
-            if conn is not None:
-                response = await conn.call(request, client=client, suppress_last=suppress_last)
-            else:
-                response = await self.call(request, client=client, suppress_last=suppress_last)
+            response = await call(request, client=client, suppress_last=suppress_last)
             self.forget_path_info(request.info.path)
             return response
 
@@ -1076,18 +1074,11 @@ class DaemonStore(Store):
 
         # `self.call` and not `self.add_signatures`, so this path does not get
         # the invalidation of that method and states it here instead.
-        if conn is not None:
-            await conn.call(
-                AddSignaturesRequest(path=info.path, sigs=info.info.sigs),
-                client=client,
-                suppress_last=suppress_last,
-            )
-        else:
-            await self.call(
-                AddSignaturesRequest(path=info.path, sigs=info.info.sigs),
-                client=client,
-                suppress_last=suppress_last,
-            )
+        await call(
+            AddSignaturesRequest(path=info.path, sigs=info.info.sigs),
+            client=client,
+            suppress_last=suppress_last,
+        )
         self.forget_path_info(info.path)
         return SignPathInfoResponse(info=info)
 
