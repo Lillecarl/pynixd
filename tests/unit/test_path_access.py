@@ -23,6 +23,7 @@ from contextlib import closing
 from typing import TYPE_CHECKING
 
 import pytest
+from pydantic import BaseModel, ConfigDict
 
 from pynixd.db_migrations import PATH_ACCESS_TABLE
 from pynixd.local_store_db import LocalStoreDB
@@ -32,7 +33,7 @@ from pynixd.serde import (
     QueryValidPathsRequest,
     StorePath,
 )
-from pynixd.store.local_db import referenced_paths
+from pynixd.store.local_db import _path_field_names, referenced_paths
 from pynixd.store_layout import StoreLayout
 
 if TYPE_CHECKING:
@@ -92,6 +93,65 @@ class TestReadingThePathsOfARequest:
 
     def test_something_that_is_not_a_request(self) -> None:
         assert referenced_paths(object()) == set()
+
+
+class _Nested(BaseModel):
+    """A model the scan never unwraps, so its paths stay uncounted."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    path: StorePath
+
+
+class _Shapes(BaseModel):
+    """One field per annotation shape the filter decides on."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    path: StorePath
+    maybe: StorePath | None = None
+    many: list[StorePath] = []
+    mapping: dict[str, str] = {}
+    nested: _Nested | None = None
+    count: int = 0
+    name: str = ""
+
+
+def _full_scan(request: object) -> set[str]:
+    """The scan before the per-class filter: every field, every time."""
+    found: set[str] = set()
+    for name in type(request).model_fields:  # type: ignore[attr-defined]
+        value = getattr(request, name, None)
+        if isinstance(value, StorePath):
+            found.add(str(value))
+        elif isinstance(value, (set, frozenset, list, tuple)):
+            found.update(str(item) for item in value if isinstance(item, StorePath))
+    found.discard("")
+    return found
+
+
+class TestTheFieldFilter:
+    """The per-class filter skips fields, never paths."""
+
+    def test_only_path_shaped_fields_are_scanned(self) -> None:
+        assert set(_path_field_names(_Shapes)) == {"path", "maybe", "many"}
+
+    def test_the_filter_matches_the_full_scan(self) -> None:
+        full = _Shapes(
+            path=StorePath(path=HELLO),
+            maybe=StorePath(path=LIBC),
+            many=[StorePath(path=HELLO)],
+            mapping={"path": HELLO},
+            nested=_Nested(path=StorePath(path=LIBC)),
+            count=3,
+            name=HELLO,
+        )
+        assert referenced_paths(full) == _full_scan(full) == {HELLO, LIBC}
+
+    def test_the_filter_matches_the_full_scan_when_empty(self) -> None:
+        assert (
+            referenced_paths(_Shapes(path=StorePath(path=""))) == _full_scan(_Shapes(path=StorePath(path=""))) == set()
+        )
 
 
 @pytest.mark.anyio

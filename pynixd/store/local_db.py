@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any
+import functools
+import types
+from enum import Enum
+from typing import Any, Union, get_args, get_origin
 
 import structlog
 from pydantic import BaseModel
@@ -14,6 +17,62 @@ from ..serde import StorePath
 from .local_daemon import LocalStore
 
 log = structlog.get_logger(__name__)
+
+_SCALAR_ANNOTATIONS = (str, bytes, int, float, bool)
+"""Annotations whose values never pass the `isinstance` below.
+
+A field keeps its scan unless its annotation is one of these, an enum, a
+non-`StorePath` model, or a dict: the runtime only unwraps a `StorePath`
+and a flat container of them, so anything else contributes nothing.
+Everything uncertain -- `Any`, a missing annotation, a union, a container,
+a custom class -- keeps its scan, and a new operation that carries a
+`StorePath` is still counted on the day it is added.
+"""
+
+
+def _may_hold_paths(annotation: Any) -> bool:
+    """Whether a value of `annotation` could pass the scan in `referenced_paths`."""
+    if annotation is None or annotation is Any:
+        return True
+    if annotation is StorePath:
+        return True
+    if isinstance(annotation, type):
+        if issubclass(annotation, StorePath):
+            return True
+        if issubclass(annotation, (list, set, frozenset, tuple)):
+            return True
+        # Certain non-carriers: scalars, enums, nested models, anything else
+        # the runtime `isinstance` cannot match.
+        if issubclass(annotation, _SCALAR_ANNOTATIONS + (Enum, BaseModel, dict)):
+            return False
+        return True
+    origin = get_origin(annotation)
+    if origin in (list, set, frozenset, tuple):
+        return True
+    if origin is dict:
+        # The runtime only unwraps a `StorePath` and a flat container of
+        # them; a mapping is never scanned, so its paths stay uncounted
+        # either way.
+        return False
+    if origin is Union or origin is types.UnionType:
+        return any(_may_hold_paths(arg) for arg in get_args(annotation) if arg is not type(None))
+    return True
+
+
+@functools.lru_cache(maxsize=256)
+def _path_field_names(cls: type) -> tuple[str, ...]:
+    """The fields of `cls` that can name a store path, resolved once.
+
+    A build sends an operation for every derivation of its closure, and the
+    scan below runs for each one. The declaration does not change between
+    operations, so the field selection is per class and the values per
+    operation.
+    """
+    try:
+        fields = cls.model_fields
+    except AttributeError:
+        return ()
+    return tuple(name for name, field in fields.items() if _may_hold_paths(field.annotation))
 
 
 def referenced_paths(request: object) -> set[str]:
@@ -29,8 +88,11 @@ def referenced_paths(request: object) -> set[str]:
     """
     if not isinstance(request, BaseModel):
         return set()
+    names = _path_field_names(type(request))
+    if not names:
+        return set()
     found: set[str] = set()
-    for name in type(request).model_fields:
+    for name in names:
         value = getattr(request, name, None)
         if isinstance(value, StorePath):
             found.add(str(value))
