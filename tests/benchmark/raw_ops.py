@@ -5,6 +5,8 @@ both runs and cancels in the ratio. That is the whole point of the comparison:
 the only thing that differs is the daemon on the far end of the socket.
 
 `sys.argv`: the count, then the two sockets -- nix-daemon first, pynixd second.
+The pump runs `REPEATS` times and reports the best rate: the container shares
+the host's CPU, so a single pass carries whatever else the host was doing.
 """
 
 from __future__ import annotations
@@ -21,6 +23,9 @@ from pynixd.serde import AddTempRootRequest, IsValidPathRequest, StorePath
 from pynixd.store import LocalSocketStore
 
 ALPHABET = "0123456789abcdfghijklmnpqrsvwxyz"
+
+REPEATS = 3
+"""How many times each pump runs. The best rate is the one reported."""
 
 
 def paths(n: int) -> list[StorePath]:
@@ -43,7 +48,8 @@ def spec(socket_path: Path) -> LocalSocketStoreSpec:
     )
 
 
-async def measure(socket_path: Path, sample: list[StorePath], label: str) -> None:
+async def one_pass(socket_path: Path, sample: list[StorePath]) -> tuple[float, float]:
+    """One IsValidPath and one AddTempRoot pass. Returns (isvalid, addroot) rates."""
     client = LocalSocketStore(spec(socket_path))
     await client.start()
     try:
@@ -59,13 +65,22 @@ async def measure(socket_path: Path, sample: list[StorePath], label: str) -> Non
         end = time.perf_counter()
 
         n = len(sample)
-        print(
-            f"{label:10} n={n}  isvalidpath {n / (middle - start):>8.0f} op/s"
-            f"   addtemproot {n / (end - middle):>8.0f} op/s",
-            flush=True,
-        )
+        return n / (middle - start), n / (end - middle)
     finally:
         await client.close()
+
+
+async def measure(socket_path: Path, sample: list[StorePath], label: str) -> None:
+    best = (0.0, 0.0)
+    for _ in range(REPEATS):
+        isvalid, addroot = await one_pass(socket_path, sample)
+        best = (max(best[0], isvalid), max(best[1], addroot))
+
+    n = len(sample)
+    print(
+        f"{label:10} n={n}  isvalidpath {best[0]:>8.0f} op/s   addtemproot {best[1]:>8.0f} op/s",
+        flush=True,
+    )
 
 
 async def main() -> None:

@@ -83,6 +83,11 @@ vivariumLib.mkTest {
       after = [ "boot" ];
       description = "IsValidPath and AddTempRoot through each daemon";
     };
+    profile = {
+      script = ../../benchmark/run.py;
+      after = [ "boot" ];
+      description = "where pynixd spends its time during a raw pump";
+    };
     system = {
       script = ../../benchmark/run.py;
       after = [ "boot" ];
