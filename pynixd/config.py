@@ -661,10 +661,11 @@ class PynixdSettings(BaseSettings):
 
     # Sign paths added through `AddToStore` with pynixd's own keys, by relay
     # (`SignPathInfo`) or by decomposing (local sign, then `AddSignatures`).
-    # On, as before: an added path carries pynixd's signature. Off only when
-    # nothing populates the signing keys, where the step is a pool acquire
-    # and an upstream round trip per added path for zero signatures.
-    sign_added_paths: bool = True
+    # Off: nothing populates the signing keys in the standard deployment,
+    # where the step is a pool acquire and an upstream round trip per added
+    # path for zero signatures. An operator with signing keys sets this true,
+    # and added paths carry pynixd's signature again.
+    sign_added_paths: bool = False
 
     @classmethod
     def settings_customise_sources(

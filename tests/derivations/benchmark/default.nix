@@ -49,10 +49,6 @@ vivariumLib.mkTest {
       # logged at session close and at `info`. `log_level` defaults to
       # `WARNING`, so without this the op breakdown is always empty.
       settings.log_level = "info";
-      # Nothing populates the signing keys here, so signing each added path
-      # is a pool acquire and an upstream round trip for zero signatures.
-      # The product default stays on; the benchmark opts out explicitly.
-      settings.sign_added_paths = false;
     };
 
     # The builds run as a user. Root's `nix` opens the store directly and
