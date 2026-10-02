@@ -4,9 +4,11 @@ The client is pynixd's own `LocalSocketStore`, so its Python cost is present in
 both runs and cancels in the ratio. That is the whole point of the comparison:
 the only thing that differs is the daemon on the far end of the socket.
 
-`sys.argv`: the count, then the two sockets -- nix-daemon first, pynixd second.
-The pump runs `REPEATS` times and reports the best rate: the container shares
-the host's CPU, so a single pass carries whatever else the host was doing.
+`sys.argv`: the count, then the two sockets -- nix-daemon first, pynixd second --
+then which socket to pump: `both`, `first` or `second`. The pump runs `REPEATS`
+times and reports the best whole pass: the container shares the host's CPU, so
+a single pass carries whatever else the host was doing, and the best pass is
+one real pass rather than the fastest column of each.
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ from pynixd.store import LocalSocketStore
 ALPHABET = "0123456789abcdfghijklmnpqrsvwxyz"
 
 REPEATS = 3
-"""How many times each pump runs. The best rate is the one reported."""
+"""How many times each pump runs. The best whole pass is the one reported."""
 
 
 def paths(n: int) -> list[StorePath]:
@@ -48,12 +50,14 @@ def spec(socket_path: Path) -> LocalSocketStoreSpec:
     )
 
 
-async def one_pass(socket_path: Path, sample: list[StorePath]) -> tuple[float, float, float]:
+async def one_pass(socket_path: Path, sample: list[StorePath], tag: str) -> tuple[float, tuple[float, float, float]]:
     """One IsValidPath, one AddTempRoot, and one AddToStore pass.
 
-    The AddToStore sample is smaller: each call writes a real store path, and
-    the pass is the fixed per-operation cost that the system build pays 1344
-    times, not the bulk rate of a large NAR.
+    Answers the total seconds with the three rates. The AddToStore sample is
+    smaller: each call writes a real store path, and the pass is the fixed
+    per-operation cost that the system build pays, not the bulk rate of a
+    large NAR. `tag` names the pass, so every pass writes paths no earlier
+    pass wrote: the second pass must not measure the first pass's dedup.
     """
     client = LocalSocketStore(spec(socket_path))
     await client.start()
@@ -70,24 +74,30 @@ async def one_pass(socket_path: Path, sample: list[StorePath]) -> tuple[float, f
         store_start = time.perf_counter()
         texts = sample[: max(1, len(sample) // 10)]
         for i, p in enumerate(texts):
-            await client.add_text_to_store(f"rawbench-{i}", f"rawbench payload {p}", set())
+            await client.add_text_to_store(f"rawbench-{tag}-{i}", f"rawbench payload {p}", set())
         end = time.perf_counter()
 
         n = len(sample)
         return (
-            n / (middle - start),
-            n / (store_start - middle),
-            len(texts) / (end - store_start),
+            end - start,
+            (
+                n / (middle - start),
+                n / (store_start - middle),
+                len(texts) / (end - store_start),
+            ),
         )
     finally:
         await client.close()
 
 
 async def measure(socket_path: Path, sample: list[StorePath], label: str) -> None:
+    best_time = float("inf")
     best = (0.0, 0.0, 0.0)
-    for _ in range(REPEATS):
-        isvalid, addroot, addstore = await one_pass(socket_path, sample)
-        best = (max(best[0], isvalid), max(best[1], addroot), max(best[2], addstore))
+    for repeat in range(REPEATS):
+        elapsed, rates = await one_pass(socket_path, sample, f"{label}-{repeat}")
+        if elapsed < best_time:
+            best_time = elapsed
+            best = rates
 
     n = len(sample)
     print(
@@ -100,8 +110,11 @@ async def measure(socket_path: Path, sample: list[StorePath], label: str) -> Non
 
 async def main() -> None:
     sample = paths(int(sys.argv[1]))
-    await measure(Path(sys.argv[2]), sample, "nix-daemon")
-    await measure(Path(sys.argv[3]), sample, "pynixd")
+    only = sys.argv[4] if len(sys.argv) > 4 else "both"
+    if only in ("both", "first"):
+        await measure(Path(sys.argv[2]), sample, "nix-daemon")
+    if only in ("both", "second"):
+        await measure(Path(sys.argv[3]), sample, "pynixd")
 
 
 if __name__ == "__main__":

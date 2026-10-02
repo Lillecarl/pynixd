@@ -8,6 +8,7 @@ one that would notice a fault the other two cannot see.
 from __future__ import annotations
 
 import shlex
+import statistics
 import time
 
 from vivarium_runner import Machines
@@ -32,8 +33,10 @@ HOT_PASSES = 5
 """How many hot builds each daemon runs. The best is reported.
 
 The container shares the host's CPU, so one pass carries whatever else the
-host was doing. A cold build stays one pass: it is mostly moving data, and the
-host's load moves it less than it moves a few seconds of daemon traffic.
+host was doing. The passes interleave -- nix-daemon, pynixd, nix-daemon --
+so a slow minute lands on both daemons and not on one of them. A cold build
+stays one pass: it is mostly moving data, and the host's load moves it less
+than it moves a few seconds of daemon traffic.
 """
 
 
@@ -157,9 +160,9 @@ async def _profile(vms: Machines) -> None:
     await vm.succeed(f"rm -rf /work && cp -r {src} /work && chmod -R u+w /work")
 
     # The profiled daemon takes the socket itself, so the unit must let it go.
-    # The `finally` below hands the socket back: phases run alphabetically,
-    # so `raw` runs after this one, and a stopped `pynixd.socket` leaves no
-    # socket file for it to pump.
+    # The `finally` below hands the socket back: `raw` declares `after` on
+    # this phase, and a stopped `pynixd.socket` leaves no socket file for it
+    # to pump.
     await vm.succeed("systemctl stop pynixd.service pynixd.socket; rm -f " + vms.settings["socket"])
 
     wrapper = "/work/profile_daemon.py"
@@ -182,7 +185,9 @@ async def _profile(vms: Machines) -> None:
 
     try:
         # Wait for the socket, then pump it with fewer operations than `raw`:
-        # sampling makes the daemon several times slower.
+        # sampling makes the daemon several times slower. Only the profiled
+        # socket: the pump takes which socket to drive, and driving
+        # nix-daemon here would double the pump for no profile.
         await vm.succeed(
             f"for _ in $(seq 1 100); do [ -S {vms.settings['socket']} ] && break; sleep 0.2; done",
             timeout=60,
@@ -190,11 +195,13 @@ async def _profile(vms: Machines) -> None:
         pump = (
             "cd /work && PYTHONPATH=/work:/work/nix-daemon-protocol/src "
             f"python tests/benchmark/raw_ops.py {OPERATIONS // 4} "
-            f"{vms.settings['upstream']} {vms.settings['socket']} "
-            "> /artifacts/profile_pump.log 2>&1 || true"
+            f"{vms.settings['upstream']} {vms.settings['socket']} second "
+            "> /artifacts/profile_pump.log 2>&1"
         )
-        await vm.execute(pump, timeout=TIMEOUT, label="profile pump")
+        rc, _ = await vm.execute(pump, timeout=TIMEOUT, label="profile pump")
         print((await vm.succeed("cat /artifacts/profile_pump.log")).strip())
+        if rc != 0:
+            raise AssertionError(f"profile pump exited {rc}")
 
         # Stop the unit, which sends the SIGTERM that makes the wrapper write its
         # report through the `atexit` handler.
@@ -256,58 +263,55 @@ async def _system(vms: Machines) -> None:
     }
 
     cold_times: dict[str, float] = {}
-    hot_times: dict[str, tuple[float, int]] = {}
+    hot_times: dict[str, list[float]] = {label: [] for label in roles}
     failed = []
     # One stamp for the whole phase. It is fresh to the store, so each daemon's
     # first build really builds, and it is the same for that daemon's later
     # builds, so those really are hot.
     stamp = str(int(time.time()))
 
-    for label, (socket, host_name) in roles.items():
+    async def one_build(label: str, socket: str, host_name: str, what: str) -> float:
         inner = (
             f"NIX_PATH=nixpkgs={vms.settings['nixpkgs']} NIX_REMOTE=unix://{socket} "
             f"nix build --argstr hostName {host_name} --argstr stamp {stamp} "
             f"--file {expression} --no-link > /dev/null 2>&1"
         )
-        # One cold build, and only the cold one is timed. Then the hot passes.
         start = time.monotonic()
         rc, _ = await vm.execute(f"su - tester -c {shlex.quote(inner)}", timeout=BUILD_TIMEOUT, label=label)
-        cold_times[label] = time.monotonic() - start
-        print(f"[benchmark] {label:10} cold {cold_times[label]:7.2f}s rc={rc}")
+        elapsed = time.monotonic() - start
+        print(f"[benchmark] {label:10} {what} {elapsed:7.2f}s rc={rc}")
         if rc != 0:
-            failed.append(f"{label} cold")
+            failed.append(f"{label} {what}")
+        return elapsed
 
-        best = (float("inf"), 0)
-        for pass_index in range(HOT_PASSES):
-            start = time.monotonic()
-            rc, _ = await vm.execute(f"su - tester -c {shlex.quote(inner)}", timeout=BUILD_TIMEOUT, label=label)
-            elapsed = time.monotonic() - start
-            best = min(best, (elapsed, pass_index), key=lambda pair: pair[0])
-            print(f"[benchmark] {label:10} hot {pass_index + 1} {elapsed:7.2f}s rc={rc}")
-            if rc != 0:
-                failed.append(f"{label} hot {pass_index + 1}")
-        hot_times[label] = best
+    # One cold build per daemon, and only the cold one is timed alone. Then
+    # the hot passes, interleaved so host noise lands on both daemons.
+    for label, (socket, host_name) in roles.items():
+        cold_times[label] = await one_build(label, socket, host_name, "cold")
+
+    for pass_index in range(HOT_PASSES):
+        for label, (socket, host_name) in roles.items():
+            elapsed = await one_build(label, socket, host_name, f"hot {pass_index + 1}")
+            hot_times[label].append(elapsed)
 
     if failed:
         raise AssertionError(f"system build failed through {', '.join(failed)}")
 
     for label in roles:
         cold = cold_times[label]
-        hot, pass_index = hot_times[label]
+        hot = hot_times[label]
         print(
             f"[benchmark] {label:10} warmup {cold:7.2f}s (not compared: second daemon reuses the shared closure)"
-            f"  hot {hot:7.2f}s (best of {HOT_PASSES})"
+            f"  hot best {min(hot):7.2f}s median {statistics.median(hot):7.2f}s ({HOT_PASSES} passes)"
         )
 
     # What the client actually asked pynixd for, and how long pynixd spent on
     # each operation. A tester who cannot write the store's database reaches
-    # the daemon for all of it, so this is the load on the front-end. The
-    # largest `total_ops` is the build; a small session is an eval.
+    # the daemon for all of it, so this is the load on the front-end.
     #
     # pynixd logs one JSON record per session at close. `python -c` parses
-    # each one, sorts by `total_ops`, and prints the four largest with their
-    # breakdown. Four and not two: a `raw` pump session is 40000 operations,
-    # and two would bury the build session this phase exists to measure.
+    # each one, sorts by `total_ops`, and prints every session big enough to
+    # be a build or a pump. Small sessions are evals, and there are many.
     breakdown = await vm.succeed(
         "journalctl -u pynixd --no-pager -o cat "
         "| grep client_op_timing "
@@ -318,15 +322,16 @@ for line in sys.stdin:
     if not line.startswith("{"):
         continue
     rec = json.loads(line)
-    rows.append((
-        rec.get("total_ops", 0),
-        rec.get("total_time", ""),
-        rec.get("total_encode", ""),
-        rec.get("breakdown", {}),
-        rec.get("encode_breakdown", {}),
-    ))
+    if rec.get("total_ops", 0) >= 1000:
+        rows.append((
+            rec.get("total_ops", 0),
+            rec.get("total_time", ""),
+            rec.get("total_encode", ""),
+            rec.get("breakdown", {}),
+            rec.get("encode_breakdown", {}),
+        ))
 rows.sort(reverse=True)
-for total_ops, total_time, total_encode, ops, encode in rows[:4]:
+for total_ops, total_time, total_encode, ops, encode in rows:
     print(f"session total_ops={total_ops} dispatch={total_time} encode={total_encode}")
     for name, value in sorted(ops.items(), key=lambda kv: kv[1], reverse=True):
         print(f"    {name:28} {value}")

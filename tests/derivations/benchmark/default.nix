@@ -49,6 +49,10 @@ vivariumLib.mkTest {
       # logged at session close and at `info`. `log_level` defaults to
       # `WARNING`, so without this the op breakdown is always empty.
       settings.log_level = "info";
+      # Nothing populates the signing keys here, so signing each added path
+      # is a pool acquire and an upstream round trip for zero signatures.
+      # The product default stays on; the benchmark opts out explicitly.
+      settings.sign_added_paths = false;
     };
 
     # The builds run as a user. Root's `nix` opens the store directly and
@@ -80,13 +84,17 @@ vivariumLib.mkTest {
     };
     raw = {
       script = ../../benchmark/run.py;
-      after = [ "boot" ];
+      # After the profile phase, not only after boot: the profile phase
+      # stops `pynixd.socket` to take the socket itself, and hands it back
+      # in its `finally`. Alphabetical order used to provide this; the edge
+      # states it, so a rename cannot break the handoff.
+      after = [ "boot" "profile" ];
       description = "IsValidPath and AddTempRoot through each daemon";
     };
     profile = {
       script = ../../benchmark/run.py;
       after = [ "boot" ];
-      description = "where pynixd spends its time during a raw pump";
+      description = "pyinstrument of pynixd under a raw pump";
     };
     system = {
       script = ../../benchmark/run.py;
