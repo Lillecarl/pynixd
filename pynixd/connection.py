@@ -61,6 +61,8 @@ class ClientConn:
         """Wrap a writer for thread-safe stderr output to a client."""
         self.w = w
         self._write_lock = anyio.Lock()
+        self._dirty = False
+        """Whether a stderr message or raw bytes went out since the last flush."""
         self.standard_features: frozenset[str] = frozenset()
         """The features that this client and pynixd negotiated.
 
@@ -101,6 +103,7 @@ class ClientConn:
         await msg.to_writer(WriteContext(writer=buf, version=wire.PROTOCOL_VERSION, features=self.standard_features))
         data = buf.get_bytes()
         if data:
+            self._dirty = True
             async with self._write_lock:
                 self.w.write(data)
                 await self.w.drain()
@@ -108,13 +111,28 @@ class ClientConn:
     async def send_raw(self, data: bytes) -> None:
         """Send raw bytes to the client. Safe to call from multiple tasks."""
         if data:
+            self._dirty = True
             async with self._write_lock:
                 self.w.write(data)
                 await self.w.drain()
 
     async def flush(self) -> None:
-        """Wait until all pending writes are complete and OS buffer is drained."""
+        """Wait until all pending writes are complete and OS buffer is drained.
+
+        **A `flush` with nothing to flush skips the lock.** `DaemonProxy.op_loop`
+        calls this before every response, and `send` and `send_raw` already
+        drained under the lock by the time they return, so for the common
+        operation -- one that writes no stderr at all -- this took an `anyio`
+        lock and drained for nothing. Measured with pyinstrument on one raw
+        pump session, `flush` was 0.65 s of 2.9 s of `dispatch`. A message that
+        did go out sets `_dirty`, and the next flush then takes the lock as
+        before; a send that races this check drains itself, because `send`
+        holds the lock for its own drain.
+        """
+        if not self._dirty:
+            return
         async with self._write_lock:
+            self._dirty = False
             await self.w.drain()
 
 
