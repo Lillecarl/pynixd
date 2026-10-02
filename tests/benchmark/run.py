@@ -101,6 +101,7 @@ async def _raw(vms: Machines) -> None:
 
 PROFILE_WRAPPER = """import atexit
 import os
+import signal
 import sys
 
 import pyinstrument
@@ -119,6 +120,15 @@ def dump():
 
 
 atexit.register(dump)
+
+
+def _on_term(_signum, _frame):
+    # `atexit` does not run when a signal kills the interpreter, so turn the
+    # SIGTERM of `systemctl stop` into a normal exit.
+    sys.exit(0)
+
+
+signal.signal(signal.SIGTERM, _on_term)
 
 prof.start()
 os.environ.setdefault("PYNIXD_CONFIG", "/etc/pynixd/pynixd.json")
@@ -147,46 +157,65 @@ async def _profile(vms: Machines) -> None:
     await vm.succeed(f"rm -rf /work && cp -r {src} /work && chmod -R u+w /work")
 
     # The profiled daemon takes the socket itself, so the unit must let it go.
+    # The `finally` below hands the socket back: phases run alphabetically,
+    # so `raw` runs after this one, and a stopped `pynixd.socket` leaves no
+    # socket file for it to pump.
     await vm.succeed("systemctl stop pynixd.service pynixd.socket; rm -f " + vms.settings["socket"])
 
     wrapper = "/work/profile_daemon.py"
     await vm.succeed(f"cat > {wrapper} <<'PYEOF'\n{PROFILE_WRAPPER}\nPYEOF")
 
-    # Start the profiled daemon in the background. It reads the tree first, so
-    # the profile is of the edited code.
-    start = (
-        "cd /work && PYTHONPATH=/work:/work/nix-daemon-protocol/src "
-        f"nohup python {wrapper} > /artifacts/profile_daemon.log 2>&1 & echo $!"
-    )
-    pid_out = await vm.succeed(start)
-    print(f"[benchmark] profiled pynixd started: {pid_out.strip()}")
-
-    # Wait for the socket, then pump it with fewer operations than `raw`:
-    # sampling makes the daemon several times slower.
+    # Start the profiled daemon as its own systemd unit. `--no-block` returns
+    # at once; without it `systemd-run` waits for the unit to become active,
+    # and a daemon never does. A shell job cannot be used here: it inherits
+    # this command's stdout, and the runner reads stdout until the last writer
+    # closes. systemd owns the process, and `systemctl stop` sends the SIGTERM
+    # that makes the wrapper write its report through the `atexit` handler.
     await vm.succeed(
-        f"for _ in $(seq 1 100); do [ -S {vms.settings['socket']} ] && break; sleep 0.2; done",
-        timeout=60,
+        "systemd-run --unit=profiled-pynixd --collect --no-block "
+        "--working-directory=/work "
+        "--setenv=PATH=/run/current-system/sw/bin "
+        "--setenv=PYTHONPATH=/work:/work/nix-daemon-protocol/src "
+        "--setenv=PYNIXD_CONFIG=/etc/pynixd/pynixd.json "
+        f"python {wrapper}"
     )
-    pump = (
-        "cd /work && PYTHONPATH=/work:/work/nix-daemon-protocol/src "
-        f"python tests/benchmark/raw_ops.py {OPERATIONS // 4} "
-        f"{vms.settings['upstream']} {vms.settings['socket']} "
-        "> /artifacts/profile_pump.log 2>&1 || true"
-    )
-    await vm.execute(pump, timeout=TIMEOUT, label="profile pump")
-    print((await vm.succeed("cat /artifacts/profile_pump.log")).strip())
 
-    # SIGTERM the wrapper so its atexit handler writes the report, by the pid
-    # it printed and not by a name (a `pkill -f` matches this shell too).
-    pid = pid_out.strip().splitlines()[-1].strip()
-    await vm.succeed(
-        f"kill -TERM {shlex.quote(pid)}; for _ in $(seq 1 50); do "
-        f"[ -f /artifacts/profile.txt ] && break; sleep 0.2; done"
-    )
-    profile = await vm.succeed("cat /artifacts/profile.txt")
-    print("[benchmark] pynixd profile (top):\n" + "\n".join(profile.splitlines()[:60]))
-    if not profile.strip():
-        raise AssertionError("the profiler wrote no report")
+    try:
+        # Wait for the socket, then pump it with fewer operations than `raw`:
+        # sampling makes the daemon several times slower.
+        await vm.succeed(
+            f"for _ in $(seq 1 100); do [ -S {vms.settings['socket']} ] && break; sleep 0.2; done",
+            timeout=60,
+        )
+        pump = (
+            "cd /work && PYTHONPATH=/work:/work/nix-daemon-protocol/src "
+            f"python tests/benchmark/raw_ops.py {OPERATIONS // 4} "
+            f"{vms.settings['upstream']} {vms.settings['socket']} "
+            "> /artifacts/profile_pump.log 2>&1 || true"
+        )
+        await vm.execute(pump, timeout=TIMEOUT, label="profile pump")
+        print((await vm.succeed("cat /artifacts/profile_pump.log")).strip())
+
+        # Stop the unit, which sends the SIGTERM that makes the wrapper write its
+        # report through the `atexit` handler.
+        await vm.succeed(
+            "systemctl stop profiled-pynixd; "
+            "for _ in $(seq 1 50); do [ -f /artifacts/profile.txt ] && break; sleep 0.2; done"
+        )
+        profile = await vm.succeed("cat /artifacts/profile.txt")
+        print("[benchmark] pynixd profile (top):\n" + "\n".join(profile.splitlines()[:60]))
+        lines = profile.splitlines()
+        for index, line in enumerate(lines):
+            if "IsValidPath" in line:
+                print("[benchmark] pynixd profile (IsValidPath branch):\n" + "\n".join(lines[index : index + 50]))
+                break
+        if not profile.strip():
+            raise AssertionError("the profiler wrote no report")
+    finally:
+        await vm.succeed(
+            "systemctl start pynixd.socket; "
+            f"for _ in $(seq 1 100); do [ -S {vms.settings['socket']} ] && break; sleep 0.2; done"
+        )
 
 
 async def _system(vms: Machines) -> None:
