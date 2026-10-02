@@ -89,15 +89,20 @@ class WireResponse(WireModel):
         The logs are fresh per response and not shared: `query_missing` and
         `set_options` append to the logs of the response they build, and a
         shared log would carry one operation's warnings into another's
-        answer. `WireLogs.model_construct` skips the validation of an empty
-        list, which needs none.
+        answer. The log is built by hand and not by `model_construct`: an
+        empty log needs no validation, and `model_construct` cost half of
+        this constructor.
         """
         _read_steps, _write_steps, defaults = _wire_plan(cls, 0, frozenset())
         obj = cls.__new__(cls)
         object.__setattr__(obj, "__pydantic_fields_set__", set(body) | {"logs"})
         object.__setattr__(obj, "__pydantic_extra__", None)
         object.__setattr__(obj, "__pydantic_private__", None)
-        logs = WireLogs.model_construct(messages=[])
+        logs = WireLogs.__new__(WireLogs)
+        object.__setattr__(logs, "__pydantic_fields_set__", {"messages"})
+        object.__setattr__(logs, "__pydantic_extra__", None)
+        object.__setattr__(logs, "__pydantic_private__", None)
+        object.__setattr__(logs, "messages", [])
         object.__setattr__(obj, "logs", logs)
         for name, is_factory, value in defaults:
             if name == "logs" or name in body:

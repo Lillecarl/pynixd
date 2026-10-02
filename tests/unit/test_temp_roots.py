@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from nix_daemon_protocol.store_path import StorePath
 from pynixd.temp_roots import TempRoots
 
 PATH_A = "/nix/store/00000000000000000000000000000000-a"
@@ -44,6 +45,17 @@ def can_write_lock(path) -> bool:
 async def test_a_root_reaches_the_file(tmp_path):
     roots = TempRoots(tmp_path)
     await roots.add(PATH_A)
+    try:
+        assert read_roots(roots.path) == [PATH_A]
+    finally:
+        await roots.close()
+
+
+@pytest.mark.anyio
+async def test_a_store_path_writes_what_its_string_writes(tmp_path):
+    """The `StorePath` short-circuit skips the re-parse, not the write."""
+    roots = TempRoots(tmp_path)
+    await roots.add(StorePath(PATH_A))
     try:
         assert read_roots(roots.path) == [PATH_A]
     finally:

@@ -104,7 +104,9 @@ class TempRoots:
         The collector running is the case that waits, over its socket. That
         runs in a worker thread, so the event loop is free while it does.
         """
-        root = str(StorePath(str(path)))
+        # A `StorePath` is already normalized, so stringifying it is enough:
+        # parsing it again costs a prefix strip per root, 7177 times a build.
+        root = str(path) if isinstance(path, StorePath) else str(StorePath(str(path)))
         if self._disabled:
             return
         if self._add_inline(root):

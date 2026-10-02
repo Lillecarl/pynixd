@@ -14,6 +14,7 @@ import structlog
 
 from nix_daemon_protocol.exceptions import DaemonProtocolError
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
+from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.wire_ops import WIRE_REGISTRY, WireResponse
 
 from . import metrics, wire
@@ -567,7 +568,7 @@ class DaemonProxy:
 
     # ── Temporary roots ──────────────────────────────────────────────
 
-    async def add_temp_root(self, path: str) -> None:
+    async def add_temp_root(self, path: str | StorePath) -> None:
         """Hold `path` against the collector until this client goes away.
 
         pynixd writes the root itself, in the `temproots` directory of the

@@ -32,5 +32,5 @@ class AddTempRootHandler(Handler):
         req = await AddTempRootRequest.from_reader(
             ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version, features=ctx.proxy.standard_features),
         )
-        await ctx.proxy.add_temp_root(str(req.path))
+        await ctx.proxy.add_temp_root(req.path)
         return AddTempRootResponse.fast(value=1)  # type: ignore[return-value] -- the base returns object | None
