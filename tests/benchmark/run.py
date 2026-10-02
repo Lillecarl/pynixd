@@ -226,17 +226,26 @@ async def _system(vms: Machines) -> None:
     build a thousand things on top. This is the whole pipeline: a fault the
     op pump cannot see shows here.
 
-    **The hot run is the number that matters.** A cold build is mostly moving
-    data: it fetches the closure and writes a thousand outputs. A hot build of
-    the same goal has every path already, so what is left is the traffic the
-    client sends to the daemon and the answer it reads back. That is the
-    incremental cost of the front-end, and the only part the two daemons can
-    differ in.
+    **The hot run is the number that matters, and the only one compared.**
+    A cold build is mostly moving data: it fetches the closure and writes a
+    thousand outputs. A hot build of the same goal has every path already, so
+    what is left is the traffic the client sends to the daemon and the answer
+    it reads back. That is the incremental cost of the front-end, and the only
+    part the two daemons can differ in.
+
+    **The cold runs are warmup, and their times are not compared.** Both
+    daemons front the same store, and both build the same minimal system from
+    the same nixpkgs: all but a handful of hostname-specific paths are
+    identical store paths. Whoever builds first fetches the shared closure,
+    and whoever builds second reuses it. nix-daemon always runs first here,
+    so its cold time carries the fetch and pynixd's does not. Comparing them
+    would measure run order, not daemon speed. `hostName` keeps the noise
+    goals distinct so the hot builds are each daemon's own, but it cannot
+    unshare the system closure that dominates the cold time.
 
     Each daemon builds its own goal, once cold and then `HOT_PASSES` times
-    hot. The goal is named by `hostName`, so the two daemons never build the
-    same closure and one cannot warm the other's cold run. The **best** hot
-    pass is reported, because the container shares the host's CPU.
+    hot. The **best** hot pass is reported, because the container shares the
+    host's CPU.
     """
     [vm] = vms.values()
     expression = f"{vms.settings['src']}/tests/benchmark/system.nix"
@@ -285,7 +294,10 @@ async def _system(vms: Machines) -> None:
     for label in roles:
         cold = cold_times[label]
         hot, pass_index = hot_times[label]
-        print(f"[benchmark] {label:10} cold {cold:7.2f}s  hot {hot:7.2f}s (best of {HOT_PASSES})")
+        print(
+            f"[benchmark] {label:10} warmup {cold:7.2f}s (not compared: second daemon reuses the shared closure)"
+            f"  hot {hot:7.2f}s (best of {HOT_PASSES})"
+        )
 
     # What the client actually asked pynixd for, and how long pynixd spent on
     # each operation. A tester who cannot write the store's database reaches
@@ -293,8 +305,9 @@ async def _system(vms: Machines) -> None:
     # largest `total_ops` is the build; a small session is an eval.
     #
     # pynixd logs one JSON record per session at close. `python -c` parses
-    # each one, sorts by `total_ops`, and prints the two largest with their
-    # breakdown, so a build is not lost under the eval sessions around it.
+    # each one, sorts by `total_ops`, and prints the four largest with their
+    # breakdown. Four and not two: a `raw` pump session is 40000 operations,
+    # and two would bury the build session this phase exists to measure.
     breakdown = await vm.succeed(
         "journalctl -u pynixd --no-pager -o cat "
         "| grep client_op_timing "
@@ -313,7 +326,7 @@ for line in sys.stdin:
         rec.get("encode_breakdown", {}),
     ))
 rows.sort(reverse=True)
-for total_ops, total_time, total_encode, ops, encode in rows[:2]:
+for total_ops, total_time, total_encode, ops, encode in rows[:4]:
     print(f"session total_ops={total_ops} dispatch={total_time} encode={total_encode}")
     for name, value in sorted(ops.items(), key=lambda kv: kv[1], reverse=True):
         print(f"    {name:28} {value}")

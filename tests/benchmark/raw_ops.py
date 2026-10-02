@@ -48,8 +48,13 @@ def spec(socket_path: Path) -> LocalSocketStoreSpec:
     )
 
 
-async def one_pass(socket_path: Path, sample: list[StorePath]) -> tuple[float, float]:
-    """One IsValidPath and one AddTempRoot pass. Returns (isvalid, addroot) rates."""
+async def one_pass(socket_path: Path, sample: list[StorePath]) -> tuple[float, float, float]:
+    """One IsValidPath, one AddTempRoot, and one AddToStore pass.
+
+    The AddToStore sample is smaller: each call writes a real store path, and
+    the pass is the fixed per-operation cost that the system build pays 1344
+    times, not the bulk rate of a large NAR.
+    """
     client = LocalSocketStore(spec(socket_path))
     await client.start()
     try:
@@ -62,23 +67,33 @@ async def one_pass(socket_path: Path, sample: list[StorePath]) -> tuple[float, f
         middle = time.perf_counter()
         for p in sample:
             await client.execute(AddTempRootRequest(path=p))
+        store_start = time.perf_counter()
+        texts = sample[: max(1, len(sample) // 10)]
+        for i, p in enumerate(texts):
+            await client.add_text_to_store(f"rawbench-{i}", f"rawbench payload {p}", set())
         end = time.perf_counter()
 
         n = len(sample)
-        return n / (middle - start), n / (end - middle)
+        return (
+            n / (middle - start),
+            n / (store_start - middle),
+            len(texts) / (end - store_start),
+        )
     finally:
         await client.close()
 
 
 async def measure(socket_path: Path, sample: list[StorePath], label: str) -> None:
-    best = (0.0, 0.0)
+    best = (0.0, 0.0, 0.0)
     for _ in range(REPEATS):
-        isvalid, addroot = await one_pass(socket_path, sample)
-        best = (max(best[0], isvalid), max(best[1], addroot))
+        isvalid, addroot, addstore = await one_pass(socket_path, sample)
+        best = (max(best[0], isvalid), max(best[1], addroot), max(best[2], addstore))
 
     n = len(sample)
     print(
-        f"{label:10} n={n}  isvalidpath {best[0]:>8.0f} op/s   addtemproot {best[1]:>8.0f} op/s",
+        f"{label:10} n={n}  isvalidpath {best[0]:>8.0f} op/s"
+        f"   addtemproot {best[1]:>8.0f} op/s"
+        f"   addtostore {best[2]:>8.0f} op/s",
         flush=True,
     )
 
