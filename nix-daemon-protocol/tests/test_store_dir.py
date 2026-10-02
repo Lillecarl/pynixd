@@ -16,6 +16,7 @@ import pytest
 
 from nix_daemon_protocol.store_dir import (
     on_disk,
+    reading_store_dir,
     real_store_dir,
     reset_store_dir,
     set_real_store_dir,
@@ -79,3 +80,18 @@ def test_a_relative_directory_is_refused():
         set_store_dir("nix/store")
     with pytest.raises(ValueError, match="must be an absolute path"):
         set_real_store_dir("nix/store")
+
+
+def test_the_prefix_follows_the_setter():
+    """The cached prefix must not outlive the directory it was built from."""
+    assert store_prefix() == "/nix/store/"
+    set_store_dir("/relocated/nix/store")
+    assert store_prefix() == "/relocated/nix/store/"
+
+
+def test_the_prefix_follows_the_scoped_reader():
+    """`reading_store_dir` moves the directory for a block, and moves it back."""
+    assert store_prefix() == "/nix/store/"
+    with reading_store_dir("/recording/nix/store"):
+        assert store_prefix() == "/recording/nix/store/"
+    assert store_prefix() == "/nix/store/"

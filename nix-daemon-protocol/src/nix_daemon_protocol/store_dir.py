@@ -66,6 +66,15 @@ DEFAULT_STORE_DIR = "/nix/store"
 
 _store_dir: str | None = None
 _real_store_dir: str | None = None
+_prefix: str | None = None
+"""The store directory with its separator, resolved once.
+
+`store_prefix` runs per store path built and per path stringified, thousands
+of times a build, and the value is process-fixed: the setters below are the
+only writers. Each of them clears this, so the next read resolves again.
+`set_real_store_dir` is not one of them: the real directory holds the files,
+and the prefix names the paths.
+"""
 
 
 def _absolute(path: str | os.PathLike[str], what: str) -> str:
@@ -85,7 +94,10 @@ def store_dir() -> str:
 
 def store_prefix() -> str:
     """The store directory with a separator at the end."""
-    return store_dir() + "/"
+    global _prefix
+    if _prefix is None:
+        _prefix = store_dir() + "/"
+    return _prefix
 
 
 def real_store_dir() -> str:
@@ -100,8 +112,9 @@ def set_store_dir(path: str | os.PathLike[str]) -> None:
 
     `NIX_STORE_DIR` answers this already, so few callers need it.
     """
-    global _store_dir
+    global _store_dir, _prefix
     _store_dir = _absolute(path, "store directory")
+    _prefix = None
 
 
 def set_real_store_dir(path: str | os.PathLike[str]) -> None:
@@ -119,9 +132,10 @@ def reset_store_dir() -> None:
 
     A test uses this. Production code calls the two setters instead.
     """
-    global _store_dir, _real_store_dir
+    global _store_dir, _real_store_dir, _prefix
     _store_dir = None
     _real_store_dir = None
+    _prefix = None
 
 
 @contextlib.contextmanager
@@ -137,17 +151,19 @@ def reading_store_dir(path: str | os.PathLike[str] | None) -> Iterator[None]:
     made it, so leaving `real_store_dir` behind would point it at a store that
     has nothing to do with the recording.
     """
-    global _store_dir, _real_store_dir
+    global _store_dir, _real_store_dir, _prefix
     if path is None:
         yield
         return
     previous = (_store_dir, _real_store_dir)
     _store_dir = _absolute(path, "store directory")
     _real_store_dir = None
+    _prefix = None
     try:
         yield
     finally:
         _store_dir, _real_store_dir = previous
+        _prefix = None
 
 
 def in_store_dir(path: str) -> bool:
