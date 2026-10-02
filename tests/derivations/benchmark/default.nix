@@ -97,5 +97,10 @@ vivariumLib.mkTest {
       after = [ "boot" ];
       description = "a system build through each daemon";
     };
+    storm = {
+      script = ../../benchmark/run.py;
+      after = [ "boot" ];
+      description = "parallel clients through each daemon";
+    };
   };
 }

@@ -1,8 +1,9 @@
 """Run a benchmark inside the guest, and keep what it measured.
 
 One script serves every phase, and `vms.phase` picks the benchmark. `decode`
-and `raw` are micro-measurements; `system` is the whole pipeline, and is the
-one that would notice a fault the other two cannot see.
+and `raw` are micro-measurements; `system` is the whole pipeline through one
+client, and is the one that would notice a fault the other two cannot see.
+`storm` is the same pipeline under parallel clients.
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ import shlex
 import statistics
 import time
 
-from vivarium_runner import Machines
+from vivarium_runner import Machine, Machines
 
 TIMEOUT = 1800
 """Seconds for one phase."""
@@ -39,6 +40,16 @@ stays one pass: it is mostly moving data, and the host's load moves it less
 than it moves a few seconds of daemon traffic.
 """
 
+STORM_CLIENTS = 8
+"""Parallel `nix` clients in a storm round: a direnv, an editor plugin and a
+rebuild landing on the daemon at the same time."""
+
+STORM_ITERS = 3
+"""Hot build plus closure query per client per round."""
+
+STORM_ROUNDS = 2
+"""Storm rounds per daemon, alternating order to cancel host-load bias."""
+
 
 async def test(vms: Machines) -> None:
     if vms.phase == "decode":
@@ -49,6 +60,8 @@ async def test(vms: Machines) -> None:
         await _profile(vms)
     elif vms.phase == "system":
         await _system(vms)
+    elif vms.phase == "storm":
+        await _storm(vms)
     else:
         raise RuntimeError(f"no benchmark for phase {vms.phase!r}")
 
@@ -225,6 +238,73 @@ async def _profile(vms: Machines) -> None:
         )
 
 
+async def _one_build(
+    vm: Machine,
+    settings: dict,
+    expression: str,
+    stamp: str,
+    label: str,
+    socket: str,
+    host_name: str,
+    what: str,
+    failed: list[str],
+) -> float:
+    inner = (
+        f"NIX_PATH=nixpkgs={settings['nixpkgs']} NIX_REMOTE=unix://{socket} "
+        f"nix build --argstr hostName {host_name} --argstr stamp {stamp} "
+        f"--file {expression} --no-link > /dev/null 2>&1"
+    )
+    start = time.monotonic()
+    rc, _ = await vm.execute(f"su - tester -c {shlex.quote(inner)}", timeout=BUILD_TIMEOUT, label=label)
+    elapsed = time.monotonic() - start
+    print(f"[benchmark] {label:10} {what} {elapsed:7.2f}s rc={rc}")
+    if rc != 0:
+        failed.append(f"{label} {what}")
+    return elapsed
+
+
+async def _print_breakdown(vm: Machine) -> None:
+    # What the client actually asked pynixd for, and how long pynixd spent on
+    # each operation. A tester who cannot write the store's database reaches
+    # the daemon for all of it, so this is the load on the front-end.
+    #
+    # pynixd logs one JSON record per session at close. `python -c` parses
+    # each one, sorts by `total_ops`, and prints every session big enough to
+    # be a build or a pump. Small sessions are evals, and there are many.
+    breakdown = await vm.succeed(
+        "journalctl -u pynixd --no-pager -o cat "
+        "| grep client_op_timing "
+        r"""| python3 -c 'import sys, json
+rows = []
+for line in sys.stdin:
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    rec = json.loads(line)
+    if rec.get("total_ops", 0) >= 1000:
+        rows.append((
+            rec.get("total_ops", 0),
+            rec.get("total_time", ""),
+            rec.get("total_encode", ""),
+            rec.get("breakdown", {}),
+            rec.get("encode_breakdown", {}),
+        ))
+rows.sort(reverse=True)
+for total_ops, total_time, total_encode, ops, encode in rows:
+    print(f"session total_ops={total_ops} dispatch={total_time} encode={total_encode}")
+    for name, value in sorted(ops.items(), key=lambda kv: kv[1], reverse=True):
+        print(f"    {name:28} {value}")
+    top = sorted(encode.items(), key=lambda kv: kv[1], reverse=True)[:5]
+    if top:
+        print("    encode:")
+        for name, value in top:
+            print(f"        {name:24} {value}")
+'"""
+        " || true"
+    )
+    print(f"[benchmark] pynixd op breakdown:\n{breakdown.strip()}")
+
+
 async def _system(vms: Machines) -> None:
     """Build a whole closure through each daemon, cold and hot, and time both.
 
@@ -270,28 +350,18 @@ async def _system(vms: Machines) -> None:
     # builds, so those really are hot.
     stamp = str(int(time.time()))
 
-    async def one_build(label: str, socket: str, host_name: str, what: str) -> float:
-        inner = (
-            f"NIX_PATH=nixpkgs={vms.settings['nixpkgs']} NIX_REMOTE=unix://{socket} "
-            f"nix build --argstr hostName {host_name} --argstr stamp {stamp} "
-            f"--file {expression} --no-link > /dev/null 2>&1"
-        )
-        start = time.monotonic()
-        rc, _ = await vm.execute(f"su - tester -c {shlex.quote(inner)}", timeout=BUILD_TIMEOUT, label=label)
-        elapsed = time.monotonic() - start
-        print(f"[benchmark] {label:10} {what} {elapsed:7.2f}s rc={rc}")
-        if rc != 0:
-            failed.append(f"{label} {what}")
-        return elapsed
-
     # One cold build per daemon, and only the cold one is timed alone. Then
     # the hot passes, interleaved so host noise lands on both daemons.
     for label, (socket, host_name) in roles.items():
-        cold_times[label] = await one_build(label, socket, host_name, "cold")
+        cold_times[label] = await _one_build(
+            vm, vms.settings, expression, stamp, label, socket, host_name, "cold", failed
+        )
 
     for pass_index in range(HOT_PASSES):
         for label, (socket, host_name) in roles.items():
-            elapsed = await one_build(label, socket, host_name, f"hot {pass_index + 1}")
+            elapsed = await _one_build(
+                vm, vms.settings, expression, stamp, label, socket, host_name, f"hot {pass_index + 1}", failed
+            )
             hot_times[label].append(elapsed)
 
     if failed:
@@ -308,39 +378,114 @@ async def _system(vms: Machines) -> None:
     # What the client actually asked pynixd for, and how long pynixd spent on
     # each operation. A tester who cannot write the store's database reaches
     # the daemon for all of it, so this is the load on the front-end.
-    #
-    # pynixd logs one JSON record per session at close. `python -c` parses
-    # each one, sorts by `total_ops`, and prints every session big enough to
-    # be a build or a pump. Small sessions are evals, and there are many.
-    breakdown = await vm.succeed(
-        "journalctl -u pynixd --no-pager -o cat "
-        "| grep client_op_timing "
-        r"""| python3 -c 'import sys, json
-rows = []
-for line in sys.stdin:
-    line = line.strip()
-    if not line.startswith("{"):
-        continue
-    rec = json.loads(line)
-    if rec.get("total_ops", 0) >= 1000:
-        rows.append((
-            rec.get("total_ops", 0),
-            rec.get("total_time", ""),
-            rec.get("total_encode", ""),
-            rec.get("breakdown", {}),
-            rec.get("encode_breakdown", {}),
-        ))
-rows.sort(reverse=True)
-for total_ops, total_time, total_encode, ops, encode in rows:
-    print(f"session total_ops={total_ops} dispatch={total_time} encode={total_encode}")
-    for name, value in sorted(ops.items(), key=lambda kv: kv[1], reverse=True):
-        print(f"    {name:28} {value}")
-    top = sorted(encode.items(), key=lambda kv: kv[1], reverse=True)[:5]
-    if top:
-        print("    encode:")
-        for name, value in top:
-            print(f"        {name:24} {value}")
-'"""
-        " || true"
+    await _print_breakdown(vm)
+
+
+async def _storm(vms: Machines) -> None:
+    """Storm each daemon with parallel clients, and time the wall.
+
+    Eight `nix` clients at once, each looping a hot build and a closure
+    query. One client is polite: it waits for its own answer before asking
+    again. Eight at once are a direnv, an editor plugin and a rebuild landing
+    together, and the daemon answers on eight sessions at once. The
+    per-session synchronous reader keeps one session's queries off the pooled
+    connection the others share; a storm is where sharing would show.
+
+    Each daemon storms the same goal, built cold once up front so every
+    stormed build is hot. Two rounds, alternating order, best wall reported:
+    the container shares the host's CPU, and alternation keeps a slow minute
+    from landing on one daemon twice.
+    """
+    [vm] = vms.values()
+    expression = f"{vms.settings['src']}/tests/benchmark/system.nix"
+
+    roles = {
+        "nix-daemon": (vms.settings["upstream"], "nixdaemon"),
+        "pynixd": (vms.settings["socket"], "pynixd"),
+    }
+
+    stamp = str(int(time.time()))
+    failed: list[str] = []
+    goals: dict[str, str] = {}
+    for label, (socket, host_name) in roles.items():
+        await _one_build(vm, vms.settings, expression, stamp, label, socket, host_name, "cold", failed)
+        goals[label] = await _goal_path(vm, vms.settings, expression, stamp, label, socket, host_name, failed)
+
+    walls: dict[str, list[float]] = {label: [] for label in roles}
+    order = list(roles)
+    for _ in range(STORM_ROUNDS):
+        for label in order:
+            socket, host_name = roles[label]
+            walls[label].append(
+                await _one_storm(vm, vms.settings, expression, stamp, goals[label], label, socket, host_name, failed)
+            )
+        order.reverse()
+
+    if failed:
+        raise AssertionError(f"storm failed: {', '.join(failed)}")
+
+    for label in roles:
+        wall = walls[label]
+        print(
+            f"[benchmark] {label:10} storm best {min(wall):7.2f}s "
+            f"({STORM_ROUNDS} rounds, {STORM_CLIENTS} clients x{STORM_ITERS})"
+        )
+
+    await _print_breakdown(vm)
+
+
+async def _goal_path(
+    vm: Machine,
+    settings: dict,
+    expression: str,
+    stamp: str,
+    label: str,
+    socket: str,
+    host_name: str,
+    failed: list[str],
+) -> str:
+    """The store path of the cold-built goal, for the closure queries."""
+    inner = (
+        f"NIX_PATH=nixpkgs={settings['nixpkgs']} NIX_REMOTE=unix://{socket} "
+        f"nix build --argstr hostName {host_name} --argstr stamp {stamp} "
+        f"--file {expression} --no-link --print-out-paths 2>/dev/null"
     )
-    print(f"[benchmark] pynixd op breakdown:\n{breakdown.strip()}")
+    rc, out = await vm.execute(f"su - tester -c {shlex.quote(inner)}", timeout=BUILD_TIMEOUT, label=f"{label} goal")
+    if rc != 0:
+        failed.append(f"{label} goal")
+        return ""
+    return out.strip().split()[-1]
+
+
+async def _one_storm(
+    vm: Machine,
+    settings: dict,
+    expression: str,
+    stamp: str,
+    goal: str,
+    label: str,
+    socket: str,
+    host_name: str,
+    failed: list[str],
+) -> float:
+    job = (
+        f"for _ in $(seq 1 {STORM_ITERS}); do "
+        f"NIX_PATH=nixpkgs={settings['nixpkgs']} NIX_REMOTE=unix://{socket} "
+        f"nix build --argstr hostName {host_name} --argstr stamp {stamp} "
+        f"--file {expression} --no-link >/dev/null 2>&1 || exit 1; "
+        f"NIX_REMOTE=unix://{socket} nix path-info -r {goal} >/dev/null 2>&1 || exit 1; "
+        f"done"
+    )
+    script = (
+        "rm -f /tmp/storm-*.rc; "
+        f"for i in $(seq 1 {STORM_CLIENTS}); do ( {job}; echo $? > /tmp/storm-$i.rc ) & done; "
+        "wait; "
+        "grep -Hqv '^0$' /tmp/storm-*.rc && exit 1; exit 0"
+    )
+    start = time.monotonic()
+    rc, _ = await vm.execute(f"su - tester -c {shlex.quote(script)}", timeout=900, label=f"{label} storm")
+    elapsed = time.monotonic() - start
+    print(f"[benchmark] {label:10} storm {elapsed:7.2f}s rc={rc}")
+    if rc != 0:
+        failed.append(f"{label} storm")
+    return elapsed
