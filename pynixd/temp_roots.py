@@ -81,6 +81,7 @@ class TempRoots:
         self.dir = state / TEMP_ROOTS_DIR
         self.path = self.dir / f"pynixd-{os.getpid()}-{next(_names)}"
         self._fd: int | None = None
+        self._gc_lock_fd: int | None = None
         self._socket: socket.socket | None = None
         self._disabled = False
         self._lock = anyio.Lock()
@@ -128,7 +129,9 @@ class TempRoots:
             raise RuntimeError("pynixd: the temporary roots file is not open")
 
         for _ in range(RETRY_LIMIT):
-            gc_lock = os.open(self.state / GC_LOCK_FILE, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+            if self._gc_lock_fd is None:
+                self._gc_lock_fd = os.open(self.state / GC_LOCK_FILE, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+            gc_lock = self._gc_lock_fd
             try:
                 if not self._hold_the_gc_lock(gc_lock) and not self._tell_the_collector(root):
                     time.sleep(RETRY_DELAY)
@@ -138,14 +141,20 @@ class TempRoots:
                 os.write(fd, root.encode() + b"\0")
                 return
             finally:
-                os.close(gc_lock)
+                # Release the shared lock, but keep the descriptor. The lock is
+                # per call; the open and the close are not, and a session adds
+                # one root for each derivation of a build. Nix keeps the same
+                # descriptor in `LocalStore::_fdGCLock` for the process
+                # (`src/libstore/gc.cc`, `addTempRoot`).
+                fcntl.flock(gc_lock, fcntl.LOCK_UN)
 
         raise RuntimeError(f"pynixd: the collector did not take the temporary root {root!r}")
 
     def _hold_the_gc_lock(self, gc_lock: int) -> bool:
         """True when the collector is not running, and pynixd may write.
 
-        The shared lock lasts until the caller closes `gc_lock`. The collector
+        The shared lock lasts until the caller releases it with `LOCK_UN`,
+        which `_add_or_raise` does once the root is written. The collector
         takes the same file for writing, so it waits for every reader.
         """
         try:
@@ -206,6 +215,9 @@ class TempRoots:
         if self._socket is not None:
             self._socket.close()
             self._socket = None
+        if self._gc_lock_fd is not None:
+            os.close(self._gc_lock_fd)
+            self._gc_lock_fd = None
         if self._fd is not None:
             # Unlink before the close. A collector that already opened the
             # file reads the roots and keeps them, which is the safe answer.

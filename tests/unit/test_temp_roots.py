@@ -80,6 +80,35 @@ async def test_close_releases_every_root(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_the_gc_lock_is_opened_once_for_the_session(tmp_path, monkeypatch):
+    """A session opens `gc.lock` once, and not once for each root.
+
+    A build adds a root for each derivation of its closure, so this is the hot
+    path of a build. Nix keeps one descriptor in `LocalStore::_fdGCLock` for
+    the process (`src/libstore/gc.cc`, `addTempRoot`), and the open is the part
+    that a session can share.
+    """
+    opens = []
+    real_open = os.open
+
+    def counting_open(path, *args, **kwargs):
+        if str(path) == str(tmp_path / "gc.lock"):
+            opens.append(path)
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", counting_open)
+
+    roots = TempRoots(tmp_path)
+    try:
+        await roots.add(PATH_A)
+        await roots.add(PATH_B)
+        assert len(opens) == 1
+        assert read_roots(roots.path) == [PATH_A, PATH_B]
+    finally:
+        await roots.close()
+
+
+@pytest.mark.anyio
 async def test_two_sessions_write_two_files(tmp_path):
     one = TempRoots(tmp_path)
     two = TempRoots(tmp_path)
