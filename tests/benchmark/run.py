@@ -90,47 +90,68 @@ async def _raw(vms: Machines) -> None:
 
 
 async def _system(vms: Machines) -> None:
-    """Build a whole closure through each daemon, and time it.
+    """Build a whole closure through each daemon, cold and hot, and time both.
 
     Evaluating nixpkgs asks the daemon about every derivation, the realisation
     substitutes the closure, and the impure noise of `system.nix` makes it
     build a thousand things on top. This is the whole pipeline: a fault the
-    op pump cannot see shows here. Each daemon builds a *different* goal,
-    named after it, because they front one store and the same goal built twice
-    would be a no-op through whichever daemon went second.
+    op pump cannot see shows here.
 
-    The goal is one derivation whose closure holds all thousand, so the
-    phase makes exactly one `nix build` per role. One command is one `execute`
-    call, and the transport needs only to report when it ends.
+    **The hot run is the number that matters.** A cold build is mostly moving
+    data: it fetches the closure and writes a thousand outputs. A hot build of
+    the same goal has every path already, so what is left is the traffic the
+    client sends to the daemon and the answer it reads back. That is the
+    incremental cost of the front-end, and the only part the two daemons can
+    differ in.
+
+    Each daemon builds its own goal twice. The goal is named by `hostName`, so
+    the two daemons never build the same closure and one cannot warm the
+    other's cold run. Each daemon's *second* build is hot for that goal.
     """
     [vm] = vms.values()
     expression = f"{vms.settings['src']}/tests/benchmark/system.nix"
 
-    roles = [
-        ("nix-daemon", vms.settings["upstream"], "nixdaemon"),
-        ("pynixd", vms.settings["socket"], "pynixd"),
-    ]
+    roles = {
+        "nix-daemon": (vms.settings["upstream"], "nixdaemon"),
+        "pynixd": (vms.settings["socket"], "pynixd"),
+    }
 
+    times: dict[str, list[float]] = {label: [] for label in roles}
     failed = []
-    for label, socket, host_name in roles:
+    # One stamp for the whole phase. It is fresh to the store, so each daemon's
+    # first build really builds, and it is the same for that daemon's second
+    # build, so the second really is hot.
+    stamp = str(int(time.time()))
+
+    for label, (socket, host_name) in roles.items():
         inner = (
             f"NIX_PATH=nixpkgs={vms.settings['nixpkgs']} NIX_REMOTE=unix://{socket} "
-            # `--impure`, for the noise derivations of `system.nix`.
-            f"nix build --impure --argstr hostName {host_name} --file {expression} --no-link "
-            "> /dev/null 2>&1"
+            f"nix build --argstr hostName {host_name} --argstr stamp {stamp} "
+            f"--file {expression} --no-link > /dev/null 2>&1"
         )
-        start = time.monotonic()
-        rc, _ = await vm.execute(f"su - tester -c {shlex.quote(inner)}", timeout=BUILD_TIMEOUT, label=label)
-        print(f"[benchmark] {label:10} system build {time.monotonic() - start:7.2f}s rc={rc}")
-        if rc != 0:
-            failed.append(label)
+        # Twice: the first build is cold, the second is hot.
+        for pass_name in ("cold", "hot"):
+            start = time.monotonic()
+            rc, _ = await vm.execute(f"su - tester -c {shlex.quote(inner)}", timeout=BUILD_TIMEOUT, label=label)
+            elapsed = time.monotonic() - start
+            times[label].append(elapsed)
+            print(f"[benchmark] {label:10} {pass_name:4} {elapsed:7.2f}s rc={rc}")
+            if rc != 0:
+                failed.append(f"{label} {pass_name}")
 
     if failed:
         raise AssertionError(f"system build failed through {', '.join(failed)}")
 
-    # The facts behind the two numbers: what each client actually asked
-    # pynixd for, and how long pynixd spent on each operation. A tester who
-    # cannot write the store's database reaches the daemon for all of it, so
-    # this is the load the build put on the front-end, operation by operation.
-    breakdown = await vm.succeed("journalctl -u pynixd --no-pager -o cat | grep client_op_timing | tail -1 || true")
-    print(f"[benchmark] pynixd op breakdown: {breakdown.strip()}")
+    for label, (cold, hot) in times.items():
+        print(f"[benchmark] {label:10} cold {cold:7.2f}s  hot {hot:7.2f}s")
+
+    # What the client actually asked pynixd for, and how long pynixd spent on
+    # each operation. A tester who cannot write the store's database reaches
+    # the daemon for all of it, so this is the load on the front-end. The
+    # largest `total_ops` is the build; a small session is an eval.
+    breakdown = await vm.succeed(
+        "journalctl -u pynixd --no-pager -o cat "
+        "| grep client_op_timing | sed 's/.*breakdown/breakdown/' "
+        "| tail -3 || true"
+    )
+    print(f"[benchmark] pynixd op breakdown:\n{breakdown.strip()}")
