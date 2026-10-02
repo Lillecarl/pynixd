@@ -16,7 +16,6 @@ import time
 from pathlib import Path
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID
-
 from pynixd.config import LocalSocketStoreSpec
 from pynixd.serde import AddTempRootRequest, IsValidPathRequest, StorePath
 from pynixd.store import LocalSocketStore

@@ -5,24 +5,34 @@
 # AddTempRoot each -- and the realisation substitutes the closure. It does not
 # *build* anything, because a minimal system is all in the store.
 #
-# So ten thousand impure derivations ride along in `system.extraDependencies`.
+# So a thousand impure derivations ride along, chained under one goal.
 # A derivation is impure the moment it reads `builtins.currentTime`: its hash
 # moves with the clock, so it is never the path a substituter holds and the
 # daemon must build it. Each does nothing, so the cost is the request stream
 # and the realisation -- the load a client puts on the front-end that
 # evaluating nixpkgs alone does not.
+#
+# The goal is its own derivation whose inputs are the system and the noise, so
+# one `nix build` realises all of it rather than substituting a system whose
+# closure is already in the store.
 { hostName ? "rawbench" }:
 let
-  nixpkgs = import <nixpkgs> { };
-  lib = nixpkgs.lib;
+  pkgs = import <nixpkgs> { };
+  lib = pkgs.lib;
+  count = 1000;
 
-  noise =
-    n:
-    nixpkgs.runCommand "bench-noise-${hostName}-${toString n}" {
-      stamp = toString builtins.currentTime;
-    } "touch $out";
+  deps = lib.genList (n: pkgs.runCommand "bench-noise-${hostName}-${toString n}" {
+    stamp = toString builtins.currentTime;
+  } "touch $out") count;
 
-  system = nixpkgs.nixos (
+  # `toString deps` is the store paths as a string, so this drv reads them and
+  # cannot be realised until every one of them is.
+  top = pkgs.runCommand "bench-top-${hostName}" { } ''
+    touch $out
+    echo ${toString deps}
+  '';
+
+  system = pkgs.nixos (
     { modulesPath, ... }:
     {
       imports = [ (modulesPath + "/profiles/minimal.nix") ];
@@ -30,8 +40,10 @@ let
       networking.hostName = hostName;
       nixpkgs.hostPlatform = "x86_64-linux";
       system.stateVersion = lib.mkDefault "24.11";
-      system.extraDependencies = map noise (lib.range 1 10000);
     }
   );
 in
-system.config.system.build.toplevel
+pkgs.runCommand "bench-goal-${hostName}" { } ''
+  touch $out
+  echo ${system.config.system.build.toplevel} ${top}
+''

@@ -15,6 +15,14 @@ from vivarium_runner import Machines
 TIMEOUT = 1800
 """Seconds for one phase."""
 
+BUILD_TIMEOUT = 240
+"""Seconds for one role's build.
+
+The goal is a thousand trivial derivations. One build is one `execute` call,
+and this cap keeps a wedged transport from holding the session open: a timed-out
+build is a result, and a faster one than the phase's own timeout.
+"""
+
 ACTIVITIES = 100_000
 ROUNDS = 7
 OPERATIONS = 20_000
@@ -82,14 +90,18 @@ async def _raw(vms: Machines) -> None:
 
 
 async def _system(vms: Machines) -> None:
-    """Build a system of its own through each daemon, and time it.
+    """Build a whole closure through each daemon, and time it.
 
     Evaluating nixpkgs asks the daemon about every derivation, the realisation
     substitutes the closure, and the impure noise of `system.nix` makes it
-    build ten thousand things on top. This is the whole pipeline: a fault the
-    op pump cannot see shows here. Each daemon builds a *different* system,
-    named after it, because they front one store and the same system built
-    twice would be a no-op through whichever daemon went second.
+    build a thousand things on top. This is the whole pipeline: a fault the
+    op pump cannot see shows here. Each daemon builds a *different* goal,
+    named after it, because they front one store and the same goal built twice
+    would be a no-op through whichever daemon went second.
+
+    The goal is one derivation whose closure holds all thousand, so the
+    phase makes exactly one `nix build` per role. One command is one `execute`
+    call, and the transport needs only to report when it ends.
     """
     [vm] = vms.values()
     expression = f"{vms.settings['src']}/tests/benchmark/system.nix"
@@ -108,7 +120,7 @@ async def _system(vms: Machines) -> None:
             "> /dev/null 2>&1"
         )
         start = time.monotonic()
-        rc, _ = await vm.execute(f"su - tester -c {shlex.quote(inner)}", timeout=TIMEOUT, label=label)
+        rc, _ = await vm.execute(f"su - tester -c {shlex.quote(inner)}", timeout=BUILD_TIMEOUT, label=label)
         print(f"[benchmark] {label:10} system build {time.monotonic() - start:7.2f}s rc={rc}")
         if rc != 0:
             failed.append(label)
@@ -120,7 +132,5 @@ async def _system(vms: Machines) -> None:
     # pynixd for, and how long pynixd spent on each operation. A tester who
     # cannot write the store's database reaches the daemon for all of it, so
     # this is the load the build put on the front-end, operation by operation.
-    breakdown = await vm.succeed(
-        "journalctl -u pynixd --no-pager -o cat | grep client_op_timing | tail -1 || true"
-    )
+    breakdown = await vm.succeed("journalctl -u pynixd --no-pager -o cat | grep client_op_timing | tail -1 || true")
     print(f"[benchmark] pynixd op breakdown: {breakdown.strip()}")
