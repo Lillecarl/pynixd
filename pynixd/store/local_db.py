@@ -138,16 +138,16 @@ class LocalDBStore(LocalStore):
         if reader is not None:
             valid = reader.is_valid_path(path_str)
             if valid is not None:
-                return IsValidPathResponse(valid=valid)
+                return IsValidPathResponse.fast(valid=valid)
 
         from .queries import IS_VALID_PATH
 
         async with self.db.execute(IS_VALID_PATH, (path_str,)) as cursor:
             row = await cursor.fetchone()
         if row is not None:
-            return IsValidPathResponse(valid=True)
+            return IsValidPathResponse.fast(valid=True)
 
-        return IsValidPathResponse(valid=False)
+        return IsValidPathResponse.fast(valid=False)
 
     async def query_path_info(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """QueryPathInfo — fast-path via SQLite, with in-memory cache check."""
@@ -155,7 +155,7 @@ class LocalDBStore(LocalStore):
         if cached is not None:
             from pynixd.serde import QueryPathInfoResponse
 
-            return QueryPathInfoResponse(valid=True, info=cached.info)
+            return QueryPathInfoResponse.fast(valid=True, info=cached.info)
 
         from nix_daemon_protocol.content_address import ContentAddress
         from nix_daemon_protocol.nar_hash import NARHash
@@ -169,7 +169,7 @@ class LocalDBStore(LocalStore):
         async with self.db.execute(QUERY_PATH_INFO, (str(request.path),)) as cursor:
             row = await cursor.fetchone()
         if row is None:
-            return QueryPathInfoResponse(valid=False)
+            return QueryPathInfoResponse.fast(valid=False)
 
         _path, deriver, nar_hash, reg_time, nar_size, ultimate, sigs, ca = row
 
@@ -192,7 +192,7 @@ class LocalDBStore(LocalStore):
             sigs=sig_set,
             ca=ContentAddress(value=ca or ""),
         )
-        return QueryPathInfoResponse(valid=True, info=info)
+        return QueryPathInfoResponse.fast(valid=True, info=info)
 
     async def query_all_valid_paths(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """QueryAllValidPaths — fast-path via SQLite."""

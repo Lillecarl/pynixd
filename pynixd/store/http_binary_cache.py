@@ -154,7 +154,7 @@ class HTTPBinaryCacheStore(Store):
     ) -> IsValidPathResponse:
         """IsValidPath — check existence via .narinfo lookup."""
         narinfo = await self.get_narinfo(StorePath(str(request.path)))
-        return IsValidPathResponse(valid=narinfo is not None)
+        return IsValidPathResponse.fast(valid=narinfo is not None)
 
     async def query_path_info(
         self, request: QueryPathInfoRequest, client: Any = None, suppress_last: bool = False
@@ -163,13 +163,13 @@ class HTTPBinaryCacheStore(Store):
 
         cached = self.get_path_info(request.path)
         if cached is not None:
-            return QueryPathInfoResponse(valid=True, info=cached.info)
+            return QueryPathInfoResponse.fast(valid=True, info=cached.info)
 
         narinfo = await self.get_narinfo(StorePath(str(request.path)))
         if narinfo is None:
-            return QueryPathInfoResponse(valid=False)
+            return QueryPathInfoResponse.fast(valid=False)
         self.add_path_info(narinfo.valid_path_info)
-        return QueryPathInfoResponse(valid=True, info=narinfo.valid_path_info.info)
+        return QueryPathInfoResponse.fast(valid=True, info=narinfo.valid_path_info.info)
 
     async def query_path_from_hash_part(
         self, request: QueryPathFromHashPartRequest, client: Any = None, suppress_last: bool = False

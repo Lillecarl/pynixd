@@ -6,12 +6,12 @@ both ``wire_message`` (WireModel, WireField) and ``logs`` (WireLogs).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Self
 
 from .constants import MINIMUM_REMOTE_PROTOCOL, proto_str
 from .exceptions import UnsupportedProtocolVersion
 from .logs import WireLogs
-from .wire_message import WireField, WireModel
+from .wire_message import WireField, WireModel, _wire_plan
 
 if TYPE_CHECKING:
     from .context import ReadContext, WriteContext
@@ -75,6 +75,37 @@ class WireResponse(WireModel):
     """
 
     logs: WireLogs = WireField(default_factory=WireLogs)
+
+    @classmethod
+    def fast(cls, **body: Any) -> Self:
+        """Build a response the daemon answers with, without validation.
+
+        `IsValidPathResponse(valid=True)` costs a full pydantic validation --
+        measured 0.06 s of one profile -- and the values the daemon passes
+        are already the declared types, so there is nothing to coerce and
+        nothing to refuse. This sets the body, fills the defaults the plan
+        resolved, and gives the response fresh empty logs.
+
+        The logs are fresh per response and not shared: `query_missing` and
+        `set_options` append to the logs of the response they build, and a
+        shared log would carry one operation's warnings into another's
+        answer. `WireLogs.model_construct` skips the validation of an empty
+        list, which needs none.
+        """
+        _read_steps, _write_steps, defaults = _wire_plan(cls, 0, frozenset())
+        obj = cls.__new__(cls)
+        object.__setattr__(obj, "__pydantic_fields_set__", set(body) | {"logs"})
+        object.__setattr__(obj, "__pydantic_extra__", None)
+        object.__setattr__(obj, "__pydantic_private__", None)
+        logs = WireLogs.model_construct(messages=[])
+        object.__setattr__(obj, "logs", logs)
+        for name, is_factory, value in defaults:
+            if name == "logs" or name in body:
+                continue
+            object.__setattr__(obj, name, value() if is_factory else value)
+        for name, value in body.items():
+            object.__setattr__(obj, name, value)
+        return obj
 
     @property
     def is_not_found(self) -> bool:

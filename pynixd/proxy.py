@@ -495,7 +495,7 @@ class DaemonProxy:
                 return None
             if self.store_for_output_path(str(request.path)) is None:
                 return None
-            return IsValidPathResponse(valid=True)
+            return IsValidPathResponse.fast(valid=True)
 
         if isinstance(request, QueryValidPathsRequest):
             paths = set(getattr(local_resp, "paths", set())) if local_resp is not None else set()
