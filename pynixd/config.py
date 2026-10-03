@@ -640,6 +640,24 @@ class PynixdSettings(BaseSettings):
 
     gc_enabled: bool = True
     gc_interval: float = 3600.0
+    gc_poll_interval: float = 60.0
+    """Seconds between disk-pressure checks.
+
+    The watch reads the disk usage, which costs a `statvfs` and no locks,
+    against the full pass, which traces the roots under the garbage
+    collector lock. A minute answers an hour of writes; the full pass stays
+    the backstop for slow drift on `gc_interval`.
+    """
+    gc_high_watermark: float | None = None
+    """Disk usage fraction that triggers a bounded pass between schedules.
+
+    `None` keeps schedule-only collection. A number runs a pass as soon as
+    the watch reads over it, so a fill spike does not wait out `gc_interval`.
+    The pass is bounded by `gc_target_usage` on the store, which should sit
+    below this: the watermark starts relief, the target ends it, and that
+    gap is the hysteresis. Without a target the triggered pass is
+    unbounded, like the scheduled one.
+    """
 
     # Scheduling & Telemetry
     schedule_mode: ScheduleMode = ScheduleMode.auto

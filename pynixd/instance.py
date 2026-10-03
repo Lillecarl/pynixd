@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -331,28 +332,68 @@ class Server:
         await store.close()
 
     async def _gc_tick(self) -> None:
-        """Periodic GC loop. Runs at gc_interval."""
-        log.info("gc_loop_started", interval=self.ctx.settings.gc_interval)
+        """Watch the disk on a short cadence, collect on pressure or schedule.
+
+        A full pass traces the roots under the garbage collector lock, which
+        holds up builds for as long as the trace takes -- far too dear to
+        run every minute. The watch instead reads the disk usage, which costs
+        a `statvfs` and no locks: over `gc_high_watermark` it runs a bounded
+        pass (the target is the floor, so pressure has hysteresis built in),
+        and every `gc_interval` it runs the full pass regardless. An hour of
+        writes cannot fill the disk unanswered when the watch answers in a
+        minute; the full pass stays the backstop for slow drift.
+        """
+        settings = self.ctx.settings
+        log.info(
+            "gc_loop_started",
+            interval=settings.gc_interval,
+            poll=settings.gc_poll_interval,
+            watermark=settings.gc_high_watermark,
+        )
+        last_full = time.monotonic()
         while True:
-            await anyio.sleep(self.ctx.settings.gc_interval)
-            started = time.monotonic()
-            try:
-                resp = await Collector(self.ctx).run(PynixdGCAction.EXECUTE)
-            except anyio.get_cancelled_exc_class():
-                return
-            except Exception:
-                metrics.GC_CYCLES.labels(result="error").inc()
-                log.exception("gc_pass_failed")
-            else:
-                metrics.GC_CYCLES.labels(result="ok").inc()
-                metrics.GC_PATHS_DELETED.inc(len(resp.store_paths))
-                metrics.GC_BYTES_FREED.inc(resp.bytes)
-                # A wall clock, because this is compared against `time()` in an
-                # alert. `time.monotonic` below measures a duration, which is
-                # the other question.
-                metrics.GC_LAST_SUCCESS.set(time.time())
-            finally:
-                metrics.GC_CYCLE_DURATION.observe(time.monotonic() - started)
+            await anyio.sleep(settings.gc_poll_interval)
+            if self._over_watermark():
+                await self._gc_pass("watermark")
+                continue
+            if time.monotonic() - last_full >= settings.gc_interval:
+                last_full = time.monotonic()
+                await self._gc_pass("scheduled")
+
+    def _over_watermark(self) -> bool:
+        """Whether disk pressure currently warrants a bounded pass."""
+        watermark = self.ctx.settings.gc_high_watermark
+        if watermark is None:
+            return False
+        try:
+            directory = self.ctx.local_store.layout.real_store_dir
+            usage = shutil.disk_usage(directory)
+        except Exception:
+            log.warning("gc_watch_usage_failed", exc_info=True)
+            return False
+        return usage.used / usage.total > watermark
+
+    async def _gc_pass(self, reason: str) -> None:
+        """One EXECUTE pass, with the metrics the loop always reports."""
+        started = time.monotonic()
+        try:
+            resp = await Collector(self.ctx).run(PynixdGCAction.EXECUTE)
+        except anyio.get_cancelled_exc_class():
+            raise
+        except Exception:
+            metrics.GC_CYCLES.labels(result="error").inc()
+            log.exception("gc_pass_failed", reason=reason)
+        else:
+            metrics.GC_CYCLES.labels(result="ok").inc()
+            metrics.GC_PATHS_DELETED.inc(len(resp.store_paths))
+            metrics.GC_BYTES_FREED.inc(resp.bytes)
+            # A wall clock, because this is compared against `time()` in an
+            # alert. `time.monotonic` below measures a duration, which is
+            # the other question.
+            metrics.GC_LAST_SUCCESS.set(time.time())
+            log.info("gc_loop_pass", reason=reason, deleted=len(resp.store_paths), bytes=resp.bytes)
+        finally:
+            metrics.GC_CYCLE_DURATION.observe(time.monotonic() - started)
 
     @property
     def host(self) -> str:
