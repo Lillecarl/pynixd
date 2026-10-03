@@ -16,6 +16,8 @@ issue #18 holds the size work.
 
 from __future__ import annotations
 
+import shutil
+import time
 from typing import TYPE_CHECKING
 
 import structlog
@@ -38,6 +40,8 @@ from .exceptions import BackendError
 from .store import is_http_binary_cache
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
+
     from .context import PynixdContext
     from .store.base import Store
 
@@ -58,6 +62,35 @@ def _request(action: GCAction, paths: set[StorePath]) -> CollectGarbageRequest:
     )
 
 
+def _heaviest_first(weights: Mapping[str, tuple[int, int]]) -> list[str]:
+    """The paths heaviest first, oldest breaking ties.
+
+    Pure, so the order the collector deletes in is asserted without a
+    daemon. `weights` maps the path string to `(nar_size, age_seconds)`.
+    Size leads because one big delete frees what dozens of small ones do,
+    with one entry in the delete set each; age only orders equals.
+    """
+    return [path for path, _ in sorted(weights.items(), key=lambda item: (item[1][0], item[1][1]), reverse=True)]
+
+
+def _take_until_below_target(ordered: Sequence[tuple[str, int]], used: int, total: int, target: float) -> list[str]:
+    """The leading paths whose removal projects usage under `target`.
+
+    Pure, for the same reason. `ordered` is `(path, size)` heaviest first;
+    the walk stops at the first prefix whose freed bytes bring `used / total`
+    to or under the fraction. A target already met takes nothing; a target
+    no prefix meets takes everything.
+    """
+    batch: list[str] = []
+    freed = 0
+    for path, size in ordered:
+        if (used - freed) / total <= target:
+            break
+        batch.append(path)
+        freed += size
+    return batch
+
+
 class Collector:
     """Chooses what leaves the local store, and asks Nix to delete it."""
 
@@ -70,11 +103,64 @@ class Collector:
         A plan is not free. It asks Nix which paths are alive, and that traces
         the roots under the garbage collector lock, so `pynixd gc` without
         `--execute` still holds up a build for as long as the trace takes.
+
+        The pass deletes heaviest first, so a bounded pass frees the most
+        with the fewest deletes, and a dry-run lists what goes first.
         """
-        paths = await self.plan()
-        if action != PynixdGCAction.EXECUTE or not paths:
-            return PynixdCollectGarbageResponse(store_paths=paths, bytes=await self._size(paths))
-        return await self._delete(paths)
+        weights = await self._weigh(await self.plan())
+        if not weights:
+            return PynixdCollectGarbageResponse(store_paths=set(), bytes=0)
+        ordered = _heaviest_first(weights)
+        if action != PynixdGCAction.EXECUTE:
+            self._log_top(ordered, weights)
+            return PynixdCollectGarbageResponse(
+                store_paths={StorePath(path) for path in ordered},
+                bytes=sum(size for size, _ in weights.values()),
+            )
+        return await self._delete(ordered, weights)
+
+    async def _weigh(self, paths: set[StorePath]) -> dict[str, tuple[int, int]] | None:
+        """`(nar_size, age_seconds)` per planned path, or `None` when unknown.
+
+        Sizes come from the path infos, ages from the access table; a path
+        with no access row weighs age zero, which deprioritises it without
+        excluding it. `None` fails the pass closed: a pass that cannot see
+        the whole state deletes nothing, and shows nothing either.
+        """
+        if not paths:
+            return {}
+        local = self.ctx.local_store
+        try:
+            resp = await local.execute(QueryPathInfosRequest(paths=paths))
+        except Exception:
+            log.warning("gc_weigh_infos_failed", exc_info=True)
+            return None
+        sizes = {str(info.path): info.info.nar_size for info in resp.infos}
+        query = getattr(getattr(local, "db", None), "query_access_times", None)
+        if query is None:
+            log.warning("gc_no_access_tracking")
+            return None
+        try:
+            times = await query(set(sizes))
+        except Exception:
+            log.warning("gc_weigh_ages_failed", exc_info=True)
+            return None
+        if times is None:
+            return None
+        now = time.time()
+        return {path: (size, max(0, int(now - times.get(path, now)))) for path, size in sizes.items()}
+
+    def _log_top(self, ordered: list[str], weights: dict[str, tuple[int, int]], count: int = 10) -> None:
+        """The heaviest planned paths, for the dry-run to show first.
+
+        The response carries a set, which has no order, so the ranking
+        travels in the logs instead: the journal keeps it, and the CLI
+        prints what the daemon logged.
+        """
+        log.info(
+            "gc_weights_top",
+            top=[{"path": path, "bytes": weights[path][0], "age_s": weights[path][1]} for path in ordered[:count]],
+        )
 
     async def plan(self) -> set[StorePath]:
         """The paths that may leave the store.
@@ -219,31 +305,72 @@ class Collector:
             log.warning("gc_store_query_failed", store_id=str(store.store_id), exc_info=True)
             return set()
 
-    async def _size(self, paths: set[StorePath]) -> int:
-        if not paths:
-            return 0
-        resp = await self.ctx.local_store.execute(QueryPathInfosRequest(paths=paths))
-        return sum(info.info.nar_size for info in resp.infos)
-
-    async def _delete(self, paths: set[StorePath]) -> PynixdCollectGarbageResponse:
+    async def _delete(self, ordered: list[str], weights: dict[str, tuple[int, int]]) -> PynixdCollectGarbageResponse:
         local = self.ctx.local_store
         # A pooled connection keeps a worker of the daemon alive, and that
         # worker holds a temporary root for every path that it took.
         await local.retire_idle_connections()
 
+        batch = self._bound_batch(local, ordered, weights)
+        if not batch:
+            return PynixdCollectGarbageResponse(store_paths=set(), bytes=0)
         try:
-            resp = await local.call(_request(GCAction.DELETE_SPECIFIC, paths), raise_on_error=True)
+            resp = await local.call(
+                _request(GCAction.DELETE_SPECIFIC, {StorePath(path) for path in batch}),
+                raise_on_error=True,
+            )
         except BackendError as exc:
             # `gc.cc:778` throws on the first live path and abandons the whole
             # request. The plan subtracts what Nix called live, so this is a
             # root that arrived after it. The next pass sees the new state.
-            log.warning("gc_pass_refused", asked=len(paths), reason=str(exc))
+            log.warning("gc_pass_refused", asked=len(batch), reason=str(exc))
             return PynixdCollectGarbageResponse(store_paths=set(), bytes=0)
 
-        left = paths - resp.paths_deleted
+        left = set(batch) - {str(path) for path in resp.paths_deleted}
         if left:
             # The set is closed under referrers and Nix called none of it
             # alive, so a path left behind means a root arrived mid-pass.
-            log.warning("gc_pass_partial", asked=len(paths), left=len(left))
+            log.warning("gc_pass_partial", asked=len(batch), left=len(left))
         log.info("gc_pass_done", deleted=len(resp.paths_deleted), bytes=resp.bytes_freed)
         return PynixdCollectGarbageResponse(store_paths=resp.paths_deleted, bytes=resp.bytes_freed)
+
+    def _bound_batch(self, local: Store, ordered: list[str], weights: dict[str, tuple[int, int]]) -> list[str]:
+        """The leading paths to delete: all planned, or down to the target.
+
+        `gc_target_usage` bounds the pass by disk pressure: heaviest first,
+        stopping once the freed bytes project usage under the fraction. The
+        hourly loop then relieves a full disk gradually instead of emptying
+        the plan at once. `None` keeps one unbounded pass. An unreadable
+        usage keeps it too, and says so: the target cannot bind what nobody
+        measured.
+        """
+        target = getattr(local, "gc_target_usage", None)
+        if target is None:
+            return ordered
+        usage = self._disk_usage(local)
+        if usage is None:
+            log.warning("gc_no_disk_usage")
+            return ordered
+        used, total = usage
+        batch = _take_until_below_target([(path, weights[path][0]) for path in ordered], used, total, target)
+        log.info(
+            "gc_bounded_pass",
+            target=target,
+            usage=used / total,
+            batch=len(batch),
+            planned=len(ordered),
+        )
+        return batch
+
+    @staticmethod
+    def _disk_usage(local: Store) -> tuple[int, int] | None:
+        """`(used, total)` bytes of the filesystem holding the store."""
+        try:
+            directory = getattr(getattr(local, "layout", None), "real_store_dir", None)
+            if directory is None:
+                return None
+            usage = shutil.disk_usage(directory)
+            return (usage.used, usage.total)
+        except Exception:
+            log.warning("gc_disk_usage_failed", exc_info=True)
+            return None

@@ -110,6 +110,11 @@ QUERY_REFERRER_CLOSURE = f"""
 SELECT path FROM ValidPaths WHERE id IN ({_REFERRERS_OF_SEEDS})
 """
 
+QUERY_ACCESS_TIMES = f"""
+SELECT path, lastReferencedAt FROM {PATH_ACCESS_TABLE}
+WHERE path IN (SELECT value FROM json_each(?))
+"""
+
 QUERY_UNREFERENCED_SINCE = f"""
 SELECT path FROM {PATH_ACCESS_TABLE} WHERE lastReferencedAt < ?
 """
@@ -536,6 +541,25 @@ class LocalStoreDB:
             return {r[0] for r in rows}
         except aiosqlite.Error:
             log.debug("query_referrer_closure_failed", exc_info=True)
+            return None
+
+    async def query_access_times(self, paths: Iterable[str]) -> dict[str, int] | None:
+        """The last-referenced time of each of `paths` that has a row.
+
+        The planner weighs its candidates by age, and this is the one read
+        of that column per pass: indexed, and bounded by the candidate set.
+        Paths without a row stay unknown to the caller, which treats them as
+        age zero rather than as old. `None` when the database cannot answer.
+        """
+        if not self.active or not self.schema.usable:
+            return None
+        try:
+            paths_json = json.dumps(sorted(set(paths)))
+            async with self.execute(QUERY_ACCESS_TIMES, (paths_json,)) as cursor:
+                rows = await cursor.fetchall()
+            return {r[0]: int(r[1]) for r in rows}
+        except (aiosqlite.Error, ValueError):
+            log.debug("query_access_times_failed", exc_info=True)
             return None
 
     async def prune_path_access(self) -> int:

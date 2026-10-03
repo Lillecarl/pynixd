@@ -120,6 +120,16 @@ class StoreSpecBase(BaseModel):
     paths, on a store whose losses do not matter or whose caches can replace
     them.
     """
+    gc_target_usage: float | None = None
+    """Disk usage fraction at which a collection pass stops early.
+
+    `None` deletes the whole plan at once. A number bounds the pass by
+    pressure instead: heaviest first, stopping once the freed bytes project
+    usage under the fraction. The hourly loop then relieves a full disk over
+    several passes rather than emptying the plan in one. A number at or above
+    one deletes nothing until the disk is fuller than full, which is a way
+    of saying dry-run on a schedule.
+    """
     gc_defer: bool = False
     """Whether a path this store holds may leave the local store.
 

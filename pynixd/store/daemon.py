@@ -197,6 +197,7 @@ class DaemonStore(Store):
         self.score_penalty = spec.score_penalty
         self.gc_enabled = spec.gc_enabled
         self.gc_max_age = spec.gc_max_age
+        self.gc_target_usage = spec.gc_target_usage
         self.no_schedule = spec.no_schedule
         self.idle_ttl = spec.idle_ttl
         self.max_lifetime = spec.max_lifetime
