@@ -9,9 +9,10 @@ collector names every path that it deletes.
 
 Age is the second rule, and it is here: `gc_max_age` on the local store
 plans the dead paths nothing referenced for that many seconds, with no
-substituter needed. Size is the next rule, and it is not here.
-`LocalStoreDB` already records when each path was last referenced, and
-issue #18 holds the size work.
+substituter needed. Size is the third: every pass deletes in weight order,
+`(nar_size, age)` blended by disk pressure, so an empty disk collects
+oldest first and a full disk biggest first. `gc_target_usage` bounds a
+pass by pressure instead of emptying the plan at once.
 """
 
 from __future__ import annotations
@@ -62,15 +63,33 @@ def _request(action: GCAction, paths: set[StorePath]) -> CollectGarbageRequest:
     )
 
 
-def _heaviest_first(weights: Mapping[str, tuple[int, int]]) -> list[str]:
-    """The paths heaviest first, oldest breaking ties.
+def _by_weight(weights: Mapping[str, tuple[int, int]], pressure: float) -> list[str]:
+    """The paths in delete order: size matters more the fuller the disk is.
 
-    Pure, so the order the collector deletes in is asserted without a
-    daemon. `weights` maps the path string to `(nar_size, age_seconds)`.
-    Size leads because one big delete frees what dozens of small ones do,
-    with one entry in the delete set each; age only orders equals.
+    Pure, so the order a pass deletes in is asserted without a daemon.
+    `weights` maps the path string to `(nar_size, age_seconds)`; `pressure`
+    is the disk usage fraction. Both axes normalise against the candidate
+    set, and the score blends them by pressure:
+
+        score = pressure * size_norm + (1 - pressure) * age_norm
+
+    An empty disk collects oldest first, a full disk biggest first, and
+    every pressure between moves continuously: no threshold flips the order
+    between two passes. Descending score, path string breaking ties so the
+    order is stable run to run.
     """
-    return [path for path, _ in sorted(weights.items(), key=lambda item: (item[1][0], item[1][1]), reverse=True)]
+    sizes = {path: size for path, (size, _) in weights.items()}
+    ages = {path: age for path, (_, age) in weights.items()}
+    biggest = max(sizes.values(), default=0)
+    oldest = max(ages.values(), default=0)
+    scored = {
+        path: (
+            pressure * (size / biggest if biggest else 0.0)
+            + (1.0 - pressure) * (ages[path] / oldest if oldest else 0.0)
+        )
+        for path, size in sizes.items()
+    }
+    return [path for path, _ in sorted(scored.items(), key=lambda item: (-item[1], item[0]))]
 
 
 def _take_until_below_target(ordered: Sequence[tuple[str, int]], used: int, total: int, target: float) -> list[str]:
@@ -104,20 +123,33 @@ class Collector:
         the roots under the garbage collector lock, so `pynixd gc` without
         `--execute` still holds up a build for as long as the trace takes.
 
-        The pass deletes heaviest first, so a bounded pass frees the most
-        with the fewest deletes, and a dry-run lists what goes first.
+        The pass deletes in weight order, so a bounded pass frees the most
+        with the fewest deletes, and a dry-run lists what goes first. The
+        weight blends size and age by disk pressure: an empty disk collects
+        oldest first, a full disk biggest first.
         """
         weights = await self._weigh(await self.plan())
         if not weights:
             return PynixdCollectGarbageResponse(store_paths=set(), bytes=0)
-        ordered = _heaviest_first(weights)
+        usage = self._disk_usage(self.ctx.local_store)
+        if usage is None:
+            # Unknown reads as half full: with no information neither axis
+            # earns the lead. The bound still defaults to unbounded on top
+            # of this, so a missing reading changes the order only, never
+            # the set.
+            log.warning("gc_no_disk_usage")
+            pressure = 0.5
+        else:
+            used, total = usage
+            pressure = used / total if total else 0.5
+        ordered = _by_weight(weights, pressure)
         if action != PynixdGCAction.EXECUTE:
-            self._log_top(ordered, weights)
+            self._log_top(ordered, weights, pressure)
             return PynixdCollectGarbageResponse(
                 store_paths={StorePath(path) for path in ordered},
                 bytes=sum(size for size, _ in weights.values()),
             )
-        return await self._delete(ordered, weights)
+        return await self._delete(ordered, weights, usage)
 
     async def _weigh(self, paths: set[StorePath]) -> dict[str, tuple[int, int]] | None:
         """`(nar_size, age_seconds)` per planned path, or `None` when unknown.
@@ -150,8 +182,10 @@ class Collector:
         now = time.time()
         return {path: (size, max(0, int(now - times.get(path, now)))) for path, size in sizes.items()}
 
-    def _log_top(self, ordered: list[str], weights: dict[str, tuple[int, int]], count: int = 10) -> None:
-        """The heaviest planned paths, for the dry-run to show first.
+    def _log_top(
+        self, ordered: list[str], weights: dict[str, tuple[int, int]], pressure: float, count: int = 10
+    ) -> None:
+        """The first planned paths, for the dry-run to show first.
 
         The response carries a set, which has no order, so the ranking
         travels in the logs instead: the journal keeps it, and the CLI
@@ -159,6 +193,7 @@ class Collector:
         """
         log.info(
             "gc_weights_top",
+            pressure=round(pressure, 3),
             top=[{"path": path, "bytes": weights[path][0], "age_s": weights[path][1]} for path in ordered[:count]],
         )
 
@@ -305,13 +340,15 @@ class Collector:
             log.warning("gc_store_query_failed", store_id=str(store.store_id), exc_info=True)
             return set()
 
-    async def _delete(self, ordered: list[str], weights: dict[str, tuple[int, int]]) -> PynixdCollectGarbageResponse:
+    async def _delete(
+        self, ordered: list[str], weights: dict[str, tuple[int, int]], usage: tuple[int, int] | None
+    ) -> PynixdCollectGarbageResponse:
         local = self.ctx.local_store
         # A pooled connection keeps a worker of the daemon alive, and that
         # worker holds a temporary root for every path that it took.
         await local.retire_idle_connections()
 
-        batch = self._bound_batch(local, ordered, weights)
+        batch = self._bound_batch(local, ordered, weights, usage)
         if not batch:
             return PynixdCollectGarbageResponse(store_paths=set(), bytes=0)
         try:
@@ -334,22 +371,20 @@ class Collector:
         log.info("gc_pass_done", deleted=len(resp.paths_deleted), bytes=resp.bytes_freed)
         return PynixdCollectGarbageResponse(store_paths=resp.paths_deleted, bytes=resp.bytes_freed)
 
-    def _bound_batch(self, local: Store, ordered: list[str], weights: dict[str, tuple[int, int]]) -> list[str]:
+    def _bound_batch(
+        self, local: Store, ordered: list[str], weights: dict[str, tuple[int, int]], usage: tuple[int, int] | None
+    ) -> list[str]:
         """The leading paths to delete: all planned, or down to the target.
 
-        `gc_target_usage` bounds the pass by disk pressure: heaviest first,
-        stopping once the freed bytes project usage under the fraction. The
-        hourly loop then relieves a full disk gradually instead of emptying
-        the plan at once. `None` keeps one unbounded pass. An unreadable
-        usage keeps it too, and says so: the target cannot bind what nobody
-        measured.
+        `gc_target_usage` bounds the pass by disk pressure: in weight order,
+        stopping once the freed bytes project usage to or under the
+        fraction. The hourly loop then relieves a full disk over several
+        passes rather than emptying the plan at once. `None` keeps one
+        unbounded pass. An unreadable usage keeps it too: the target cannot
+        bind what nobody measured.
         """
         target = getattr(local, "gc_target_usage", None)
-        if target is None:
-            return ordered
-        usage = self._disk_usage(local)
-        if usage is None:
-            log.warning("gc_no_disk_usage")
+        if target is None or usage is None:
             return ordered
         used, total = usage
         batch = _take_until_below_target([(path, weights[path][0]) for path in ordered], used, total, target)
