@@ -7,9 +7,11 @@ One rule today: a path may leave the local store when a substituter that
 almost nothing in it is rooted, so `GCAction.DELETE_DEAD` would empty it. This
 collector names every path that it deletes.
 
-Age and size are the next rules, and they are not here. `LocalStoreDB` already
-records when each path was last referenced, and issues #1 and #18 hold that
-work.
+Age is the second rule, and it is here: `gc_max_age` on the local store
+plans the dead paths nothing referenced for that many seconds, with no
+substituter needed. Size is the next rule, and it is not here.
+`LocalStoreDB` already records when each path was last referenced, and
+issue #18 holds the size work.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from nix_daemon_protocol import (
     GCAction,
     QueryAllValidPathsRequest,
     QueryValidPathsRequest,
+    StorePath,
 )
 
 from .daemon_extensions import (
@@ -35,8 +38,6 @@ from .exceptions import BackendError
 from .store import is_http_binary_cache
 
 if TYPE_CHECKING:
-    from nix_daemon_protocol.store_path import StorePath
-
     from .context import PynixdContext
     from .store.base import Store
 
@@ -78,6 +79,22 @@ class Collector:
     async def plan(self) -> set[StorePath]:
         """The paths that may leave the store.
 
+        Two rules, picked by `gc_max_age` on the local store. `None` keeps
+        the substituter rule below; a number of seconds picks the age rule,
+        which needs no substituter: dead and unreferenced for that long goes,
+        whether or not any cache holds it. Setting the number is the operator
+        taking ownership of the store's old paths, and the default keeps the
+        cache behaviour.
+        """
+        local = self.ctx.local_store
+        max_age = getattr(local, "gc_max_age", None)
+        if max_age is None:
+            return await self._plan_deferred(local)
+        return await self._plan_lru(local, max_age)
+
+    async def _plan_deferred(self, local: Store) -> set[StorePath]:
+        """The paths that may leave the store.
+
         A path stays when no substituter confirms it, and so does everything
         that path references. The drop set is therefore the complement of the
         reference closure of the unconfirmed paths, which makes it closed under
@@ -96,7 +113,6 @@ class Collector:
         if not stores:
             return set()
 
-        local = self.ctx.local_store
         all_paths: set[StorePath] = (await local.execute(QueryAllValidPathsRequest())).paths
         if not all_paths:
             return set()
@@ -118,6 +134,69 @@ class Collector:
         droppable = all_paths - keep - live
         log.info("gc_plan", valid=len(all_paths), held=len(held), live=len(live), droppable=len(droppable))
         return droppable
+
+    async def _plan_lru(self, local: Store, max_age: int) -> set[StorePath]:
+        """The dead paths nothing referenced for `max_age` seconds.
+
+        `PynixdPathAccess` says when pynixd last saw each path, and Nix says
+        which paths are alive; the plan is the intersection. A path with no
+        access row stays: "never seen" is not "seen long ago". The set is
+        closed under referrers so Nix accepts it (`gc.cc:653`), which pulls
+        in dead referrers even when they are fresh — deleting a path takes
+        what still names it. A failure anywhere plans nothing: an LRU pass
+        that cannot see the whole state deletes nothing.
+        """
+        all_paths: set[StorePath] = (await local.execute(QueryAllValidPathsRequest())).paths
+        if not all_paths:
+            return set()
+
+        live: set[StorePath] = (await local.call(_request(GCAction.RETURN_LIVE, set()))).paths_deleted
+        dead = {str(path) for path in all_paths} - {str(path) for path in live}
+
+        stale = await self._stale_since(local, max_age)
+        if stale is None:
+            return set()
+        seeds = dead & stale
+
+        closed = await self._close_under_referrers(local, seeds)
+        if closed is None:
+            return set()
+        droppable = {path for path in closed if path in dead}
+        log.info(
+            "gc_plan_lru",
+            valid=len(all_paths),
+            live=len(live),
+            stale=len(stale),
+            droppable=len(droppable),
+        )
+        return {StorePath(path) for path in droppable}
+
+    async def _stale_since(self, local: Store, max_age: int) -> set[str] | None:
+        """The paths unreferenced for `max_age` seconds, or `None` when unknown."""
+        query = getattr(getattr(local, "db", None), "query_paths_not_referenced_since", None)
+        if query is None:
+            log.warning("gc_no_access_tracking")
+            return None
+        try:
+            result = await query(max_age)
+        except Exception:
+            log.warning("gc_stale_query_failed", exc_info=True)
+            return None
+        if result is None:
+            return None
+        return {str(path) for path in result}
+
+    async def _close_under_referrers(self, local: Store, seeds: set[str]) -> set[str] | None:
+        """`seeds` plus everything that references them, transitively."""
+        query = getattr(getattr(local, "db", None), "query_referrer_closure", None)
+        if query is None:
+            log.warning("gc_no_referrer_closure")
+            return None
+        try:
+            return await query(seeds)
+        except Exception:
+            log.warning("gc_referrer_query_failed", exc_info=True)
+            return None
 
     async def _held_by(self, store: Store, paths: set[StorePath]) -> set[StorePath]:
         """The paths of *paths* that *store* confirms it has.

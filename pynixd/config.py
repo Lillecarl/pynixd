@@ -111,6 +111,15 @@ class StoreSpecBase(BaseModel):
     score_penalty: int = 0
     gc_enabled: bool = True
     gc_max_age: int | None = None
+    """Seconds since last reference after which a dead path may be collected.
+
+    `None` keeps the substituter rule: nothing leaves unless a `gc_defer`
+    store holds it. A number picks the age rule instead, which needs no
+    substituter: dead and unreferenced for that long goes, live and fresh
+    stays. Setting it is the operator taking ownership of the store's old
+    paths, on a store whose losses do not matter or whose caches can replace
+    them.
+    """
     gc_defer: bool = False
     """Whether a path this store holds may leave the local store.
 

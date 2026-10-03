@@ -92,6 +92,24 @@ SELECT path, unixepoch() FROM ValidPaths WHERE id IN ({_CLOSURE_OF_SEEDS})
 ON CONFLICT (path) DO UPDATE SET lastReferencedAt = excluded.lastReferencedAt
 """
 
+# The referrers of each seed, transitively, seeds included: the mirror of
+# `_CLOSURE_OF_SEEDS` walking `Refs` the other way. A delete set travels
+# with its referrers (`gc.cc:653`), so the planner closes its set under
+# this. The parameter is a JSON array of store paths, like above.
+_REFERRERS_OF_SEEDS = """
+    WITH RECURSIVE closure(id) AS (
+        SELECT id FROM ValidPaths WHERE path IN (SELECT value FROM json_each(?))
+        UNION
+        SELECT r.referrer
+        FROM closure c JOIN Refs r ON c.id = r.reference
+    )
+    SELECT id FROM closure
+"""
+
+QUERY_REFERRER_CLOSURE = f"""
+SELECT path FROM ValidPaths WHERE id IN ({_REFERRERS_OF_SEEDS})
+"""
+
 QUERY_UNREFERENCED_SINCE = f"""
 SELECT path FROM {PATH_ACCESS_TABLE} WHERE lastReferencedAt < ?
 """
@@ -498,6 +516,26 @@ class LocalStoreDB:
             return {StorePath(r[0]) for r in rows}
         except aiosqlite.Error:
             log.debug("query_paths_not_referenced_since_failed", exc_info=True)
+            return None
+
+    async def query_referrer_closure(self, paths: Iterable[str]) -> set[str] | None:
+        """The paths that reference `paths`, transitively, seeds included.
+
+        The planner closes its delete set under this, because Nix refuses a
+        named path whose referrer is not named in the same request
+        (`gc.cc:653`). A referrer of a dead path is itself dead: a live
+        referrer would keep its references alive. `None` when the database
+        cannot answer, and the planner plans nothing on that.
+        """
+        if not self.active or not self.schema.usable:
+            return None
+        try:
+            paths_json = json.dumps(sorted(set(paths)))
+            async with self.execute(QUERY_REFERRER_CLOSURE, (paths_json,)) as cursor:
+                rows = await cursor.fetchall()
+            return {r[0] for r in rows}
+        except aiosqlite.Error:
+            log.debug("query_referrer_closure_failed", exc_info=True)
             return None
 
     async def prune_path_access(self) -> int:
