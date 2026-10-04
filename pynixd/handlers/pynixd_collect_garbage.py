@@ -33,4 +33,11 @@ class PynixdCollectGarbageHandler(Handler):
 
         # The collector, and not the local store: op 101 is pynixd's own, and
         # the `nix daemon` under it answers `invalid operation 101`.
-        return await Collector(ctx.proxy.ctx).run(req.action)
+        # The downstream client rides along for live progress: per-path
+        # `deleting` lines stream as the pass deletes, and the same lines
+        # buffer into the response for a client that reads at the end.
+        return await Collector(ctx.proxy.ctx).run(
+            req.action,
+            client=ctx.proxy.client,
+            limit=req.limit if req.has_limit else None,
+        )

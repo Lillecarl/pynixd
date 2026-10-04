@@ -114,6 +114,8 @@ class FakeProxy:
         self.errors: list[str] = []
         self.ctx: Any = None
         """What `Collector` is built from. The collector itself is patched."""
+        self.client: Any = None
+        """No downstream client: the collector buffers its lines only."""
 
     async def send_error(self, message: str) -> None:
         self.errors.append(message)
@@ -205,9 +207,10 @@ async def test_the_pynixd_operation_reaches_the_collector():
     proxy = FakeProxy(await _body(request))
     seen: list[PynixdGCAction] = []
 
-    async def run(self: Any, action: PynixdGCAction) -> str:
+    async def run(self: Any, action: PynixdGCAction, **kwargs: Any) -> str:
         del self
         seen.append(action)
+        assert kwargs == {"client": None, "limit": None}
         return "collected"
 
     with patch.object(Collector, "run", run):

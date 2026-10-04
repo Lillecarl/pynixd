@@ -35,6 +35,12 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         action="store_true",
         help="Actually run GC (default is dry-run)",
     )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Delete at most N paths, weight order first (default: the whole plan)",
+    )
     parser.set_defaults(func=gc_main)
 
 
@@ -50,6 +56,9 @@ async def _gc_main(args: argparse.Namespace) -> None:
 
     socket_path = settings.unix_path or DEFAULT_SOCKET
     action = PynixdGCAction.EXECUTE if args.execute else PynixdGCAction.DRY_RUN
+    if args.limit is not None and args.limit < 0:
+        parser_error = f"--limit takes a count, and {args.limit} is not one"
+        raise SystemExit(f"pynixd gc: error: {parser_error}")
 
     store = LocalSocketStore(
         LocalSocketStoreSpec(
@@ -63,7 +72,13 @@ async def _gc_main(args: argparse.Namespace) -> None:
     await store.start(sync_paths=False)
 
     try:
-        resp = await store.execute(PynixdCollectGarbageRequest(action=action))
+        resp = await store.execute(
+            PynixdCollectGarbageRequest(
+                action=action,
+                has_limit=args.limit is not None,
+                limit=args.limit or 0,
+            )
+        )
     except Exception:
         log.exception("gc_failed")
         raise

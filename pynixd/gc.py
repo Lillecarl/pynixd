@@ -27,6 +27,7 @@ from anyio.to_thread import run_sync
 from nix_daemon_protocol import (
     CollectGarbageRequest,
     GCAction,
+    LogNext,
     QueryAllValidPathsRequest,
     QueryValidPathsRequest,
     StorePath,
@@ -39,13 +40,14 @@ from .daemon_extensions import (
     QueryPathInfosRequest,
 )
 from .exceptions import BackendError, GCNotPermittedError
-from .liveness import RootsTracker
+from .liveness import RootsTracker, walk_volatile
 from .local_store_db import resolve_db_path
 from .store import is_http_binary_cache
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
+    from .connection import ClientConn
     from .context import PynixdContext
     from .store.base import Store
 
@@ -119,33 +121,68 @@ class Collector:
     def __init__(self, ctx: PynixdContext) -> None:
         self.ctx = ctx
 
-    async def run(self, action: PynixdGCAction) -> PynixdCollectGarbageResponse:
+    async def run(
+        self,
+        action: PynixdGCAction,
+        client: ClientConn | None = None,
+        limit: int | None = None,
+        target_usage: float | None = None,
+    ) -> PynixdCollectGarbageResponse:
         """Plan a pass, and run it when *action* says to.
 
         A plan is not free. It asks Nix which paths are alive, and that traces
         the roots under the garbage collector lock, so `pynixd gc` without
         `--execute` still holds up a build for as long as the trace takes.
 
+        Before planning, the pass re-walks the volatile roots fresh -- the
+        living half no watch covers -- and vetoes them and their reference
+        closure from the plan. A process that started after the last check
+        must not lose its libraries to this pass. The veto is fail-closed:
+        a closure the daemon cannot answer falls back to the seeds.
+
         The pass deletes in weight order, so a bounded pass frees the most
         with the fewest deletes, and a dry-run lists what goes first. The
         weight blends size and age by disk pressure: an empty disk collects
-        oldest first, a full disk biggest first.
+        oldest first, a full disk biggest first. `limit` takes the head of
+        that order, and `target_usage` overrides the store's bound for one
+        pass; both narrow only, and neither is plannable below zero.
 
         EXECUTE stays refused until the operator permits it. Planning asks
         Nix nothing it cannot already ask, but a delete is irreversible, and
         the planner's liveness answer is still unproven against the mirror:
         `gc_allow_execute` on the local store is the signature, off by
         default, and EXECUTE without it raises `GCNotPermittedError`.
+
+        Progress travels on the wire when *client* is set: one `deleting`
+        line per path, in the words `gc.cc:574` uses, plus the veto line
+        and the outcome. The same lines buffer into the response, which is
+        what a client that reads at the end prints.
         """
+        if limit is not None and limit < 0:
+            raise ValueError(f"limit deletes at most N paths, and {limit} is not a count")
+        if target_usage is not None and target_usage <= 0:
+            raise ValueError(f"target_usage bounds by a fraction, and {target_usage} is not one")
         if action == PynixdGCAction.EXECUTE and not getattr(self.ctx.local_store, "gc_allow_execute", False):
             log.warning("gc_execute_refused")
             raise GCNotPermittedError(
                 "collector EXECUTE is not permitted: set gc_allow_execute "
                 "after the liveness mirror shows sustained zero-divergence"
             )
-        weights = await self._weigh(await self.plan())
+        lines: list[LogNext] = []
+        volatile = await run_sync(self._volatile_seeds)
+        vetoed = await self._veto_closure(volatile)
+        planned = await self.plan()
+        spared = {str(path) for path in planned} & vetoed
+        veto = LogNext(
+            text=f"volatile veto: rechecked {len(volatile)} living roots, spared {len(spared)} planned paths"
+        )
+        lines.append(veto)
+        if client is not None:
+            await client.send(veto)
+        log.info("gc_volatile_veto", fresh=len(volatile), spared=len(spared))
+        weights = await self._weigh({path for path in planned if str(path) not in vetoed})
         if not weights:
-            return PynixdCollectGarbageResponse(store_paths=set(), bytes=0)
+            return self._answered(PynixdCollectGarbageResponse(store_paths=set(), bytes=0), lines)
         usage = self._disk_usage(self.ctx.local_store)
         if usage is None:
             # Unknown reads as half full: with no information neither axis
@@ -158,13 +195,66 @@ class Collector:
             used, total = usage
             pressure = used / total if total else 0.5
         ordered = _by_weight(weights, pressure)
+        batch = self._bound_batch(self.ctx.local_store, ordered, weights, usage, target_usage)
+        if limit is not None:
+            batch = batch[:limit]
         if action != PynixdGCAction.EXECUTE:
-            self._log_top(ordered, weights, pressure)
-            return PynixdCollectGarbageResponse(
-                store_paths={StorePath(path) for path in ordered},
-                bytes=sum(size for size, _ in weights.values()),
+            self._log_top(batch, weights, pressure)
+            return self._answered(
+                PynixdCollectGarbageResponse(
+                    store_paths={StorePath(path) for path in batch},
+                    bytes=sum(weights[path][0] for path in batch),
+                ),
+                lines,
             )
-        return await self._delete(ordered, weights, usage)
+        return await self._delete(batch, weights, lines, client)
+
+    @staticmethod
+    def _answered(response: PynixdCollectGarbageResponse, lines: list[LogNext]) -> PynixdCollectGarbageResponse:
+        """*response* carrying the pass's wire lines in its log buffer."""
+        for line in lines:
+            response.logs.add(line)
+        return response
+
+    def _volatile_seeds(self) -> set[str]:
+        """The living roots, read synchronously for a worker thread.
+
+        `/proc` and `temproots` move constantly and no watch covers them,
+        so every pass reads them fresh just before planning. A store
+        without a layout has no state to read, and vetoes nothing.
+        """
+        layout = getattr(self.ctx.local_store, "layout", None)
+        if layout is None:
+            return set()
+        return walk_volatile(layout.state_dir, str(layout.store_dir))
+
+    async def _veto_closure(self, volatile: set[str]) -> set[str]:
+        """*volatile* plus what it references: the paths no pass may name.
+
+        The daemon answers the closure without taking the collector lock,
+        and a path the veto spares keeps whatever still names it, which is
+        what keeps the delete set closed under referrers (`gc.cc:653`). A
+        closure the daemon cannot answer -- no feature, a dropped seed --
+        falls back to the seeds alone: sparing less than the full closure,
+        but never nothing.
+        """
+        local = self.ctx.local_store
+        if not volatile:
+            return set()
+        try:
+            closed = {
+                str(path)
+                for path in (
+                    await local.execute(QueryClosureRequest(paths={StorePath(path) for path in volatile}))
+                ).paths
+            }
+        except Exception:
+            log.warning("gc_veto_closure_failed", exc_info=True)
+            return volatile
+        if not volatile <= closed:
+            log.warning("gc_veto_closure_incomplete", asked=len(volatile), answered=len(closed))
+            return volatile
+        return closed
 
     async def _weigh(self, paths: set[StorePath]) -> dict[str, tuple[int, int]] | None:
         """`(nar_size, age_seconds)` per planned path, or `None` when unknown.
@@ -356,16 +446,35 @@ class Collector:
             return set()
 
     async def _delete(
-        self, ordered: list[str], weights: dict[str, tuple[int, int]], usage: tuple[int, int] | None
+        self, batch: list[str], weights: dict[str, tuple[int, int]], lines: list[LogNext], client: ClientConn | None
     ) -> PynixdCollectGarbageResponse:
+        """Delete *batch* through the daemon, narrating each path on the wire.
+
+        One request carries the whole batch: the set is closed under
+        referrers, and only a set that travels together passes the check at
+        `gc.cc:653`. Each `deleting` line goes out before its path is asked
+        for, the way `gc.cc:574` prints before it unlinks, so a refused
+        batch leaves lines for paths that stayed. The outcome line says
+        which one happened; the buffered lines travel in the response
+        either way.
+        """
         local = self.ctx.local_store
         # A pooled connection keeps a worker of the daemon alive, and that
         # worker holds a temporary root for every path that it took.
         await local.retire_idle_connections()
 
-        batch = self._bound_batch(local, ordered, weights, usage)
         if not batch:
-            return PynixdCollectGarbageResponse(store_paths=set(), bytes=0)
+            return self._answered(PynixdCollectGarbageResponse(store_paths=set(), bytes=0), lines)
+
+        async def say(text: str) -> None:
+            """One wire line, live when a client rides along, buffered always."""
+            line = LogNext(text=text)
+            lines.append(line)
+            if client is not None:
+                await client.send(line)
+
+        for path in batch:
+            await say(f"deleting '{path}'")
         try:
             resp = await local.call(
                 _request(GCAction.DELETE_SPECIFIC, {StorePath(path) for path in batch}),
@@ -376,18 +485,28 @@ class Collector:
             # request. The plan subtracts what Nix called live, so this is a
             # root that arrived after it. The next pass sees the new state.
             log.warning("gc_pass_refused", asked=len(batch), reason=str(exc))
-            return PynixdCollectGarbageResponse(store_paths=set(), bytes=0)
+            await say(f"delete refused: {exc}")
+            return self._answered(PynixdCollectGarbageResponse(store_paths=set(), bytes=0), lines)
 
         left = set(batch) - {str(path) for path in resp.paths_deleted}
         if left:
             # The set is closed under referrers and Nix called none of it
             # alive, so a path left behind means a root arrived mid-pass.
             log.warning("gc_pass_partial", asked=len(batch), left=len(left))
+            await say(f"delete partial: {len(left)} paths left behind")
         log.info("gc_pass_done", deleted=len(resp.paths_deleted), bytes=resp.bytes_freed)
-        return PynixdCollectGarbageResponse(store_paths=resp.paths_deleted, bytes=resp.bytes_freed)
+        await say(f"deleted {len(resp.paths_deleted)} paths, {resp.bytes_freed} bytes freed")
+        return self._answered(
+            PynixdCollectGarbageResponse(store_paths=resp.paths_deleted, bytes=resp.bytes_freed), lines
+        )
 
     def _bound_batch(
-        self, local: Store, ordered: list[str], weights: dict[str, tuple[int, int]], usage: tuple[int, int] | None
+        self,
+        local: Store,
+        ordered: list[str],
+        weights: dict[str, tuple[int, int]],
+        usage: tuple[int, int] | None,
+        target_override: float | None = None,
     ) -> list[str]:
         """The leading paths to delete: all planned, or down to the target.
 
@@ -396,9 +515,10 @@ class Collector:
         fraction. The hourly loop then relieves a full disk over several
         passes rather than emptying the plan at once. `None` keeps one
         unbounded pass. An unreadable usage keeps it too: the target cannot
-        bind what nobody measured.
+        bind what nobody measured. A per-call override wins over the store
+        for one pass.
         """
-        target = getattr(local, "gc_target_usage", None)
+        target = target_override if target_override is not None else getattr(local, "gc_target_usage", None)
         if target is None or usage is None:
             return ordered
         used, total = usage
