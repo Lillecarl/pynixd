@@ -132,9 +132,12 @@ class Collector:
     ) -> PynixdCollectGarbageResponse:
         """Plan a pass, and run it when *action* says to.
 
-        A plan is not free. It asks Nix which paths are alive, and that traces
-        the roots under the garbage collector lock, so `pynixd gc` without
-        `--execute` still holds up a build for as long as the trace takes.
+        A plan reads liveness from the mirror when the store has one --
+        refreshed just now, recomputed only when something moved -- and
+        asks Nix, which traces the roots under the garbage collector lock,
+        only when there is no mirror to read. So `pynixd gc` without
+        `--execute` still holds up a build for as long as a trace takes on
+        a store the mirror cannot cover, and costs almost nothing elsewhere.
 
         Before planning, the pass re-walks the volatile roots fresh -- the
         living half no watch covers -- and vetoes them and their reference
@@ -313,12 +316,44 @@ class Collector:
         whether or not any cache holds it. Setting the number is the operator
         taking ownership of the store's old paths, and the default keeps the
         cache behaviour.
+
+        Both rules read liveness from the mirror when the store has one: the
+        tracker refreshes it just now -- walks plus sqlite, no locks -- and
+        the closure recomputes only when something moved. A store without a
+        mirror, or a refresh that fails, falls back to asking Nix, which
+        traces under the garbage collector lock. The slow path stays correct;
+        the fast path just stops paying it.
         """
         local = self.ctx.local_store
         max_age = getattr(local, "gc_max_age", None)
         if max_age is None:
             return await self._plan_deferred(local)
         return await self._plan_lru(local, max_age)
+
+    async def _mirror_live(self, local: Store) -> set[str] | None:
+        """The tracker's live set, refreshed just now, or `None` with no mirror.
+
+        A store whose layout pynixd can read answers liveness from its own
+        tables. The refresh fills them fully when they are behind -- roots
+        rediffed, volatile rewalked, closure recomputed on change -- the way
+        Nix finds roots fresh on every call, except the indexed short-circuit
+        skips the recompute when nothing moved. Anything else -- no layout,
+        no database, a refresh that fails -- answers `None`, and the caller
+        asks Nix instead. Failing closed twice: the mirror never plans from
+        a half-built state, and no mirror never stops a plan.
+        """
+        try:
+            layout = getattr(local, "layout", None)
+            if layout is None:
+                return None
+            db_path = resolve_db_path(layout)
+            if db_path is None:
+                return None
+            tracker = RootsTracker(layout.state_dir, str(layout.store_dir), db_path)
+            return await run_sync(tracker.refresh)
+        except Exception:
+            log.warning("gc_mirror_refresh_failed", exc_info=True)
+            return None
 
     async def _plan_deferred(self, local: Store) -> set[StorePath]:
         """The paths that may leave the store.
@@ -358,7 +393,11 @@ class Collector:
             log.error("gc_closure_incomplete", asked=len(unheld), answered=len(keep))
             return set()
 
-        live: set[StorePath] = (await local.call(_request(GCAction.RETURN_LIVE, set()))).paths_deleted
+        mirror = await self._mirror_live(local)
+        if mirror is None:
+            live: set[StorePath] = (await local.call(_request(GCAction.RETURN_LIVE, set()))).paths_deleted
+        else:
+            live = {StorePath(path) for path in mirror}
         droppable = all_paths - keep - live
         log.info("gc_plan", valid=len(all_paths), held=len(held), live=len(live), droppable=len(droppable))
         return droppable
@@ -378,8 +417,12 @@ class Collector:
         if not all_paths:
             return set()
 
-        live: set[StorePath] = (await local.call(_request(GCAction.RETURN_LIVE, set()))).paths_deleted
-        dead = {str(path) for path in all_paths} - {str(path) for path in live}
+        live_paths = await self._mirror_live(local)
+        if live_paths is None:
+            live = {str(path) for path in (await local.call(_request(GCAction.RETURN_LIVE, set()))).paths_deleted}
+        else:
+            live = live_paths
+        dead = {str(path) for path in all_paths} - live
 
         stale = await self._stale_since(local, max_age)
         if stale is None:
