@@ -350,7 +350,15 @@ def walk_labeled_roots(state_dir: Path, store_dir: str, proc_dir: Path | None = 
     """
     labeled: list[tuple[str, set[str]]] = []
     for link, (target, kind) in walk_stable(state_dir, store_dir).items():
-        labeled.append((f"{kind}:{Path(link).relative_to(state_dir)}", {target}))
+        # The intermediate of an indirect root can live anywhere: a
+        # home-directory binary registered `--indirect` resolves through a
+        # link outside the state dir, and `relative_to` raises on those.
+        # The absolute path still names the root exactly.
+        try:
+            name = str(Path(link).relative_to(state_dir))
+        except ValueError:
+            name = link
+        labeled.append((f"{kind}:{name}", {target}))
     prefix = store_dir + "/"
     grouped, _reaped = _walk_temp_roots_grouped(state_dir)
     for name, seeds in grouped.items():

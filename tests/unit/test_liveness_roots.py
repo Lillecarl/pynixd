@@ -357,3 +357,33 @@ def test_walk_labeled_roots_names_each_shape(tmp_path: Path) -> None:
     assert by_label["profile:profiles/profile"] == {paths["a"]}
     assert by_label["temproot:999"] == {paths["b"], paths["d"]}
     assert {f"{paths['c']}-prog", paths["a"]} <= by_label["proc"]
+
+
+def test_walk_labeled_roots_labels_an_escaped_intermediate(tmp_path: Path) -> None:
+    """An indirect root through a link outside the state dir keeps its absolute name.
+
+    `walk_stable` attributes the intermediate (`gc.cc:275`), and an
+    indirect root can name a link anywhere: a home-directory binary
+    registered `--indirect` resolves through a symlink outside the state
+    dir. The label falls back to the absolute path instead of killing the
+    whole report, which is what `relative_to` unconditionally would do to
+    it on a real machine.
+
+    Perturbation: label by relative path unconditionally and this raises.
+    """
+    state = tmp_path / "state"
+    (state / "gcroots" / "auto").mkdir(parents=True)
+    (state / "profiles").mkdir(parents=True)
+    (state / "temproots").mkdir(parents=True)
+    store = tmp_path / "store"
+    store.mkdir()
+    target = store / f"{HASH_A}-a"
+    target.write_text("x")  # noqa: ASYNC240 -- test setup
+    outside = tmp_path / "bin"
+    outside.mkdir()
+    (outside / "tool").symlink_to(target)
+    (state / "gcroots" / "auto" / "ind").symlink_to(outside / "tool")
+
+    labeled = walk_labeled_roots(state, str(store), tmp_path / "nproc")
+
+    assert labeled == [(f"gcroot:{outside / 'tool'}", {str(target)})]
