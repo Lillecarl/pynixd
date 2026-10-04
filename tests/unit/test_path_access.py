@@ -257,3 +257,81 @@ class TestAskingTheTable:
             db.mark_path(HELLO)
             await db.flush_references()
             assert await db.prune_path_access() == 0
+
+    async def test_a_path_without_a_row_falls_back_to_registration_time(self, tmp_path: Path) -> None:
+        """Never seen by the tracker, old by Nix's column: stale, by the fallback.
+
+        This is the unwatched buildup: dead paths that predate tracking
+        have no access row, and `registrationTime` is their only date.
+        The fixture registers both paths at time zero and writes no rows.
+
+        Perturbation: read the access table alone and the set comes back empty.
+        """
+        _store_with_a_closure(tmp_path)
+        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
+            stale = await db.query_paths_not_referenced_since(86_400)
+
+            assert stale is not None
+            assert {str(p) for p in stale} == {HELLO, LIBC}
+
+    async def test_a_fresh_registration_time_spares_the_unseen(self, tmp_path: Path) -> None:
+        """No row, but Nix just registered it: not stale.
+
+        Newly built outputs land here: they exist in no access row yet,
+        and their fresh registration time is what keeps the collector off
+        them until the tracker sees them live.
+        """
+        _store_with_a_closure(tmp_path)
+        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
+            async with db.acquire_conn() as conn:
+                await conn.execute("UPDATE ValidPaths SET registrationTime = ?", (int(time.time()),))
+                await conn.commit()
+
+            stale = await db.query_paths_not_referenced_since(86_400)
+
+            assert stale is not None
+            assert {str(p) for p in stale} == set()
+
+    async def test_a_row_wins_over_registration_time_either_way(self, tmp_path: Path) -> None:
+        """The access row is the witnessed date; Nix's column loses on conflict."""
+        _store_with_a_closure(tmp_path)
+        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
+            now = int(time.time())
+            async with db.acquire_conn() as conn:
+                await conn.execute(
+                    f"INSERT INTO {PATH_ACCESS_TABLE} (path, lastReferencedAt) VALUES (?, ?)",
+                    (HELLO, now),
+                )
+                await conn.execute(
+                    f"INSERT INTO {PATH_ACCESS_TABLE} (path, lastReferencedAt) VALUES (?, ?)",
+                    (LIBC, now - 90_000),
+                )
+                await conn.execute("UPDATE ValidPaths SET registrationTime = ? WHERE path = ?", (now, LIBC))
+                await conn.commit()
+
+            stale = await db.query_paths_not_referenced_since(86_400)
+
+            assert stale is not None
+            # HELLO: seen just now, registered at time zero -- the row spares it.
+            # LIBC: seen long ago, registered just now -- the row condemns it.
+            assert {str(p) for p in stale} == {LIBC}
+
+    async def test_access_times_fall_back_to_registration_time(self, tmp_path: Path) -> None:
+        """The weigher resolves age the same way the planner does."""
+        _store_with_a_closure(tmp_path)
+        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
+            now = int(time.time())
+            async with db.acquire_conn() as conn:
+                await conn.execute(
+                    f"INSERT INTO {PATH_ACCESS_TABLE} (path, lastReferencedAt) VALUES (?, ?)",
+                    (HELLO, now),
+                )
+                await conn.commit()
+
+            times = await db.query_access_times([HELLO, LIBC, GONE])
+
+            assert times is not None
+            # HELLO carries its witnessed date, LIBC Nix's, and GONE --
+            # in no `ValidPaths` row -- stays unknown instead of leaking in
+            # through a dangling access row.
+            assert times == {HELLO: now, LIBC: 0}

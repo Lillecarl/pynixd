@@ -111,12 +111,15 @@ SELECT path FROM ValidPaths WHERE id IN ({_REFERRERS_OF_SEEDS})
 """
 
 QUERY_ACCESS_TIMES = f"""
-SELECT path, lastReferencedAt FROM {PATH_ACCESS_TABLE}
-WHERE path IN (SELECT value FROM json_each(?))
+SELECT v.path, COALESCE(a.lastReferencedAt, v.registrationTime) FROM ValidPaths v
+LEFT JOIN {PATH_ACCESS_TABLE} a ON a.path = v.path
+WHERE v.path IN (SELECT value FROM json_each(?))
 """
 
 QUERY_UNREFERENCED_SINCE = f"""
-SELECT path FROM {PATH_ACCESS_TABLE} WHERE lastReferencedAt < ?
+SELECT v.path FROM ValidPaths v
+LEFT JOIN {PATH_ACCESS_TABLE} a ON a.path = v.path
+WHERE COALESCE(a.lastReferencedAt, v.registrationTime) < ?
 """
 
 # The join the tables of pynixd get by living in Nix's own database.
@@ -505,12 +508,17 @@ class LocalStoreDB:
 
         This replaces `query_stale_paths`, which asked the same question of
         `ValidPaths.registrationTime`. Nothing called it, and the column it
-        read answers two questions at once. `PynixdPathAccess` answers one.
+        read answers two questions at once. `PynixdPathAccess` answers one,
+        and `registrationTime` answers for the paths the tracker never saw:
+        the effective time is the access row when one exists, else the
+        registration time.
 
-        A path with no row here has never been referenced through pynixd. It
-        is not reported, because "never seen" and "seen long ago" are
-        different, and only the second one is safe to collect on this
-        evidence alone.
+        The fallback changes who is exposed. A path pynixd never saw, with an
+        old registration time, is now reported when dead -- before, no row
+        meant never eligible. That is the whole point (an unwatched buildup
+        must age out), and the cost is stated plainly: for such a path the
+        only evidence of age is Nix's column, and the only evidence of death
+        is the mirror.
         """
         if not self.active or not self.schema.usable:
             return None
@@ -544,12 +552,15 @@ class LocalStoreDB:
             return None
 
     async def query_access_times(self, paths: Iterable[str]) -> dict[str, int] | None:
-        """The last-referenced time of each of `paths` that has a row.
+        """The last-referenced time of each of `paths` that either table dates.
 
         The planner weighs its candidates by age, and this is the one read
         of that column per pass: indexed, and bounded by the candidate set.
-        Paths without a row stay unknown to the caller, which treats them as
-        age zero rather than as old. `None` when the database cannot answer.
+        The date is the access row when one exists, else the registration
+        time -- the same resolution the staleness query uses, so the planner
+        and the weigher never disagree about a path's age. Paths neither
+        table dates stay unknown to the caller, which treats them as age
+        zero rather than as old. `None` when the database cannot answer.
         """
         if not self.active or not self.schema.usable:
             return None
@@ -557,7 +568,7 @@ class LocalStoreDB:
             paths_json = json.dumps(sorted(set(paths)))
             async with self.execute(QUERY_ACCESS_TIMES, (paths_json,)) as cursor:
                 rows = await cursor.fetchall()
-            return {r[0]: int(r[1]) for r in rows}
+            return {r[0]: int(r[1]) for r in rows if r[1] is not None}
         except (aiosqlite.Error, ValueError):
             log.debug("query_access_times_failed", exc_info=True)
             return None
