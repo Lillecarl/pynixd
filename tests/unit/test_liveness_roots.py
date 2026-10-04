@@ -12,12 +12,16 @@ this file proves the pieces.
 
 from __future__ import annotations
 
+import fcntl
+import os
 import sqlite3
 from contextlib import closing
 from typing import TYPE_CHECKING
 
 from pynixd.db_migrations import LIVENESS_ROOT_TABLE, LIVENESS_TABLE
 from pynixd.liveness import (
+    _seed_or_reap_temp_file,
+    _walk_temp_roots,
     query_live_set,
     read_snapshot,
     refresh_roots,
@@ -25,6 +29,7 @@ from pynixd.liveness import (
     walk_volatile,
     write_snapshot,
 )
+from tests.unit.temp_root_owner import live_temp_root
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -65,11 +70,6 @@ def _layout(root: Path) -> tuple[Path, Path, Path, dict[str, str]]:
     (auto / "indirect").symlink_to("rel-target")
     (auto / "rel-target").symlink_to(paths["c"])
     (state / "profiles" / "profile").symlink_to(paths["a"])
-    # NUL-separated, the way Nix writes them (`gc.cc:163`): one file holds
-    # two roots, and newlines never appear.
-    (state / "temproots" / "999").write_bytes(  # noqa: ASYNC240 -- test setup
-        f"{paths['b']}\x00{paths['d']}\x00not-a-path\x00".encode()
-    )
 
     pid = proc / "123"
     (pid / "exe").symlink_to(f"{paths['c']}-prog")
@@ -156,18 +156,21 @@ def test_volatile_walk_reads_processes_and_temp_roots(tmp_path: Path) -> None:
     """Processes, mappings, environments -- and both NUL-separated temp roots.
 
     One temp file holds two paths; a line splitter sees one blob and seeds
-    neither. Perturbation: split the temp file on lines and `d` leaves this set.
+    neither. The file has a living owner: an unlocked temp file is a stale
+    file (`gc.cc:193`), and the walk under test reaps those.
+    Perturbation: split the temp file on lines and `d` leaves this set.
     """
     state, proc, _auto, paths = _layout(tmp_path)
-
-    assert walk_volatile(state, str(tmp_path / "store"), proc) == {
-        f"{paths['c']}-prog",
-        paths["a"],
-        paths["b"],
-        paths["d"],
-        f"{paths['a']}-env",
-        f"{paths['c']}-modprobe",
-    }
+    content = f"{paths['b']}\x00{paths['d']}\x00not-a-path\x00".encode()
+    with live_temp_root(state, "999", content):
+        assert walk_volatile(state, str(tmp_path / "store"), proc) == {
+            f"{paths['c']}-prog",
+            paths["a"],
+            paths["b"],
+            paths["d"],
+            f"{paths['a']}-env",
+            f"{paths['c']}-modprobe",
+        }
 
 
 def _tiny_db(path: Path) -> None:
@@ -240,3 +243,94 @@ def test_snapshot_round_trips_and_replaces(tmp_path: Path) -> None:
     assert read_snapshot(db) == ({b, c}, 9)
     with closing(sqlite3.connect(db)) as conn:
         assert conn.execute(f"SELECT COUNT(*) FROM {LIVENESS_TABLE}").fetchone()[0] == 2
+
+
+def test_live_locked_temp_file_seeds_and_survives(tmp_path: Path) -> None:
+    """A lock held by a living process is a live root, and the file stays.
+
+    The reaper only unlinks what it can lock (`gc.cc:193`); a refused lock
+    is a living owner. The pid in the name is arbitrary -- only the lock
+    speaks.
+
+    Perturbation: unlink after a refused lock and the file vanishes here.
+    """
+    state = tmp_path / "state"
+    (state / "temproots").mkdir(parents=True)
+    target = f"{tmp_path}/store/{HASH_A}-a"
+    with live_temp_root(state, "4242", f"{target}\x00".encode()):
+        roots: set[str] = set()
+        assert _walk_temp_roots(state, roots) == 0
+        assert roots == {target}
+        assert (state / "temproots" / "4242").exists()
+
+
+def test_dead_unlocked_temp_file_reaped_and_unseeded(tmp_path: Path) -> None:
+    """No lock means the owner is dead: unlink, mark, seed nothing.
+
+    Exact replication of `findTempRoots` (`gc.cc:193`). The dead paths must
+    not seed -- that is what clears the only-tracker transients, instead of
+    carrying them until Nix's next trace.
+
+    Perturbation: seed before locking and the dead path stays in the set.
+    """
+    state = tmp_path / "state"
+    temp = state / "temproots"
+    temp.mkdir(parents=True)
+    stale = temp / "4243"
+    stale.write_bytes(f"{tmp_path}/store/{HASH_B}-b\x00".encode())  # noqa: ASYNC240 -- test setup
+    roots: set[str] = set()
+    assert _walk_temp_roots(state, roots) == 1
+    assert roots == set()
+    assert not stale.exists()
+
+
+def test_dotfiles_and_foreign_names_are_left_alone(tmp_path: Path) -> None:
+    """Keepalive files and non-protocol names are neither read nor reaped.
+
+    Nix skips dotfiles (`gc.cc:166`); a name no process file carries is not
+    ours to judge. Both are unlocked, so a lock-only rule would reap them --
+    the protocol check is what spares them.
+
+    Perturbation: drop the name check and both files vanish here.
+    """
+    state = tmp_path / "state"
+    temp = state / "temproots"
+    temp.mkdir(parents=True)
+    keep = temp / ".keep"
+    keep.write_bytes(b"/store/dead\x00")  # noqa: ASYNC240 -- test setup
+    foreign = temp / "README"
+    foreign.write_bytes(b"/store/dead\x00")  # noqa: ASYNC240 -- test setup
+    roots: set[str] = set()
+    assert _walk_temp_roots(state, roots) == 0
+    assert roots == set()
+    assert keep.exists() and foreign.exists()
+
+
+def test_swapped_name_is_neither_seeded_nor_unlinked(tmp_path: Path) -> None:
+    """A name recreated after the open belongs to someone new.
+
+    A racing owner recreates the name between open and lock; Nix's own pass
+    can unlink that fresh file here. The device/inode check sees the swap
+    and touches neither -- the next pass reads the new file, whose living
+    owner holds its lock, fresh.
+
+    Perturbation: drop the check and the new file is gone.
+    """
+    temp = tmp_path / "state" / "temproots"
+    temp.mkdir(parents=True)
+    stale = temp / "4244"
+    stale.write_bytes(b"/store/dead\x00")  # noqa: ASYNC240 -- test setup
+    fd = os.open(stale, os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW)
+    try:
+        # Same-process locks never conflict: acquiring here is exactly what
+        # a dead owner looks like to the reaper.
+        fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        live = tmp_path / "fresh"
+        live.write_bytes(b"/store/live\x00")  # noqa: ASYNC240 -- test setup
+        os.replace(live, stale)
+        roots: set[str] = set()
+        assert _seed_or_reap_temp_file(fd, str(stale), roots) is False
+        assert roots == set()
+        assert stale.read_bytes() == b"/store/live\x00"  # noqa: ASYNC240 -- test assertion
+    finally:
+        os.close(fd)

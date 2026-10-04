@@ -40,6 +40,7 @@ from pynixd.daemon_extensions import (
 )
 from pynixd.gc import Collector
 from pynixd.serde import ValidPathInfo
+from tests.unit.temp_root_owner import live_temp_root
 
 A = "/nix/store/00000000000000000000000000000000-a"
 B = "/nix/store/11111111111111111111111111111111-b"
@@ -185,10 +186,11 @@ def _texts(resp: Any) -> list[str]:
 async def test_a_fresh_temproot_vetoes_its_path(tmp_path: Path) -> None:
     """A living root read just now spares its path, and says so on the wire."""
     collector, local, state_dir = _collector(tmp_path)
-    # NUL-terminated, the way Nix writes temp files (`gc.cc:163`).
-    (state_dir / "temproots" / "99").write_bytes(f"{A}\x00".encode())  # noqa: ASYNC240 -- the event under test
-
-    resp = await collector.run(PynixdGCAction.DRY_RUN)
+    # NUL-terminated, the way Nix writes temp files (`gc.cc:163`), and held
+    # by a living owner: an unlocked file is stale (`gc.cc:193`), and the
+    # pass under test reaps those instead of vetoing them.
+    with live_temp_root(state_dir, "99", f"{A}\x00".encode()):
+        resp = await collector.run(PynixdGCAction.DRY_RUN)
 
     assert {str(path) for path in resp.store_paths} == {B}
     assert local.deleted == []
@@ -199,10 +201,9 @@ async def test_a_fresh_temproot_vetoes_its_path(tmp_path: Path) -> None:
 async def test_an_unanswerable_closure_falls_back_to_the_seeds(tmp_path: Path) -> None:
     """No closure feature still spares the roots themselves, never nothing."""
     collector, local, state_dir = _collector(tmp_path, answers_closure=False)
-    # NUL-terminated, the way Nix writes temp files (`gc.cc:163`).
-    (state_dir / "temproots" / "99").write_bytes(f"{A}\x00".encode())  # noqa: ASYNC240 -- the event under test
-
-    resp = await collector.run(PynixdGCAction.DRY_RUN)
+    # Held by a living owner, as above: the veto must see the root alive.
+    with live_temp_root(state_dir, "99", f"{A}\x00".encode()):
+        resp = await collector.run(PynixdGCAction.DRY_RUN)
 
     assert {str(path) for path in resp.store_paths} == {B}
 

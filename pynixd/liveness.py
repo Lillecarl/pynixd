@@ -30,10 +30,12 @@ links (Nix owns that mutation; the mirror only skips them), and censoring
 from __future__ import annotations
 
 import errno
+import fcntl
 import json
 import os
 import re
 import sqlite3
+import stat
 import time
 from contextlib import closing
 from dataclasses import dataclass
@@ -42,6 +44,7 @@ from pathlib import Path
 import structlog
 
 from pynixd.db_migrations import LIVENESS_ROOT_TABLE, LIVENESS_STREAK_TABLE, LIVENESS_TABLE
+from pynixd.metrics import GC_TEMPROOTS_REAPED
 
 log = structlog.get_logger(__name__)
 
@@ -191,31 +194,104 @@ def _walk_runtime_roots(proc_dir: Path, roots: set[str], store_dir: str) -> None
             roots.add(content)
 
 
-def _walk_temp_roots(state_dir: Path, roots: set[str]) -> None:
-    """Every path named by the temporary roots files.
+def _walk_temp_roots(state_dir: Path, roots: set[str]) -> int:
+    """Every path named by the temporary roots files, reaping the stale ones.
 
-    One file per process, its held paths NUL-separated (`gc.cc:163`).
-    Nix unlinks a dead owner's file while reading the directory
-    (`gc.cc:209`); the mirror never mutates the roots it reads, so that
-    file still seeds until Nix's own pass removes it. That errs toward
-    keeping, which is the safe direction for a set collected by complement.
+    One file per process, its held paths NUL-separated (`gc.cc:163`), the
+    owner holding a write lock from creation (`gc.cc:62-65`). A file whose
+    lock acquires is a dead owner's: Nix unlinks it and writes `"d"` into
+    the unlinked file (`gc.cc:193`) -- the byte is the retry signal, a
+    racing owner that opened before the unlink sees a nonzero size and
+    recreates its file (`gc.cc:69-74`). The mirror does exactly that, so a
+    stale file stops seeding within one wake instead of lingering until
+    Nix's next trace. Returns the files unlinked.
+
+    One guard Nix lacks: after the lock acquires, the directory entry must
+    still name the locked file (same device and inode). A racing owner
+    recreates the name between our open and unlink; without the check we
+    would unlink its live file. A mismatch skips both seeding and unlinking
+    -- the next pass reads the new file fresh.
+
+    Files outside the protocol -- dotfiles, which Nix skips (`gc.cc:166`),
+    and names no process file carries -- are left alone. Nix itself throws
+    on those; the mirror neither seeds nor reaps what it cannot attribute.
     """
     try:
         entries = list(os.scandir(state_dir / "temproots"))
     except OSError as exc:
         if _suppressed(exc):
-            return
+            return 0
         raise
+    reaped = 0
     for entry in entries:
         if entry.name.startswith(".") or not entry.is_file(follow_symlinks=False):
             continue
         try:
-            content = Path(entry.path).read_bytes()
+            int(entry.name)
+        except ValueError:
+            continue
+        try:
+            fd = os.open(entry.path, os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW)
         except OSError as exc:
-            if _suppressed(exc):
+            if exc.errno == errno.ELOOP or _suppressed(exc):
+                # Swapped for a link, or gone, between the listing and the
+                # open: nothing here to attribute or reap.
                 continue
             raise
+        try:
+            if _seed_or_reap_temp_file(fd, entry.path, roots):
+                reaped += 1
+        finally:
+            os.close(fd)
+    GC_TEMPROOTS_REAPED.inc(reaped)
+    return reaped
+
+
+def _seed_or_reap_temp_file(fd: int, path: str, roots: set[str]) -> bool:
+    """Seed live temp roots, or unlink a dead owner's file. Returns unlinked.
+
+    A separate function so the race guard has a deterministic test: the
+    caller opens `path`, and between that open and this call the name may
+    have been recreated. Only `True` unlinks, and only the locked file's
+    own name.
+    """
+    st = os.fstat(fd)
+    if not stat.S_ISREG(st.st_mode):
+        return False
+    try:
+        fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        if exc.errno not in (errno.EACCES, errno.EAGAIN):
+            raise
+        chunks = []
+        while True:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        content = b"".join(chunks)
         roots.update(part.decode(errors="replace") for part in content.split(b"\x00") if part.strip())
+        return False
+    try:
+        current = os.stat(path)
+    except OSError as exc:
+        if _suppressed(exc):
+            # The name went away; the locked content is a dead owner's
+            # either way, so it seeds nothing.
+            return False
+        raise
+    if (current.st_dev, current.st_ino) != (st.st_dev, st.st_ino):
+        return False
+    try:
+        os.unlink(path)
+    except OSError as exc:
+        if exc.errno == errno.ENOENT:
+            # Nix's own pass reaped it first; still dead, still unseeded.
+            return False
+        log.warning("temproot-unlink-failed", path=path, error=str(exc))
+        return False
+    os.write(fd, b"d")
+    return True
 
 
 def walk_stable(state_dir: Path, store_dir: str) -> dict[str, tuple[str, str]]:

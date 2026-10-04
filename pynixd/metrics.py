@@ -414,6 +414,14 @@ GC_LIVENESS_STREAK = Gauge(
     "Consecutive liveness checks where the mirror agreed with Nix",
 )
 
+# Stale temporary-roots files the mirror unlinked. Nix removes these on
+# its own traces (`gc.cc:193`); the mirror does the same on every wake, so
+# a dead owner's file stops seeding within minutes instead of lingering.
+GC_TEMPROOTS_REAPED = Counter(
+    "pynixd_gc_temproots_reaped_total",
+    "Stale temporary roots files the mirror has unlinked",
+)
+
 # --- HTTP binary cache ---
 
 # `route` is the pattern aiohttp matched, not the path the client asked for.
