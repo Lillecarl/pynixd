@@ -41,6 +41,11 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         default=None,
         help="Delete at most N paths, weight order first (default: the whole plan)",
     )
+    parser.add_argument(
+        "--show-paths",
+        action="store_true",
+        help="List every planned path, sorted (default: count and bytes only)",
+    )
     parser.set_defaults(func=gc_main)
 
 
@@ -91,6 +96,12 @@ async def _gc_main(args: argparse.Namespace) -> None:
             print(text)  # noqa: T201
 
     label = "dry-run" if action == PynixdGCAction.DRY_RUN else "gc"
+    if args.show_paths:
+        # Sorted, not weight order: the response carries the set, and the
+        # weights stay on the daemon. Per-path sizes would ride the wire;
+        # that change is bigger than this flag.
+        for path in sorted(str(path) for path in resp.store_paths):
+            print(path)  # noqa: T201
     if resp.store_paths:
         print(f"{label}: {len(resp.store_paths)} paths, {resp.bytes} bytes freed")  # noqa: T201
     else:
