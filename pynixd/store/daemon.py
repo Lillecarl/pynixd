@@ -198,6 +198,7 @@ class DaemonStore(Store):
         self.gc_enabled = spec.gc_enabled
         self.gc_max_age = spec.gc_max_age
         self.gc_target_usage = spec.gc_target_usage
+        self.gc_allow_execute = spec.gc_allow_execute
         self.no_schedule = spec.no_schedule
         self.idle_ttl = spec.idle_ttl
         self.max_lifetime = spec.max_lifetime

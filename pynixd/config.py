@@ -130,6 +130,15 @@ class StoreSpecBase(BaseModel):
     one deletes nothing until the disk is fuller than full, which is a way
     of saying dry-run on a schedule.
     """
+    gc_allow_execute: bool = False
+    """Whether the collector may delete: the operator's signature, nothing else.
+
+    Off everywhere, so planning stays free and deleting stays refused. The
+    liveness mirror must show sustained zero-divergence against what Nix
+    reports alive before this flips on, and flipping it is the cutover
+    decision, recorded in the config that carries it. `Collector.run`
+    raises `GCNotPermittedError` on EXECUTE while this is off.
+    """
     gc_defer: bool = False
     """Whether a path this store holds may leave the local store.
 

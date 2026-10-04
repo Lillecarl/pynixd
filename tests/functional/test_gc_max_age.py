@@ -113,7 +113,14 @@ async def _pynixd(lab: _Lab) -> AsyncIterator[Server]:
     the store, and the plan would then be measured against a store that grew
     under it.
     """
-    spec = make_test_spec(store_id="local", store_path=lab.store_path, no_probe=True, gc_max_age=MAX_AGE)
+    spec = make_test_spec(
+        store_id="local",
+        store_path=lab.store_path,
+        no_probe=True,
+        gc_max_age=MAX_AGE,
+        # The tests below run EXECUTE: the permit is this lab run's opt-in.
+        gc_allow_execute=True,
+    )
     stores: dict[StoreId, Store] = {StoreId("local"): LocalDBStore(spec)}
     async with Server(stores=stores, ssh_port=None, http_port=None) as server:
         _freeze_tracker(server)

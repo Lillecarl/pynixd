@@ -21,6 +21,7 @@ from nix_daemon_protocol.store_dir import set_real_store_dir, set_store_dir
 from . import _optional, metrics, wire
 from .config import ExternalUnixStoreSpec, HTTPBinaryCacheSpec, LocalSocketStoreSpec, PynixdSettings
 from .context import PynixdContext
+from .exceptions import GCNotPermittedError
 from .gc import Collector
 from .health import HealthReport, LoopLagMonitor, StallWatchdog
 from .scheduler import Scheduler
@@ -380,6 +381,11 @@ class Server:
             resp = await Collector(self.ctx).run(PynixdGCAction.EXECUTE)
         except anyio.get_cancelled_exc_class():
             raise
+        except GCNotPermittedError:
+            # Not a failure: the loop is on and the permit is off, which is
+            # the posture until the liveness mirror is proven. Info, not
+            # error, and no cycle metric either way.
+            log.info("gc_execute_not_permitted", reason=reason)
         except Exception:
             metrics.GC_CYCLES.labels(result="error").inc()
             log.exception("gc_pass_failed", reason=reason)

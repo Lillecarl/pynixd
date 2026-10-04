@@ -85,7 +85,13 @@ async def _pynixd(lab: _Lab, url: str | None, gc_defer: bool = True) -> AsyncIte
     # `no_probe`: the capability probe adds `probe-feature-*` paths to the
     # store, and the pass would then be measured against a store that grew
     # under it.
-    spec = make_test_spec(store_id="local", store_path=lab.store_path, no_probe=True)
+    spec = make_test_spec(
+        store_id="local",
+        store_path=lab.store_path,
+        no_probe=True,
+        # The tests below run EXECUTE: the permit is this lab run's opt-in.
+        gc_allow_execute=True,
+    )
     stores: dict[StoreId, Store] = {StoreId("local"): LocalDBStore(spec)}
     if url is not None:
         cache = HTTPBinaryCacheSpec(store_id=StoreId("upstream"), url=url, gc_defer=gc_defer)

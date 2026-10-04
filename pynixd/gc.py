@@ -37,7 +37,7 @@ from .daemon_extensions import (
     QueryClosureRequest,
     QueryPathInfosRequest,
 )
-from .exceptions import BackendError
+from .exceptions import BackendError, GCNotPermittedError
 from .store import is_http_binary_cache
 
 if TYPE_CHECKING:
@@ -127,7 +127,19 @@ class Collector:
         with the fewest deletes, and a dry-run lists what goes first. The
         weight blends size and age by disk pressure: an empty disk collects
         oldest first, a full disk biggest first.
+
+        EXECUTE stays refused until the operator permits it. Planning asks
+        Nix nothing it cannot already ask, but a delete is irreversible, and
+        the planner's liveness answer is still unproven against the mirror:
+        `gc_allow_execute` on the local store is the signature, off by
+        default, and EXECUTE without it raises `GCNotPermittedError`.
         """
+        if action == PynixdGCAction.EXECUTE and not getattr(self.ctx.local_store, "gc_allow_execute", False):
+            log.warning("gc_execute_refused")
+            raise GCNotPermittedError(
+                "collector EXECUTE is not permitted: set gc_allow_execute "
+                "after the liveness mirror shows sustained zero-divergence"
+            )
         weights = await self._weigh(await self.plan())
         if not weights:
             return PynixdCollectGarbageResponse(store_paths=set(), bytes=0)

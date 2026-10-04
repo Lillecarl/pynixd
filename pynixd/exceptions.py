@@ -31,3 +31,14 @@ class ClosingError(PynixdError):
 
 class OpNotImplementedError(PynixdError):
     """Raised when an operation is not implemented for a specific executor (e.g. DB)."""
+
+
+class GCNotPermittedError(PynixdError):
+    """Raised when a delete is asked before the liveness mirror is proven.
+
+    The collector plans freely -- a dry-run deletes nothing -- but EXECUTE
+    stays refused until the operator sets `gc_allow_execute`, which is the
+    signature after sustained zero-divergence between the mirror and what
+    Nix reports alive. Fail closed: an unproven mirror must not name
+    deletions, and a refused delete must not read as success.
+    """
