@@ -151,7 +151,15 @@ class BuildResult(WireModel):
     """
 
     status: int = 0
-    error_msg: str = ""
+    error_msg: str = WireField(default="", text_errors="surrogateescape")
+    """What the daemon said about the failure, byte for byte.
+
+    `BuildResult.errorMsg` is a `std::string` that the daemon forwards
+    without validating, and pynixd quotes `LogError.msg` into it on the
+    `queue.fail` path -- both already carry bytes no UTF-8 decoder accepts.
+    Strict decoding would move the crash of issue Lillecarl/pynixd#62 from
+    the log stream to the result that follows it.
+    """
 
     # Protocol 1.29 fields
     times_built: int | None = WireField(default=None, min_version=proto(1, 29))

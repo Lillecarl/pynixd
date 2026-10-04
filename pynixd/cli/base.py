@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
@@ -129,6 +129,23 @@ def _build_foreign_pre_chain(filter_fn: Callable | None) -> list:
     return chain
 
 
+def _sanitize_for_journal(value: Any) -> Any:
+    """Replace surrogate escapes with U+FFFD, recursively.
+
+    Log and error text travels as bytes (`surrogateescape` keeps each one),
+    and the journal is UTF-8: `StreamHandler.emit` encodes the rendered line,
+    and a lone surrogate raises `UnicodeEncodeError` there. The wire copy
+    stays exact; only what a human reads is lossy. Issue Lillecarl/pynixd#62.
+    """
+    if isinstance(value, str):
+        return value.encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace")
+    if isinstance(value, dict):
+        return {key: _sanitize_for_journal(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_for_journal(item) for item in value]
+    return value
+
+
 class _DropFilteringRenderer:
     """A ``ProcessorFormatter`` processor that renders to JSON.
 
@@ -145,7 +162,7 @@ class _DropFilteringRenderer:
             return ""
         event_dict.pop("_record", None)
         event_dict.pop("_from_structlog", None)
-        rendered = self._json(logger, method_name, event_dict)
+        rendered = self._json(logger, method_name, _sanitize_for_journal(event_dict))
         if isinstance(rendered, bytes):
             return rendered.decode("utf-8")
         return rendered

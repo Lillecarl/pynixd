@@ -392,6 +392,7 @@ class VersionMeta:
     wire_depends_on: Callable | None = None
     needs_features: frozenset[str] | None = None
     unless_features: frozenset[str] | None = None
+    text_errors: str = "strict"
 
 
 def WireField(  # noqa: N802
@@ -405,6 +406,7 @@ def WireField(  # noqa: N802
     wire_depends_on: Callable | None = None,
     needs_features: Iterable[str] | None = None,
     unless_features: Iterable[str] | None = None,
+    text_errors: str = "strict",
     **kwargs: Any,
 ) -> Any:
     """A Pydantic Field with Nix protocol version and feature requirements.
@@ -432,7 +434,19 @@ def WireField(  # noqa: N802
     name. `unless_features` keeps it when the set holds **none** of them. A
     field with neither is there whatever the peers agreed, which is every
     field of the Nix 2.34 shape. Issue #14.
+
+    `text_errors` is the error handler for the bytes of a `str` field, and it
+    is `"strict"` unless the field says otherwise. `"surrogateescape"` decodes
+    every byte and re-encodes it back to the same byte, which is what a field
+    takes when Nix treats it as opaque bytes that it never validates: log and
+    error text. A builder prints whatever it prints, and the daemon forwards
+    it without looking, so strict decoding fails the whole build on a gzip
+    stream in the log. Issue Lillecarl/pynixd#62. Anything but `"strict"` or
+    `"surrogateescape"` is refused here: a lossy handler would round-trip the
+    bytes into something else, silently.
     """
+    if text_errors not in ("strict", "surrogateescape"):
+        raise ValueError(f"text_errors={text_errors!r} must be 'strict' or 'surrogateescape'")
     if default is not PydanticUndefined:
         kwargs.setdefault("default", default)
     if default_factory is not None:
@@ -448,6 +462,7 @@ def WireField(  # noqa: N802
             wire_depends_on,
             None if needs_features is None else frozenset(needs_features),
             None if unless_features is None else frozenset(unless_features),
+            text_errors,
         )
     )
     return field_info
@@ -461,8 +476,8 @@ def _wire_fields(
     cls: type[BaseModel],
     version: int = 0,
     features: frozenset[str] = frozenset(),
-) -> list[tuple[str, type, Callable | None, bool, bool]]:
-    """Return (name, raw_annotation, wire_depends_on, serialize, deserialize) tuples.
+) -> list[tuple[str, type, Callable | None, bool, bool, str]]:
+    """Return (name, raw_annotation, wire_depends_on, serialize, deserialize, text_errors) tuples.
 
     ClassVar fields default to serialize=False, deserialize=False unless
     ``WireField(serialize=..., deserialize=...)`` overrides them explicitly.
@@ -512,7 +527,8 @@ def _wire_fields(
             _deserialize = not is_classvar
 
         wire_depends_on = version_meta.wire_depends_on if version_meta else None
-        result.append((name, ann, wire_depends_on, _serialize, _deserialize))
+        text_errors = version_meta.text_errors if version_meta else "strict"
+        result.append((name, ann, wire_depends_on, _serialize, _deserialize, text_errors))
     return result
 
 
@@ -533,6 +549,72 @@ def _compiled_or_none(cls: type, version: int = 0, features: frozenset[str] = fr
         return compile_codec(cls, version, features)
     except NotCompilableError:
         return None
+
+
+def _lossless_reader(errors: str) -> Any:
+    """Read one wire string without validating its bytes as text.
+
+    The length prefix frames the bytes whatever they hold, so the decode
+    cannot fail: `errors` round-trips each byte through the `str` and back.
+    """
+
+    async def _read_lossless(ctx: Any) -> str:
+        return (await ctx.reader.read_bytes()).decode("utf-8", errors=errors)
+
+    return _read_lossless
+
+
+def _lossless_optional_reader(errors: str) -> Any:
+    """The `str | None` half of `_lossless_reader`.
+
+    The empty-wire-string-answers-`None` rule of `_find_reader`, spelled for
+    a codec that never raises on the bytes. Issue Lillecarl/nanopynix#194.
+    """
+
+    async def _read_lossless_optional(ctx: Any) -> Any:
+        return (await ctx.reader.read_bytes()).decode("utf-8", errors=errors) or None
+
+    return _read_lossless_optional
+
+
+def _lossless_writer(errors: str) -> Any:
+    """Write one `str` back to the bytes it decoded from."""
+
+    async def _write_lossless(val: Any, ctx: Any) -> None:
+        ctx.writer.write_bytes(val.encode("utf-8", errors=errors))
+
+    return _write_lossless
+
+
+def _lossless_optional_writer(errors: str) -> Any:
+    """The `str | None` half of `_lossless_writer`.
+
+    The absent-scalar-travels-as-empty rule of `_find_writer`: `None` takes
+    the empty string, which encodes under every handler.
+    """
+
+    async def _write_lossless_optional(val: Any, ctx: Any) -> None:
+        if val is None:
+            ctx.writer.write_string("")
+        else:
+            ctx.writer.write_bytes(val.encode("utf-8", errors=errors))
+
+    return _write_lossless_optional
+
+
+def _lossless_shape(ann: Any) -> str | None:
+    """`plain` for `str`, `optional` for `str | None`, else `None`.
+
+    Only these two shapes take `text_errors`: anything else with the flag is
+    a declaration bug, and `_wire_plan` refuses it rather than guessing.
+    """
+    if ann is str:
+        return "plain"
+    if get_origin(ann) is types.UnionType:
+        non_none = tuple(a for a in get_args(ann) if a is not type(None))
+        if len(non_none) == 1 and non_none[0] is str:
+            return "optional"
+    return None
 
 
 @functools.lru_cache(maxsize=256)
@@ -557,9 +639,19 @@ def _wire_plan(
     """
     read_steps = []
     write_steps = []
-    for name, ann, wire_depends_on, serialize, deserialize in _wire_fields(cls, version, features):
-        read_steps.append((name, _find_reader(ann, version, features), wire_depends_on, deserialize))
-        write_steps.append((name, _find_writer(ann, version, features), wire_depends_on, serialize))
+    for name, ann, wire_depends_on, serialize, deserialize, text_errors in _wire_fields(cls, version, features):
+        shape = _lossless_shape(ann) if text_errors != "strict" else None
+        if text_errors != "strict" and shape is None:
+            raise TypeError(f"{cls.__name__}.{name}: text_errors={text_errors!r} needs a `str` field")
+        if shape == "plain":
+            read_steps.append((name, _lossless_reader(text_errors), wire_depends_on, deserialize))
+            write_steps.append((name, _lossless_writer(text_errors), wire_depends_on, serialize))
+        elif shape == "optional":
+            read_steps.append((name, _lossless_optional_reader(text_errors), wire_depends_on, deserialize))
+            write_steps.append((name, _lossless_optional_writer(text_errors), wire_depends_on, serialize))
+        else:
+            read_steps.append((name, _find_reader(ann, version, features), wire_depends_on, deserialize))
+            write_steps.append((name, _find_writer(ann, version, features), wire_depends_on, serialize))
 
     defaults = []
     for name, field in cls.model_fields.items():

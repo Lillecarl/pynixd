@@ -152,7 +152,11 @@ async def run_subproc(
     async def stream(name: str, accumulator: list[str], pipe) -> None:
         while True:
             line = await pipe.readline()
-            decoded_line = line.decode()
+            # Lossy on purpose: this streams display text to the log, and a
+            # builder can print bytes no UTF-8 decoder accepts (a gzip
+            # stream in a containerd build log did exactly that). The bytes
+            # themselves travel the wire untouched. Issue Lillecarl/pynixd#62.
+            decoded_line = line.decode(errors="replace")
             accumulator.append(decoded_line)
             stdboth.append(decoded_line)
             if not line:

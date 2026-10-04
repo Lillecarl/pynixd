@@ -66,6 +66,15 @@ class NotCompilableError(TypeError):
 @dataclass(frozen=True)
 class _Primitive:
     method: str
+    errors: str = "strict"
+    """The error handler for the bytes of a `string` node.
+
+    `"strict"` is every field Nix validates as text. `"surrogateescape"`
+    round-trips the bytes Nix never validates -- log and error text -- so a
+    compiled codec answers byte-identical to the interpreted one. Any other
+    node carrying a handler is a declaration bug, and `_wire_node` refuses
+    it. Issue Lillecarl/pynixd#62.
+    """
 
 
 @dataclass(frozen=True)
@@ -140,16 +149,27 @@ class WireSchema:
     fields: tuple[_Field, ...]
 
 
-def _wire_node(annotation: type) -> WireNode:
-    """Translate a resolved annotation to a small, backend-independent IR."""
+def _wire_node(annotation: type, errors: str = "strict") -> WireNode:
+    """Translate a resolved annotation to a small, backend-independent IR.
+
+    `errors` rides the recursion to the `string` leaf it belongs to; a
+    handler on any other leaf refuses, mirroring the interpreted codec.
+    """
     from .wire_string import WireString
+
+    origin = get_origin(annotation)
+    if annotation is str:
+        return _Primitive("string", errors)
+    if errors != "strict" and origin not in (types.UnionType, list, set, dict):
+        # A handler belongs to the `string` leaf it rides to; anything else
+        # is a declaration bug, and the interpreted codec refuses it the same
+        # way. The containers above recurse with the handler intact.
+        raise NotCompilableError(f"text_errors={errors!r} needs a `str` field")
 
     if annotation is int:
         return _Integer()
     if isinstance(annotation, type) and issubclass(annotation, WireUInt64):
         return _Integer(annotation)
-    if annotation is str:
-        return _Primitive("string")
     if annotation is bool:
         return _Primitive("bool")
     if annotation is bytes:
@@ -159,21 +179,20 @@ def _wire_node(annotation: type) -> WireNode:
     if is_wire_scalar(annotation):
         return _Scalar(annotation)
 
-    origin = get_origin(annotation)
     arguments = get_args(annotation)
     if origin is types.UnionType:
         non_none = tuple(arg for arg in arguments if arg is not type(None))
         if len(non_none) == 1:
-            value = _wire_node(non_none[0])
+            value = _wire_node(non_none[0], errors)
             if is_wire_scalar(non_none[0]):
                 return _OptionalScalar(value)
             return value
     if origin is list:
-        return _Sequence("list", _wire_node(arguments[0]))
+        return _Sequence("list", _wire_node(arguments[0], errors))
     if origin is set:
-        return _Sequence("set", _wire_node(arguments[0]))
+        return _Sequence("set", _wire_node(arguments[0], errors))
     if origin is dict:
-        return _Mapping(_wire_node(arguments[0]), _wire_node(arguments[1]))
+        return _Mapping(_wire_node(arguments[0], errors), _wire_node(arguments[1], errors))
     if isinstance(annotation, type) and issubclass(annotation, WireString):
         fields = tuple(annotation.model_fields)
         direct_field = fields[0] if annotation.to_str is WireString.to_str and len(fields) == 1 else None
@@ -188,8 +207,10 @@ def _wire_schema(model: type[WireModel], version: int, features: frozenset[str])
         model=model,
         version=version,
         fields=tuple(
-            _Field(name, _wire_node(annotation), predicate, serialize, deserialize)
-            for name, annotation, predicate, serialize, deserialize in _wire_fields(model, version, features)
+            _Field(name, _wire_node(annotation, text_errors), predicate, serialize, deserialize)
+            for name, annotation, predicate, serialize, deserialize, text_errors in _wire_fields(
+                model, version, features
+            )
         ),
     )
 
@@ -250,6 +271,13 @@ class _AstLowerer:
         if isinstance(node, _Integer):
             return [ast.Expr(_call(_ctx_method("uint64"), value))]
         if isinstance(node, _Primitive):
+            if node.method == "string" and node.errors != "strict":
+                encoded = ast.Call(
+                    func=ast.Attribute(value=value, attr="encode", ctx=ast.Load()),
+                    args=[ast.Constant("utf-8")],
+                    keywords=[ast.keyword(arg="errors", value=ast.Constant(node.errors))],
+                )
+                return [ast.Expr(_call(_ctx_method("bytes"), encoded))]
             return [ast.Expr(_call(_ctx_method(node.method), value))]
         if isinstance(node, _Enum):
             return [ast.Expr(_call(_ctx_method("uint64"), _attribute(value, "value")))]
@@ -319,6 +347,14 @@ class _AstLowerer:
             value = raw if node.constructor is None else _call(self._adapter(node.constructor), raw)
             return [ast.Assign([target], value)]
         if isinstance(node, _Primitive):
+            if node.method == "string" and node.errors != "strict":
+                raw = ast.Await(_call(_reader_method("bytes")))
+                value = ast.Call(
+                    func=ast.Attribute(value=raw, attr="decode", ctx=ast.Load()),
+                    args=[ast.Constant("utf-8")],
+                    keywords=[ast.keyword(arg="errors", value=ast.Constant(node.errors))],
+                )
+                return [ast.Assign([target], value)]
             args = [_name("str")] if node.method == "string" else []
             return [ast.Assign([target], ast.Await(_call(_reader_method(node.method), *args)))]
         if isinstance(node, _Enum):

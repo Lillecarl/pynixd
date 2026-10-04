@@ -6,8 +6,19 @@ The stderr stream uses a tagged-union wire format::
 
 Each message type has a ``code`` field that is written on the wire
 (``serialize=True``) but skipped during body reading (``deserialize=False``)
-because ``WireLogs.from_reader`` dispatches on code before delegating to
-the individual message's ``from_reader``.
+because ``WireLogs.from_reader`` dispatches on code before delegating to the
+individual message's ``from_reader``.
+
+**Every `str` field here is opaque bytes, and never validated text.** The
+wire `string` is a length-prefixed byte run (`readString` moves bytes, and
+`worker-protocol-connection.cc:53` hands them to the sink unread), the
+builder's output is split on `\\n` alone and emitted as a raw `std::string`
+(`build-log.cc:39`), and the client prints what it got (`terminal.cc:39`
+walks invalid UTF-8 one byte at a time). A builder prints whatever it
+prints -- a gzip stream in the middle of `nixpkgs` fixup output -- and the
+daemon forwards it without looking. Strict UTF-8 decoding fails the whole
+build on those bytes, so each field below takes `text_errors` and
+round-trips them. Issue Lillecarl/pynixd#62.
 """
 
 from __future__ import annotations
@@ -39,7 +50,7 @@ class TraceLine(WireModel):
     """A single trace entry inside ``LogError``."""
 
     pos: int = 0
-    hint: str = ""
+    hint: str = WireField(default="", text_errors="surrogateescape")
 
 
 # ── Helper: tagged-union field inside activities ─────────────────────
@@ -54,7 +65,11 @@ class ActivityField(WireModel):
 
     type: FieldType = FieldType.INT
     valint: int | None = WireField(default=None, wire_depends_on=lambda self: self.type == FieldType.INT)
-    valstr: str | None = WireField(default=None, wire_depends_on=lambda self: self.type == FieldType.STRING)
+    valstr: str | None = WireField(
+        default=None,
+        wire_depends_on=lambda self: self.type == FieldType.STRING,
+        text_errors="surrogateescape",
+    )
 
 
 # ── Log message types ────────────────────────────────────────────────
@@ -64,7 +79,7 @@ class LogNext(WireModel):
     """STDERR_NEXT — a log line from the daemon."""
 
     code: int = WireField(default=STDERR_NEXT, serialize=True, deserialize=False)
-    text: str = ""
+    text: str = WireField(default="", text_errors="surrogateescape")
 
 
 class LogStartActivity(WireModel):
@@ -74,7 +89,7 @@ class LogStartActivity(WireModel):
     act_id: int = 0
     level: int = 0
     type: int = 0
-    text: str = ""
+    text: str = WireField(default="", text_errors="surrogateescape")
     fields: list[ActivityField] = WireField(default_factory=list)
     parent: int = 0
 
@@ -99,10 +114,10 @@ class LogError(WireModel):
     """STDERR_ERROR — the daemon is reporting an error."""
 
     code: int = WireField(default=STDERR_ERROR, serialize=True, deserialize=False)
-    type: str = ""
+    type: str = WireField(default="", text_errors="surrogateescape")
     level: int = 0
-    name: str = ""
-    msg: str = ""
+    name: str = WireField(default="", text_errors="surrogateescape")
+    msg: str = WireField(default="", text_errors="surrogateescape")
     have_pos: int = 0
     traces: list[TraceLine] = WireField(default_factory=list)
 
