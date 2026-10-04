@@ -25,6 +25,7 @@ from pynixd.liveness import (
     query_live_set,
     read_snapshot,
     refresh_roots,
+    walk_labeled_roots,
     walk_stable,
     walk_volatile,
     write_snapshot,
@@ -334,3 +335,25 @@ def test_swapped_name_is_neither_seeded_nor_unlinked(tmp_path: Path) -> None:
         assert stale.read_bytes() == b"/store/live\x00"  # noqa: ASYNC240 -- test assertion
     finally:
         os.close(fd)
+
+
+def test_walk_labeled_roots_names_each_shape(tmp_path: Path) -> None:
+    """Links by kind and path, temp files by owner, processes as one `proc`.
+
+    A root is a label on a seed set: the report closes each one, so the
+    walk only names direct targets. The indirect link labels its
+    intermediate, like `walk_stable` attributes it, and the temp file
+    needs its living owner, like every other temp test.
+    """
+    state, proc, _auto, paths = _layout(tmp_path)
+    content = f"{paths['b']}\x00{paths['d']}\x00".encode()
+    with live_temp_root(state, "999", content):
+        labeled = walk_labeled_roots(state, str(tmp_path / "store"), proc)
+
+    by_label = {label: seeds for label, seeds in labeled}
+    assert by_label["gcroot:gcroots/auto/direct"] == {paths["a"]}
+    assert by_label["gcroot:gcroots/auto/sub/nested"] == {paths["b"]}
+    assert by_label["gcroot:gcroots/auto/rel-target"] == {paths["c"]}
+    assert by_label["profile:profiles/profile"] == {paths["a"]}
+    assert by_label["temproot:999"] == {paths["b"], paths["d"]}
+    assert {f"{paths['c']}-prog", paths["a"]} <= by_label["proc"]

@@ -14,6 +14,7 @@ from . import (
     nar_from_path,  # noqa: F401
     optimise_store,  # noqa: F401
     pynixd_collect_garbage,  # noqa: F401
+    pynixd_roots_report,  # noqa: F401
     set_options,  # noqa: F401
     sign_path_info,  # noqa: F401
     verify_store,  # noqa: F401

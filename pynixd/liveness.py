@@ -194,6 +194,48 @@ def _walk_runtime_roots(proc_dir: Path, roots: set[str], store_dir: str) -> None
             roots.add(content)
 
 
+def _walk_temp_roots_grouped(state_dir: Path) -> tuple[dict[str, set[str]], int]:
+    """Temporary roots by owning file, plus the files reaped.
+
+    The same walk as `_walk_temp_roots`, kept per file: one file is one
+    process's roots, which is the unit the storage report attributes.
+    Files that seed nothing hold no live paths and are left out.
+    """
+    try:
+        entries = list(os.scandir(state_dir / "temproots"))
+    except OSError as exc:
+        if _suppressed(exc):
+            return {}, 0
+        raise
+    grouped: dict[str, set[str]] = {}
+    reaped = 0
+    for entry in entries:
+        if entry.name.startswith(".") or not entry.is_file(follow_symlinks=False):
+            continue
+        try:
+            int(entry.name)
+        except ValueError:
+            continue
+        try:
+            fd = os.open(entry.path, os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW)
+        except OSError as exc:
+            if exc.errno == errno.ELOOP or _suppressed(exc):
+                # Swapped for a link, or gone, between the listing and the
+                # open: nothing here to attribute or reap.
+                continue
+            raise
+        try:
+            seeds: set[str] = set()
+            if _seed_or_reap_temp_file(fd, entry.path, seeds):
+                reaped += 1
+            elif seeds:
+                grouped[entry.name] = seeds
+        finally:
+            os.close(fd)
+    GC_TEMPROOTS_REAPED.inc(reaped)
+    return grouped, reaped
+
+
 def _walk_temp_roots(state_dir: Path, roots: set[str]) -> int:
     """Every path named by the temporary roots files, reaping the stale ones.
 
@@ -216,34 +258,9 @@ def _walk_temp_roots(state_dir: Path, roots: set[str]) -> int:
     and names no process file carries -- are left alone. Nix itself throws
     on those; the mirror neither seeds nor reaps what it cannot attribute.
     """
-    try:
-        entries = list(os.scandir(state_dir / "temproots"))
-    except OSError as exc:
-        if _suppressed(exc):
-            return 0
-        raise
-    reaped = 0
-    for entry in entries:
-        if entry.name.startswith(".") or not entry.is_file(follow_symlinks=False):
-            continue
-        try:
-            int(entry.name)
-        except ValueError:
-            continue
-        try:
-            fd = os.open(entry.path, os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW)
-        except OSError as exc:
-            if exc.errno == errno.ELOOP or _suppressed(exc):
-                # Swapped for a link, or gone, between the listing and the
-                # open: nothing here to attribute or reap.
-                continue
-            raise
-        try:
-            if _seed_or_reap_temp_file(fd, entry.path, roots):
-                reaped += 1
-        finally:
-            os.close(fd)
-    GC_TEMPROOTS_REAPED.inc(reaped)
+    grouped, reaped = _walk_temp_roots_grouped(state_dir)
+    for seeds in grouped.values():
+        roots.update(seeds)
     return reaped
 
 
@@ -318,6 +335,34 @@ def walk_volatile(state_dir: Path, store_dir: str, proc_dir: Path | None = None)
     _walk_temp_roots(state_dir, targets)
     prefix = store_dir + "/"
     return {target for target in targets if target.startswith(prefix)}
+
+
+def walk_labeled_roots(state_dir: Path, store_dir: str, proc_dir: Path | None = None) -> list[tuple[str, set[str]]]:
+    """Every root with its name: stable links, temp files, and `proc` as one.
+
+    A root here is a label and the store paths it names directly; the
+    storage report closes each one over references. Stable links label by
+    kind and path under the state dir, a temp file labels by its name --
+    its owner's pid -- and every process seed shares the `proc` label,
+    because per-pid process roots would flap with every fork. A root is
+    practically a pointer to store paths; the labels only say which
+    pointer each seed set came from.
+    """
+    labeled: list[tuple[str, set[str]]] = []
+    for link, (target, kind) in walk_stable(state_dir, store_dir).items():
+        labeled.append((f"{kind}:{Path(link).relative_to(state_dir)}", {target}))
+    prefix = store_dir + "/"
+    grouped, _reaped = _walk_temp_roots_grouped(state_dir)
+    for name, seeds in grouped.items():
+        kept = {seed for seed in seeds if seed.startswith(prefix)}
+        if kept:
+            labeled.append((f"temproot:{name}", kept))
+    targets: set[str] = set()
+    _walk_runtime_roots(proc_dir if proc_dir is not None else Path("/proc"), targets, store_dir)
+    proc = {target for target in targets if target.startswith(prefix)}
+    if proc:
+        labeled.append(("proc", proc))
+    return labeled
 
 
 QUERY_LIVE_SET = f"""

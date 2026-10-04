@@ -11,6 +11,11 @@ from .pynixd_collect_garbage import (
     PynixdCollectGarbageRequest as PynixdCollectGarbageRequest,
     PynixdCollectGarbageResponse as PynixdCollectGarbageResponse,
 )
+from .pynixd_roots_report import (
+    PynixdRootsReportRequest as PynixdRootsReportRequest,
+    PynixdRootsReportResponse as PynixdRootsReportResponse,
+    RootsReportRow as RootsReportRow,
+)
 from .query_closure import QueryClosureRequest as QueryClosureRequest, QueryClosureResponse as QueryClosureResponse
 from .query_closure_with_info import (
     QueryClosureWithInfoRequest as QueryClosureWithInfoRequest,

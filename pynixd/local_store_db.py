@@ -31,6 +31,7 @@ import os
 import sqlite3
 import time
 from contextlib import asynccontextmanager, suppress
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Self
 
@@ -125,6 +126,47 @@ PRUNE_PATH_ACCESS = f"""
 DELETE FROM {PATH_ACCESS_TABLE}
 WHERE path NOT IN (SELECT path FROM ValidPaths)
 """
+
+# One root's closure over the same edges the liveness query walks:
+# references, derivers, and deriver references. The parameter is a JSON
+# array of seed paths, and the report runs it once per distinct seed set.
+_ROOT_CLOSURE_OF_SEEDS = """
+    WITH RECURSIVE closure(id) AS (
+        SELECT vp.id FROM ValidPaths vp WHERE vp.path IN (SELECT value FROM json_each(?))
+        UNION
+        SELECT r.reference FROM closure c JOIN Refs r ON c.id = r.referrer
+        UNION
+        SELECT deriver_vp.id FROM closure c
+        JOIN ValidPaths current_vp ON c.id = current_vp.id
+        JOIN ValidPaths deriver_vp ON current_vp.deriver = deriver_vp.path
+        WHERE current_vp.deriver IS NOT NULL
+        UNION
+        SELECT r.reference FROM closure c
+        JOIN ValidPaths current_vp ON c.id = current_vp.id
+        JOIN ValidPaths deriver_vp ON current_vp.deriver = deriver_vp.path
+        JOIN Refs r ON deriver_vp.id = r.referrer
+        WHERE current_vp.deriver IS NOT NULL
+    )
+    SELECT id FROM closure
+"""
+
+
+@dataclass(frozen=True)
+class RootAttribution:
+    """One root's storage: full and exclusive path counts and bytes.
+
+    Full counts everything the root keeps alive, shared or not;
+    exclusive counts what no other root reaches. Both close over the
+    same edges the liveness query walks, so the report reconciles with
+    collection decisions instead of telling a second story.
+    """
+
+    label: str
+    full_paths: int
+    full_bytes: int
+    exclusive_paths: int
+    exclusive_bytes: int
+
 
 INSERT_BUILD_STATS = f"""
 INSERT OR REPLACE INTO {DERIVATION_STATS_TABLE}
@@ -534,6 +576,75 @@ class LocalStoreDB:
             return {StorePath(r[0]) for r in rows}
         except aiosqlite.Error:
             log.debug("query_paths_not_referenced_since_failed", exc_info=True)
+            return None
+
+    async def query_roots_report(self, labeled: list[tuple[str, list[str]]]) -> list[RootAttribution] | None:
+        """Full and exclusive storage per labeled root, exact.
+
+        Labels sharing a seed set compute one closure; a path reachable
+        from exactly one label counts exclusive to it. The counting runs
+        through one integer counter per valid path in a temp table --
+        pairs would work but store an order of magnitude more -- and the
+        table drops with the connection. Read-only throughout: the temp
+        schema is the only thing written, and it never leaves the session.
+        `None` when the database cannot answer.
+        """
+        if not self.active:
+            return None
+        groups: dict[tuple[str, ...], list[str]] = {}
+        for label, seeds in labeled:
+            key = tuple(sorted(set(seeds)))
+            if key:
+                groups.setdefault(key, []).append(label)
+        if not groups:
+            return []
+        try:
+            async with self.acquire_conn() as db:
+                try:
+                    await db.execute(
+                        "CREATE TEMP TABLE _pynixd_root_hits(id INTEGER PRIMARY KEY, n INTEGER NOT NULL DEFAULT 0)"
+                    )
+                    await db.execute("INSERT INTO _pynixd_root_hits(id) SELECT id FROM ValidPaths")
+                    full: dict[tuple[str, ...], tuple[int, int]] = {}
+                    for seeds in groups:
+                        params = (json.dumps(list(seeds)),)
+                        async with db.execute(
+                            f"SELECT COUNT(*), COALESCE(SUM(narSize), 0) FROM ValidPaths "
+                            f"WHERE id IN ({_ROOT_CLOSURE_OF_SEEDS})",
+                            params,
+                        ) as cursor:
+                            counts = await cursor.fetchone()
+                        full[seeds] = (int(counts[0]), int(counts[1])) if counts else (0, 0)
+                        await db.execute(
+                            f"UPDATE _pynixd_root_hits SET n = n + ? WHERE id IN ({_ROOT_CLOSURE_OF_SEEDS})",
+                            (len(groups[seeds]), json.dumps(list(seeds))),
+                        )
+                    report: list[RootAttribution] = []
+                    for seeds, labels in groups.items():
+                        async with db.execute(
+                            f"SELECT COUNT(*), COALESCE(SUM(v.narSize), 0) FROM ValidPaths v "
+                            f"JOIN _pynixd_root_hits h ON h.id = v.id "
+                            f"WHERE h.n = 1 AND v.id IN ({_ROOT_CLOSURE_OF_SEEDS})",
+                            (json.dumps(list(seeds)),),
+                        ) as cursor:
+                            counts = await cursor.fetchone()
+                        exclusive = (int(counts[0]), int(counts[1])) if counts else (0, 0)
+                        for label in labels:
+                            report.append(
+                                RootAttribution(
+                                    label=label,
+                                    full_paths=full[seeds][0],
+                                    full_bytes=full[seeds][1],
+                                    exclusive_paths=exclusive[0],
+                                    exclusive_bytes=exclusive[1],
+                                )
+                            )
+                    return report
+                finally:
+                    with suppress(Exception):
+                        await db.execute("DROP TABLE _pynixd_root_hits")
+        except aiosqlite.Error:
+            log.debug("query_roots_report_failed", exc_info=True)
             return None
 
     async def query_referrer_closure(self, paths: Iterable[str]) -> set[str] | None:
