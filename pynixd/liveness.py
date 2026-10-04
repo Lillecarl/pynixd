@@ -76,21 +76,28 @@ def _readlink(path: Path) -> Path | None:
 def _walk_link(link: Path, target: Path, found: dict[str, tuple[str, str]], kind: str, store_dir: str) -> None:
     """One symlink: a root when it names the store, else one indirection.
 
-    Stale links simply name nothing: Nix unlinks a stale link under
-    `gcroots/auto` here, and the mirror never mutates the roots it reads.
-    `found` maps the link to `(target, kind)`.
+    Nix resolves every target outside the store the same way (`gc.cc:262`),
+    absolute or relative: made absolute against the link, and when that names
+    a link into the store the store path is the root, attributed to the
+    intermediate. The booted and current system links live through this arm --
+    `/run/booted-system` is absolute and outside the store, and the store path
+    behind it roots tens of thousands of paths. Stale links simply name
+    nothing: Nix unlinks a stale link under `gcroots/auto` here, and the
+    mirror never mutates the roots it reads.
+    `found` maps the link -- or the intermediate, for an indirect root --
+    to `(target, kind)`.
     """
-    if target.is_absolute():
-        if str(target).startswith(store_dir + "/"):
-            found[str(link)] = (str(target), kind)
+    if target.is_absolute() and str(target).startswith(store_dir + "/"):
+        found[str(link)] = (str(target), kind)
         return
-    resolved = link.parent / target
+    resolved = target if target.is_absolute() else link.parent / target
     if not resolved.exists():
         return
-    if resolved.is_symlink():
-        second = _readlink(resolved)
-        if second is not None and second.is_absolute() and str(second).startswith(store_dir + "/"):
-            found[str(link)] = (str(second), kind)
+    if not resolved.is_symlink():
+        return
+    second = _readlink(resolved)
+    if second is not None and second.is_absolute() and str(second).startswith(store_dir + "/"):
+        found[str(resolved)] = (str(second), kind)
 
 
 def _walk_tree(tree: Path, found: dict[str, tuple[str, str]], kind: str, store_dir: str) -> None:

@@ -113,14 +113,38 @@ def test_stable_walk_names_every_link_shape(tmp_path: Path) -> None:
     assert found == {
         str(auto / "direct"): (paths["a"], "gcroot"),
         str(auto / "sub" / "nested"): (paths["b"], "gcroot"),
-        # Both the link the deployment made and the intermediate it
-        # resolves through: retargeting either changes a row, which is the
-        # signal the refresh diffs on. Nix attributes the root to the
-        # intermediate only; the live sets agree either way, and that
-        # agreement is what the differential test asserts.
-        str(auto / "indirect"): (paths["c"], "gcroot"),
+        # The intermediate only: Nix attributes an indirect root to the
+        # link it resolved through (`gc.cc:275`), not to the link that
+        # named it. Retargeting either still changes a row, which is the
+        # signal the refresh diffs on.
         str(auto / "rel-target"): (paths["c"], "gcroot"),
         str(state / "profiles" / "profile"): (paths["a"], "profile"),
+    }
+
+
+def test_stable_walk_follows_an_absolute_link_outside_the_store(tmp_path: Path) -> None:
+    """`/run/booted-system` is absolute and outside the store, and Nix follows it.
+
+    `gc.cc:262` resolves every target outside the store against the link,
+    absolute or relative. Only a relative target took that path here, so
+    the booted and current system links rooted nothing and the production
+    mirror diverged by tens of thousands of paths.
+
+    Perturbation: restore the early return for absolute targets and this fails.
+    """
+    state = tmp_path / "state"
+    (state / "gcroots" / "auto").mkdir(parents=True)
+    outside = tmp_path / "run"
+    outside.mkdir()
+    store = tmp_path / "store"
+    store.mkdir()
+    target = store / f"{HASH_A}-sys"
+    target.write_text("x")  # noqa: ASYNC240 -- test setup
+    (outside / "booted-system").symlink_to(target)
+    (state / "gcroots" / "auto" / "sys").symlink_to(outside / "booted-system")
+
+    assert walk_stable(state, str(store)) == {
+        str(outside / "booted-system"): (str(target), "gcroot"),
     }
 
 
@@ -187,7 +211,9 @@ def test_refresh_roots_reports_dirtiness(tmp_path: Path) -> None:
     (auto / "direct").unlink()
     assert refresh_roots(db, walk_stable(state, str(tmp_path / "store"))) is True
     with closing(sqlite3.connect(db)) as conn:
-        assert conn.execute(f"SELECT COUNT(*) FROM {LIVENESS_ROOT_TABLE}").fetchone()[0] == 4
+        # Three, not four: the indirect link folds into its intermediate's
+        # row, so `direct`, `nested` and the profile remain.
+        assert conn.execute(f"SELECT COUNT(*) FROM {LIVENESS_ROOT_TABLE}").fetchone()[0] == 3
 
 
 def test_snapshot_round_trips_and_replaces(tmp_path: Path) -> None:
