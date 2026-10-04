@@ -36,11 +36,12 @@ import re
 import sqlite3
 import time
 from contextlib import closing
+from dataclasses import dataclass
 from pathlib import Path
 
 import structlog
 
-from pynixd.db_migrations import LIVENESS_ROOT_TABLE, LIVENESS_TABLE
+from pynixd.db_migrations import LIVENESS_ROOT_TABLE, LIVENESS_STREAK_TABLE, LIVENESS_TABLE
 
 log = structlog.get_logger(__name__)
 
@@ -392,3 +393,62 @@ class RootsTracker:
         mine = set(self.live)
         theirs = set(nix_live)
         return (mine - theirs, theirs - mine)
+
+
+@dataclass(frozen=True)
+class Streak:
+    """Consecutive liveness agreements, as the last check filed them."""
+
+    agreements: int
+    divergences: int
+    checks: int
+    live: int
+    updated_at: int
+
+
+_RECORD_STREAK = f"""
+INSERT INTO {LIVENESS_STREAK_TABLE} (id, agreements, divergences, checks, live, updatedAt)
+VALUES (1, ?, ?, 1, ?, unixepoch())
+ON CONFLICT (id) DO UPDATE SET
+    agreements = CASE WHEN ? THEN {LIVENESS_STREAK_TABLE}.agreements + 1 ELSE 0 END,
+    divergences = {LIVENESS_STREAK_TABLE}.divergences + CASE WHEN ? THEN 0 ELSE 1 END,
+    checks = {LIVENESS_STREAK_TABLE}.checks + 1,
+    live = excluded.live,
+    updatedAt = unixepoch()
+"""
+
+
+def read_streak(db_path: Path) -> Streak | None:
+    """The filed streak, or `None` when no check ever filed one."""
+    with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
+        row = conn.execute(
+            f"SELECT agreements, divergences, checks, live, updatedAt FROM {LIVENESS_STREAK_TABLE} WHERE id = 1"
+        ).fetchone()
+    if row is None:
+        return None
+    return Streak(
+        agreements=int(row[0]),
+        divergences=int(row[1]),
+        checks=int(row[2]),
+        live=int(row[3]),
+        updated_at=int(row[4]),
+    )
+
+
+def record_check(db_path: Path, agreed: bool, live: set[str]) -> Streak | None:
+    """File one check's verdict, and read back the streak it leaves.
+
+    Best-effort, and only ever touches the streak table: a streak the
+    database refuses must not fail a check whose differential already
+    answered. Returns `None` when nothing was filed.
+    """
+    if not db_path.exists():
+        return None
+    agreed_int = 1 if agreed else 0
+    try:
+        with closing(sqlite3.connect(db_path)) as conn, conn:
+            conn.execute(_RECORD_STREAK, (agreed_int, 1 - agreed_int, len(live), agreed_int, agreed_int))
+        return read_streak(db_path)
+    except (OSError, sqlite3.Error) as exc:
+        log.warning("gc_liveness_streak_unrecorded", error=str(exc))
+        return None

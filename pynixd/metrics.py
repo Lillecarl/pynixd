@@ -406,6 +406,14 @@ GC_LAST_SUCCESS = Gauge(
     "When a garbage collection pass last finished, in unix seconds",
 )
 
+# Consecutive liveness agreements the mirror filed. A divergence resets it
+# to zero, so the cutover gate reads one number: how many hourly checks in
+# a row agreed with Nix.
+GC_LIVENESS_STREAK = Gauge(
+    "pynixd_gc_liveness_streak_agreements",
+    "Consecutive liveness checks where the mirror agreed with Nix",
+)
+
 # --- HTTP binary cache ---
 
 # `route` is the pattern aiohttp matched, not the path the client asked for.

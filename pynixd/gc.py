@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import shutil
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import structlog
@@ -33,6 +34,7 @@ from nix_daemon_protocol import (
     StorePath,
 )
 
+from . import metrics
 from .daemon_extensions import (
     PynixdCollectGarbageResponse,
     PynixdGCAction,
@@ -40,7 +42,7 @@ from .daemon_extensions import (
     QueryPathInfosRequest,
 )
 from .exceptions import BackendError, GCNotPermittedError
-from .liveness import RootsTracker, walk_volatile
+from .liveness import RootsTracker, Streak, record_check, walk_volatile
 from .local_store_db import resolve_db_path
 from .store import is_http_binary_cache
 
@@ -551,9 +553,10 @@ class LivenessWatch:
 
     Each `check` refreshes the mirror in a worker thread -- the walks are
     sync filesystem reads and the closure is sqlite, so neither belongs on
-    the event loop -- asks Nix what is alive, and logs the differential.
-    Agreement is the gate: sustained empty differentials are what
-    `gc_allow_execute` waits on. Nothing here plans or deletes; the
+    the event loop -- asks Nix what is alive, logs the differential, and
+    files the verdict in the streak table. Agreement is the gate: sustained
+    empty differentials are what `gc_allow_execute` waits on, and the streak
+    is what "sustained" reads as. Nothing here plans or deletes; the
     expensive half is the question to Nix, which traces the roots under
     the garbage collector lock like any dry-run, and that is why the
     daemon runs this on `gc_liveness_interval`, not on the poll.
@@ -581,17 +584,30 @@ class LivenessWatch:
         return cls(RootsTracker(layout.state_dir, str(layout.store_dir), db_path), local)
 
     async def check(self) -> bool:
-        """Refresh the mirror, ask Nix, log the differential.
+        """Refresh the mirror, ask Nix, log the differential, file the streak.
 
         True when they agree. The journal carries both outcomes -- an
         agreement is the evidence, and a divergence names its samples --
-        so the cutover decision reads a log, not a dashboard.
+        so the cutover decision reads a log, not a dashboard. The streak
+        table carries the count across restarts.
         """
         live = await run_sync(self.tracker.refresh)
         theirs = await self._nix_live()
         only_mine, only_theirs = self.tracker.differential(theirs)
-        if not only_mine and not only_theirs:
-            log.info("gc_liveness_agreement", live=len(live))
+        agreed = not only_mine and not only_theirs
+        streak = self._record(agreed, live)
+        if streak is not None:
+            metrics.GC_LIVENESS_STREAK.set(streak.agreements)
+        if agreed:
+            if streak is None:
+                log.info("gc_liveness_agreement", live=len(live))
+            else:
+                log.info(
+                    "gc_liveness_agreement",
+                    live=len(live),
+                    streak=streak.agreements,
+                    checks=streak.checks,
+                )
             return True
         log.warning(
             "gc_liveness_divergence",
@@ -602,6 +618,17 @@ class LivenessWatch:
             nix_sample=sorted(only_theirs)[:10],
         )
         return False
+
+    def _record(self, agreed: bool, live: set[str]) -> Streak | None:
+        """File the verdict where the tracker keeps its database, if it has one.
+
+        A tracker without a database -- the unit stub -- still answers, it
+        just files nothing.
+        """
+        db_path = getattr(self.tracker, "db_path", None)
+        if db_path is None:
+            return None
+        return record_check(Path(db_path), agreed, live)
 
     async def _nix_live(self) -> set[str]:
         """What Nix calls alive: the same trace a dry-run pays for."""

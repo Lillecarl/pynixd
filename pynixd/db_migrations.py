@@ -83,6 +83,7 @@ DERIVATION_STATS_TABLE = f"{TABLE_PREFIX}DerivationStats"
 PATH_ACCESS_TABLE = f"{TABLE_PREFIX}PathAccess"
 LIVENESS_ROOT_TABLE = f"{TABLE_PREFIX}GCRoot"
 LIVENESS_TABLE = f"{TABLE_PREFIX}Live"
+LIVENESS_STREAK_TABLE = f"{TABLE_PREFIX}LivenessStreak"
 """When each store path was last named over the daemon protocol.
 
 The key is the path text, and not the `id` of `ValidPaths`. Nix gives a row
@@ -158,6 +159,27 @@ MIGRATIONS: tuple[Migration, ...] = (
             f"CREATE INDEX IF NOT EXISTS idx_pynixd_live_epoch ON {LIVENESS_TABLE}(epoch)",
         ),
         creates=(LIVENESS_ROOT_TABLE, LIVENESS_TABLE),
+    ),
+    Migration(
+        version=4,
+        name="liveness-streak",
+        statements=(
+            # One row, `id = 1`: consecutive agreements, total divergences,
+            # total checks, and the live-set size and time of the last one.
+            # "Sustained" is this row, not a feeling about the logs: the
+            # cutover decision reads `agreements` against the check
+            # interval. The live size beside it discounts agreement on an
+            # empty set, which a fresh store reaches trivially.
+            f"CREATE TABLE IF NOT EXISTS {LIVENESS_STREAK_TABLE} ("
+            "id INTEGER PRIMARY KEY CHECK (id = 1), "
+            "agreements INTEGER NOT NULL, "
+            "divergences INTEGER NOT NULL, "
+            "checks INTEGER NOT NULL, "
+            "live INTEGER NOT NULL, "
+            "updatedAt INTEGER NOT NULL"
+            ")",
+        ),
+        creates=(LIVENESS_STREAK_TABLE,),
     ),
 )
 
