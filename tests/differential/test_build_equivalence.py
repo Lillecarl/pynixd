@@ -83,6 +83,29 @@ _BASE_NIX_CONFIG = {
 }
 
 
+def _case_params() -> list[Any]:
+    """One pytest parameter per corpus case, with the known oracle gaps marked.
+
+    The oracle cannot carry bytes it refuses to decode yet: its log pump
+    strict-decodes record fields, so a binary log crashes the Nix arm while
+    the pynixd arm succeeds. `strict`, so the mark goes away with the
+    correction and does not hide it. Issue Lillecarl/nanopynix#312.
+    """
+    params: list[Any] = []
+    for case in (*CORPUS, *CA_CORPUS):
+        if case.name == "binary-log":
+            params.append(
+                pytest.param(
+                    case,
+                    marks=pytest.mark.xfail(strict=True, reason="issue Lillecarl/nanopynix#312"),
+                    id=case.name,
+                )
+            )
+        else:
+            params.append(case)
+    return params
+
+
 def _nix_config_env(case: Case) -> dict[str, str]:
     settings = dict(_BASE_NIX_CONFIG)
     if case.experimental_features:
@@ -268,7 +291,7 @@ def _assert_stores_agree(
     )
 
 
-@pytest.mark.parametrize("case", [*CORPUS, *CA_CORPUS], ids=lambda case: case.name)
+@pytest.mark.parametrize("case", _case_params(), ids=lambda case: case.name)
 async def test_both_engines_leave_the_same_store(case: Case, differential_roots: DifferentialRoots) -> None:
     """pynixd's goal engine and Nix's goal system agree on what they built.
 
@@ -291,7 +314,7 @@ async def test_both_engines_leave_the_same_store(case: Case, differential_roots:
     _assert_stores_agree(case, delta(before_a, after_a), delta(before_b, after_b))
 
 
-@pytest.mark.parametrize("case", [*CORPUS, *CA_CORPUS], ids=lambda case: case.name)
+@pytest.mark.parametrize("case", _case_params(), ids=lambda case: case.name)
 async def test_a_distributed_build_reassembles_the_same_store(
     case: Case,
     differential_roots: DifferentialRoots,

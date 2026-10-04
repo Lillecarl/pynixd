@@ -127,6 +127,20 @@ CORPUS: tuple[Case, ...] = (
         probes=("a failure one level down. The parent must not build, and neither store may hold either output."),
         expect_success=False,
     ),
+    Case(
+        name="binary-log",
+        # Four backslashes in this file are two in the expression (Python),
+        # which are one on the shell (Nix `"..."`), which the shell reads as
+        # octal. The bytes never reach the store -- only `$out` does -- so
+        # this case asks the engines to survive them, not to agree on them.
+        body='mk "diff-binary-log" "printf \'\\\\037\\\\213\\\\010not-utf8\\\\n\' >&2; echo done > $out"',
+        probes=(
+            "a builder that prints bytes no UTF-8 decoder accepts. Both "
+            "engines must build it and register the output; before the "
+            "lossless log codec, pynixd failed the build and held nothing. "
+            "Issue Lillecarl/pynixd#62."
+        ),
+    ),
 )
 
 

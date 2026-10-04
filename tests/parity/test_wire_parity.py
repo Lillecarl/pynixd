@@ -125,6 +125,22 @@ derivation {
 }
 """
 
+# A builder that prints bytes no UTF-8 decoder accepts. The log stream
+# carries them as opaque bytes: `nix-daemon` forwards them without looking,
+# and pynixd must do the same. Four backslashes in this file are two in the
+# expression (Python), which are one on the shell (Nix `"..."`), which the
+# shell reads as octal. Before the lossless codec, pynixd failed the whole
+# build with `internal scheduler error` on these bytes and registered no
+# outputs. Issue Lillecarl/pynixd#62.
+BINARY_LOG = """
+derivation {
+  name = "binary-log";
+  system = builtins.currentSystem;
+  builder = "/bin/sh";
+  args = [ "-c" "printf '\\\\037\\\\213\\\\010not-utf8\\\\n' >&2; echo done > $out" ];
+}
+"""
+
 # A build that fails. The two daemons must report the failure the same way.
 FAILS = """
 derivation {
@@ -413,6 +429,24 @@ async def _failure(run: Runner, root: Path, work: Path) -> None:
     await run([str(NIX), "build", "--impure", "--no-link", "--json", "--expr", FAILING_CHAIN])
 
 
+async def _binary_log(run: Runner, root: Path, work: Path) -> None:
+    """Build a derivation whose log carries non-UTF-8 bytes, twice.
+
+    The builder prints a gzip magic (`1f 8b 08`) of the kind that
+    `nixpkgs` emits while gzipping man pages. Both daemons must build it,
+    register the output so the second build is a no-op, and carry the bytes
+    on the wire. pynixd decoded the log stream as strict UTF-8, so it failed
+    the build with `internal scheduler error` and registered nothing, and
+    the recordings differed in the response. Issue Lillecarl/pynixd#62.
+    """
+    del root, work
+    for words in (
+        ["build", "--impure", "--no-link", "--json", "--expr", BINARY_LOG],
+        ["build", "--impure", "--no-link", "--json", "--expr", BINARY_LOG],
+    ):
+        await run([str(NIX), *words])
+
+
 async def _substitute(run: Runner, root: Path, work: Path) -> None:
     """Copy a build to a binary cache, delete it, and get it back.
 
@@ -573,8 +607,9 @@ async def clean_base() -> AsyncIterator[None]:
         # marker goes away with the correction and does not hide it.
         pytest.param(_substitute, marks=pytest.mark.xfail(strict=True, reason="issue Lillecarl/nanopynix#187")),
         _failure,
+        _binary_log,
     ],
-    ids=["builds", "queries", "modes", "impure", "substitute", "failure"],
+    ids=["builds", "queries", "modes", "impure", "substitute", "failure", "binary_log"],
 )
 @pytest.mark.usefixtures("clean_base")
 async def test_the_two_daemons_answer_the_same_bytes(workload: Workload) -> None:
