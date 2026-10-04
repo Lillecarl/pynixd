@@ -13,6 +13,9 @@ that was missing.
 `PynixdPathAccess` is the second half. `registrationTime` says "when this
 path entered the store", and `nix path-info --json` reports it as that, so
 one number cannot answer both questions afterwards. Issue Lillecarl/nanopynix#166.
+`registrationTime` is therefore read, never written, and freshness splits
+in two queues: runtime seeds expand over reference closures, derivation
+heads touch alone, so live outputs stop keeping build inputs fresh.
 """
 
 from __future__ import annotations
@@ -179,14 +182,20 @@ class TestFlushingTheReferences:
 
             assert set(await _access_times(db)) == {HELLO, LIBC}
 
-    async def test_the_registration_time_is_refreshed_as_well(self, tmp_path: Path) -> None:
-        """Both, and on purpose. `nix-collect-garbage` reads the Nix column."""
+    async def test_the_registration_time_is_never_written(self, tmp_path: Path) -> None:
+        """Nix's column is read, never written: entry age stays honest.
+
+        `nix path-info --json` reports `registrationTime` as the entry
+        age, and the staleness fallback reads it as exactly that. Bumping
+        it on every reference made both lie; the access table carries
+        witnessed time now, and this column keeps creation time.
+        """
         _store_with_a_closure(tmp_path)
         async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
             db.mark_path(HELLO)
             await db.flush_references()
 
-            assert all(t > 0 for t in (await _registration_times(db)).values())
+            assert all(t == 0 for t in (await _registration_times(db)).values())
 
     async def test_marking_nothing_writes_nothing(self, tmp_path: Path) -> None:
         _store_with_a_closure(tmp_path)
@@ -208,12 +217,43 @@ class TestFlushingTheReferences:
 
             assert all(t > 1 for t in (await _access_times(db)).values())
 
-    async def test_the_pending_set_is_emptied(self, tmp_path: Path) -> None:
+    async def test_both_queues_drain(self, tmp_path: Path) -> None:
         _store_with_a_closure(tmp_path)
         async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
             db.mark_paths([HELLO, LIBC])
             await db.flush_references()
-            assert db.pending_references == set()
+            assert db.pending_runtime == set()
+            assert db.pending_build == set()
+
+    async def test_a_derivation_marks_its_head_and_not_its_inputs(self, tmp_path: Path) -> None:
+        """Build-time references queue separately and expand nowhere.
+
+        The `.drv` path names its inputs by the data model; expanding the
+        closure here would refresh the whole build closure on every build
+        and keep build garbage fresh for ever. The head is genuinely in
+        use, so it is touched; its inputs age on their own evidence.
+
+        Perturbation: queue the derivation as runtime and DEP lands in the table.
+        """
+        drv = "/nix/store/00000000000000000000000000000001-x.drv"
+        dep = "/nix/store/00000000000000000000000000000002-dep"
+        db_path = tmp_path / "nix" / "var" / "nix" / "db" / "db.sqlite"
+        db_path.parent.mkdir(parents=True)
+        with closing(sqlite3.connect(db_path)) as conn, conn:
+            conn.execute(
+                "CREATE TABLE ValidPaths ("
+                "id INTEGER PRIMARY KEY, path TEXT UNIQUE NOT NULL, "
+                "deriver TEXT, registrationTime INTEGER)",
+            )
+            conn.execute("CREATE TABLE Refs (referrer INTEGER, reference INTEGER)")
+            conn.execute("INSERT INTO ValidPaths (id, path, registrationTime) VALUES (1, ?, 0)", (drv,))
+            conn.execute("INSERT INTO ValidPaths (id, path, registrationTime) VALUES (2, ?, 0)", (dep,))
+            conn.execute("INSERT INTO Refs (referrer, reference) VALUES (1, 2)")
+        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
+            db.mark_path(drv)
+            await db.flush_references()
+
+            assert set(await _access_times(db)) == {drv}
 
 
 @pytest.mark.anyio

@@ -4,9 +4,13 @@ Provides a connection pool for direct SQL queries against the local store DB.
 Operations that support fast-path SQL queries use ``store.db.acquire_conn()``
 directly rather than going through a dispatcher.
 
-Registration time updates are batched writes using Lix's recursive CTE
-that touches the full closure (references, derivers, deriver references)
-of each seed path.
+Reference updates are batched writes into pynixd's own access table, split
+in two queues. Runtime references touch the reference closure of each
+seed; derivations touch the head only, because a derivation's references
+are its build inputs, and expanding those on every build would keep
+build garbage fresh for ever. Nix's own tables are never written: not
+even `registrationTime`, which Nix writes once at registration and
+`nix path-info` reports as the entry age.
 
 If the database can't be opened (permissions, missing file, wrong schema),
 logs a warning and becomes unavailable — callers fall back to the daemon.
@@ -54,41 +58,35 @@ log = structlog.get_logger(__name__)
 
 # ── SQL constants ─────────────────────────────────────────────────────
 
-# Lix's UpdateRegistrationTimeRecursive — walks the full closure of each seed
-# path: its references, its deriver, and the references of that deriver. The
-# parameter is a JSON array of store paths.
-_CLOSURE_OF_SEEDS = """
+# The references of each seed, transitively, seeds included: runtime
+# edges only. Lix's UpdateRegistrationTimeRecursive also crosses into
+# derivers and their references; the touch must not follow, because a
+# derivation's references are its build inputs, and a live output would
+# otherwise keep its whole build closure fresh for ever. The parameter is
+# a JSON array of store paths.
+_REFERENCES_OF_SEEDS = """
     WITH RECURSIVE closure(id) AS (
         SELECT id FROM ValidPaths WHERE path IN (SELECT value FROM json_each(?))
         UNION
         SELECT r.reference
         FROM closure c JOIN Refs r ON c.id = r.referrer
-        UNION
-        SELECT deriver_vp.id
-        FROM closure c
-        JOIN ValidPaths current_vp ON c.id = current_vp.id
-        JOIN ValidPaths deriver_vp ON current_vp.deriver = deriver_vp.path
-        WHERE current_vp.deriver IS NOT NULL
-        UNION
-        SELECT r.reference
-        FROM closure c
-        JOIN ValidPaths current_vp ON c.id = current_vp.id
-        JOIN ValidPaths deriver_vp ON current_vp.deriver = deriver_vp.path
-        JOIN Refs r ON deriver_vp.id = r.referrer
-        WHERE current_vp.deriver IS NOT NULL
     )
     SELECT id FROM closure
 """
 
-UPDATE_REGTIME = f"""
-UPDATE ValidPaths
-SET registrationTime = unixepoch()
-WHERE id IN ({_CLOSURE_OF_SEEDS})
-"""
-
 TOUCH_PATH_ACCESS = f"""
 INSERT INTO {PATH_ACCESS_TABLE} (path, lastReferencedAt)
-SELECT path, unixepoch() FROM ValidPaths WHERE id IN ({_CLOSURE_OF_SEEDS})
+SELECT path, unixepoch() FROM ValidPaths WHERE id IN ({_REFERENCES_OF_SEEDS})
+ON CONFLICT (path) DO UPDATE SET lastReferencedAt = excluded.lastReferencedAt
+"""
+
+# The build queue: derivation heads, never expanded. A `.drv` path names
+# build-time references by the data model, so expanding here would re-pin
+# the build closure the split exists to release. The head itself is
+# genuinely in use, and touching it says exactly that.
+TOUCH_PATH_ACCESS_HEADS = f"""
+INSERT INTO {PATH_ACCESS_TABLE} (path, lastReferencedAt)
+SELECT path, unixepoch() FROM ValidPaths WHERE path IN (SELECT value FROM json_each(?))
 ON CONFLICT (path) DO UPDATE SET lastReferencedAt = excluded.lastReferencedAt
 """
 
@@ -282,13 +280,20 @@ class LocalStoreDB:
         self.read_only: bool = read_only
         self.reference_flush_interval = reference_flush_interval
 
-        self.pending_references: set[str] = set()
+        self.pending_runtime: set[str] = set()
+        self.pending_build: set[str] = set()
         """Full store paths that something referenced since the last flush.
 
-        Plain strings, because two `StorePath` classes reach this set and both
-        SQL statements want the text. `pynixd.store_path.StorePath` keeps the
-        path without the `/nix/store/` prefix and adds it back in `__str__`,
-        and the wire `StorePath` is a `str` of the whole path.
+        Two queues, split by what the path's references mean. A `.drv`
+        path names build-time references by the data model; every other
+        path names runtime references. The flush expands the runtime
+        queue over reference closures and touches the build queue heads
+        only, so a live output stops keeping its build closure fresh.
+
+        Plain strings, because two `StorePath` classes reach these sets
+        and both SQL statements want the text. `pynixd.store_path.StorePath`
+        keeps the path without the `/nix/store/` prefix and adds it back
+        in `__str__`, and the wire `StorePath` is a `str` of the whole path.
         """
 
         self.flush_task: asyncio.Task[None] | None = None
@@ -604,12 +609,24 @@ class LocalStoreDB:
     def mark_paths(self, paths: Iterable[StorePath | str]) -> None:
         """Note that something referenced each of `paths` just now.
 
-        The write happens later. `flush_loop` drains the set every few
+        Derivations queue as build heads, everything else as runtime
+        seeds: the suffix decides, not the operation, because the edge
+        kind is a property of the path. A missed `.drv` by suffix --
+        an output path ending in `.drv`, which Nix permits in theory --
+        touches its head only; it stays correct through the mirror, which
+        still calls it dead or alive on its own evidence.
+
+        The write happens later. `flush_loop` drains the queues every few
         seconds, so a burst of queries over one closure costs one statement
         and not one for each path.
         """
         if self.active and not self.read_only:
-            self.pending_references.update(str(path) for path in paths)
+            for path in paths:
+                text = str(path)
+                if text.endswith(".drv"):
+                    self.pending_build.add(text)
+                else:
+                    self.pending_runtime.add(text)
 
     async def record_build_stats(
         self,
@@ -675,40 +692,40 @@ class LocalStoreDB:
         return None
 
     async def flush_references(self) -> None:
-        """Write the pending reference times, over the closure of each path.
+        """Write the pending reference times into the access table.
 
-        Two places record the same moment, and both are wanted.
-
-        `ValidPaths.registrationTime` makes stock `nix-collect-garbage
-        --delete-older-than` collect by last use rather than by age, because
-        that command reads this column. pynixd needs no code for that, and
-        losing it would remove a feature from a program that is not pynixd.
-
-        `PynixdPathAccess` is the column that says what it means.
-        `registrationTime` claims to be when the path entered the store, and
-        `nix path-info --json` reports it as that, so one number cannot answer
-        both questions afterwards. Issue Lillecarl/nanopynix#166 has the whole argument.
+        Two queues, two statements, one table, no Nix column. The runtime
+        queue expands over reference closures; the build queue touches
+        heads only. `ValidPaths.registrationTime` is read, never written:
+        Nix writes it once at registration, stock `nix-collect-garbage
+        --delete-older-than` reads it as entry age, and pynixd needs no
+        code for either. `PynixdPathAccess` is the column that says what
+        pynixd saw, and it is the only column pynixd writes.
+        Issue Lillecarl/nanopynix#166 has the whole argument.
         """
         if not self.active or self.read_only:
             return
-        if not self.pending_references:
+        if not self.pending_runtime and not self.pending_build:
             return
 
-        paths = self.pending_references
-        self.pending_references = set()
+        runtime = self.pending_runtime
+        self.pending_runtime = set()
+        build = self.pending_build
+        self.pending_build = set()
 
         try:
             t0 = time.monotonic()
-            paths_json = json.dumps(sorted(paths))
             async with self.acquire_conn() as db:
-                await db.execute(UPDATE_REGTIME, (paths_json,))
-                if self.schema.usable:
-                    await db.execute(TOUCH_PATH_ACCESS, (paths_json,))
+                if runtime and self.schema.usable:
+                    await db.execute(TOUCH_PATH_ACCESS, (json.dumps(sorted(runtime)),))
+                if build and self.schema.usable:
+                    await db.execute(TOUCH_PATH_ACCESS_HEADS, (json.dumps(sorted(build)),))
                 await db.commit()
             elapsed = time.monotonic() - t0
             log.debug(
                 "db_flush_complete",
-                seed_count=len(paths),
+                runtime_seeds=len(runtime),
+                build_heads=len(build),
                 path_access=self.schema.usable,
                 elapsed_ms=elapsed * 1000,
             )
