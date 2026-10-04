@@ -22,6 +22,7 @@ import time
 from typing import TYPE_CHECKING
 
 import structlog
+from anyio.to_thread import run_sync
 
 from nix_daemon_protocol import (
     CollectGarbageRequest,
@@ -38,6 +39,8 @@ from .daemon_extensions import (
     QueryPathInfosRequest,
 )
 from .exceptions import BackendError, GCNotPermittedError
+from .liveness import RootsTracker
+from .local_store_db import resolve_db_path
 from .store import is_http_binary_cache
 
 if TYPE_CHECKING:
@@ -421,3 +424,66 @@ class Collector:
         except Exception:
             log.warning("gc_disk_usage_failed", exc_info=True)
             return None
+
+
+class LivenessWatch:
+    """The cutover evidence, gathered one slow pass at a time.
+
+    Each `check` refreshes the mirror in a worker thread -- the walks are
+    sync filesystem reads and the closure is sqlite, so neither belongs on
+    the event loop -- asks Nix what is alive, and logs the differential.
+    Agreement is the gate: sustained empty differentials are what
+    `gc_allow_execute` waits on. Nothing here plans or deletes; the
+    expensive half is the question to Nix, which traces the roots under
+    the garbage collector lock like any dry-run, and that is why the
+    daemon runs this on `gc_liveness_interval`, not on the poll.
+    """
+
+    def __init__(self, tracker: RootsTracker, local: Store) -> None:
+        self.tracker = tracker
+        self.local = local
+
+    @classmethod
+    def from_local(cls, local: Store) -> LivenessWatch | None:
+        """A watch over *local*, or `None` when it cannot host a mirror.
+
+        The mirror lives in the store's own database beside Nix's tables,
+        and reads the store's own roots directories: without a layout there
+        is neither. `None` is not an error -- a store served without its
+        state simply gathers no evidence.
+        """
+        layout = getattr(local, "layout", None)
+        if layout is None:
+            return None
+        db_path = resolve_db_path(layout)
+        if db_path is None:
+            return None
+        return cls(RootsTracker(layout.state_dir, str(layout.store_dir), db_path), local)
+
+    async def check(self) -> bool:
+        """Refresh the mirror, ask Nix, log the differential.
+
+        True when they agree. The journal carries both outcomes -- an
+        agreement is the evidence, and a divergence names its samples --
+        so the cutover decision reads a log, not a dashboard.
+        """
+        live = await run_sync(self.tracker.refresh)
+        theirs = await self._nix_live()
+        only_mine, only_theirs = self.tracker.differential(theirs)
+        if not only_mine and not only_theirs:
+            log.info("gc_liveness_agreement", live=len(live))
+            return True
+        log.warning(
+            "gc_liveness_divergence",
+            live=len(live),
+            only_tracker=len(only_mine),
+            only_nix=len(only_theirs),
+            tracker_sample=sorted(only_mine)[:10],
+            nix_sample=sorted(only_theirs)[:10],
+        )
+        return False
+
+    async def _nix_live(self) -> set[str]:
+        """What Nix calls alive: the same trace a dry-run pays for."""
+        resp = await self.local.call(_request(GCAction.RETURN_LIVE, set()))
+        return {str(path) for path in resp.paths_deleted}

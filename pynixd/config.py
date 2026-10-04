@@ -667,6 +667,17 @@ class PynixdSettings(BaseSettings):
     gap is the hysteresis. Without a target the triggered pass is
     unbounded, like the scheduled one.
     """
+    gc_liveness_interval: float | None = None
+    """Seconds between liveness differential checks. `None` gathers no evidence.
+
+    Each check refreshes the mirror -- cheap, no locks -- and asks Nix what
+    is alive, which traces the roots under the garbage collector lock like a
+    dry-run. One trace per interval buys one agreement data point, logged as
+    `gc_liveness_agreement` or `gc_liveness_divergence`, and sustained
+    agreement is what `gc_allow_execute` on the store waits on. Off by
+    default: a trace an operator did not ask for is a stall they did not
+    agree to.
+    """
 
     # Scheduling & Telemetry
     schedule_mode: ScheduleMode = ScheduleMode.auto

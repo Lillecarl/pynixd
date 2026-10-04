@@ -47,6 +47,16 @@ log = structlog.get_logger(__name__)
 _STORE_BASENAME = re.compile(r"^[0-9a-z]{32}-")
 _MAPS_PATH = re.compile(r"^\s*\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+(/\S+)\s*$")
 
+STABLE_TREES = {"gcroots": "gcroot", "profiles": "profile"}
+"""The stable root trees under the state dir, and the kind each names.
+
+Both, because Nix scans both itself: `findRootsNoTemp` reads `gcroots`
+and `profiles` (`gc.cc:309`), and no profile path reaches the collector
+through `gcroots/auto` -- `addIndirectRoot` serves `--add-root
+--indirect`, not profiles. A watcher that misses either tree goes blind
+on exactly the deployments that move liveness, so the walk and the watch
+below read this one constant and cannot disagree about it."""
+
 
 def _suppressed(error: OSError) -> bool:
     """The failures Nix walks past while finding roots (`gc.cc`)."""
@@ -201,8 +211,8 @@ def walk_stable(state_dir: Path, store_dir: str) -> dict[str, tuple[str, str]]:
     `findRoots` parses it against the store directory rather than the link.
     """
     found: dict[str, tuple[str, str]] = {}
-    _walk_tree(state_dir / "gcroots", found, "gcroot", store_dir)
-    _walk_tree(state_dir / "profiles", found, "profile", store_dir)
+    for name, kind in STABLE_TREES.items():
+        _walk_tree(state_dir / name, found, kind, store_dir)
     return found
 
 

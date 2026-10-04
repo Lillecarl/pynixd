@@ -22,8 +22,9 @@ from . import _optional, metrics, wire
 from .config import ExternalUnixStoreSpec, HTTPBinaryCacheSpec, LocalSocketStoreSpec, PynixdSettings
 from .context import PynixdContext
 from .exceptions import GCNotPermittedError
-from .gc import Collector
+from .gc import Collector, LivenessWatch
 from .health import HealthReport, LoopLagMonitor, StallWatchdog
+from .liveness_watch import DirtyFlag, StableRootsWatch
 from .scheduler import Scheduler
 from .serde.protocol import PynixdGCAction
 from .store import DaemonStore, ExternalUnixStore, LocalDBStore, LocalStore, Store, is_http_binary_cache
@@ -401,6 +402,27 @@ class Server:
         finally:
             metrics.GC_CYCLE_DURATION.observe(time.monotonic() - started)
 
+    async def _liveness_tick(self, watch: LivenessWatch, interval: float, dirty: DirtyFlag) -> None:
+        """Refresh the mirror and compare it against Nix, promptly and slowly.
+
+        The watch wakes this as soon as a stable link moves; the interval
+        is the backstop that also catches whatever inotify missed, because
+        the check re-walks everything either way. A flapping link traces
+        repeatedly, one trace per flap -- deployments do not flap, and the
+        churn under `temproots/` is unwatched.
+        """
+        log.info("gc_liveness_watch_started", interval=interval)
+        while True:
+            with anyio.move_on_after(interval):
+                await dirty.wait()
+            dirty.clear()
+            try:
+                await watch.check()
+            except anyio.get_cancelled_exc_class():
+                raise
+            except Exception:
+                log.exception("gc_liveness_check_failed")
+
     @property
     def host(self) -> str:
         """SSH bind host for remote connections."""
@@ -534,6 +556,18 @@ class Server:
 
         if self.ctx.db and self.ctx.settings.gc_enabled:
             self.background_tasks.append(asyncio.create_task(self._gc_tick()))
+            liveness_interval = self.ctx.settings.gc_liveness_interval
+            if liveness_interval is not None:
+                watch = LivenessWatch.from_local(self.ctx.local_store)
+                if watch is None:
+                    log.warning("gc_liveness_watch_unavailable")
+                else:
+                    dirty = DirtyFlag()
+                    roots = StableRootsWatch(watch.tracker.state_dir)
+                    self.background_tasks.append(asyncio.create_task(roots.run(dirty)))
+                    self.background_tasks.append(
+                        asyncio.create_task(self._liveness_tick(watch, liveness_interval, dirty))
+                    )
 
         # Before the listeners, so a stall during their startup is recorded.
         if self.stall_watchdog is not None:
