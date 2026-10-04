@@ -65,7 +65,11 @@ def _layout(root: Path) -> tuple[Path, Path, Path, dict[str, str]]:
     (auto / "indirect").symlink_to("rel-target")
     (auto / "rel-target").symlink_to(paths["c"])
     (state / "profiles" / "profile").symlink_to(paths["a"])
-    (state / "temproots" / "999").write_text(f"{paths['b']}\nnot-a-path\n")  # noqa: ASYNC240 -- test setup
+    # NUL-separated, the way Nix writes them (`gc.cc:163`): one file holds
+    # two roots, and newlines never appear.
+    (state / "temproots" / "999").write_bytes(  # noqa: ASYNC240 -- test setup
+        f"{paths['b']}\x00{paths['d']}\x00not-a-path\x00".encode()
+    )
 
     pid = proc / "123"
     (pid / "exe").symlink_to(f"{paths['c']}-prog")
@@ -149,12 +153,18 @@ def test_stable_walk_follows_an_absolute_link_outside_the_store(tmp_path: Path) 
 
 
 def test_volatile_walk_reads_processes_and_temp_roots(tmp_path: Path) -> None:
+    """Processes, mappings, environments -- and both NUL-separated temp roots.
+
+    One temp file holds two paths; a line splitter sees one blob and seeds
+    neither. Perturbation: split the temp file on lines and `d` leaves this set.
+    """
     state, proc, _auto, paths = _layout(tmp_path)
 
     assert walk_volatile(state, str(tmp_path / "store"), proc) == {
         f"{paths['c']}-prog",
         paths["a"],
         paths["b"],
+        paths["d"],
         f"{paths['a']}-env",
         f"{paths['c']}-modprobe",
     }

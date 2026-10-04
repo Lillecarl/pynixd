@@ -185,7 +185,8 @@ def _texts(resp: Any) -> list[str]:
 async def test_a_fresh_temproot_vetoes_its_path(tmp_path: Path) -> None:
     """A living root read just now spares its path, and says so on the wire."""
     collector, local, state_dir = _collector(tmp_path)
-    (state_dir / "temproots" / "99").write_text(f"{A}\n")  # noqa: ASYNC240 -- the event under test
+    # NUL-terminated, the way Nix writes temp files (`gc.cc:163`).
+    (state_dir / "temproots" / "99").write_bytes(f"{A}\x00".encode())  # noqa: ASYNC240 -- the event under test
 
     resp = await collector.run(PynixdGCAction.DRY_RUN)
 
@@ -198,7 +199,8 @@ async def test_a_fresh_temproot_vetoes_its_path(tmp_path: Path) -> None:
 async def test_an_unanswerable_closure_falls_back_to_the_seeds(tmp_path: Path) -> None:
     """No closure feature still spares the roots themselves, never nothing."""
     collector, local, state_dir = _collector(tmp_path, answers_closure=False)
-    (state_dir / "temproots" / "99").write_text(f"{A}\n")  # noqa: ASYNC240 -- the event under test
+    # NUL-terminated, the way Nix writes temp files (`gc.cc:163`).
+    (state_dir / "temproots" / "99").write_bytes(f"{A}\x00".encode())  # noqa: ASYNC240 -- the event under test
 
     resp = await collector.run(PynixdGCAction.DRY_RUN)
 

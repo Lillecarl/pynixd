@@ -191,7 +191,14 @@ def _walk_runtime_roots(proc_dir: Path, roots: set[str], store_dir: str) -> None
 
 
 def _walk_temp_roots(state_dir: Path, roots: set[str]) -> None:
-    """Every path named by the temporary roots files."""
+    """Every path named by the temporary roots files.
+
+    One file per process, its held paths NUL-separated (`gc.cc:163`).
+    Nix unlinks a dead owner's file while reading the directory
+    (`gc.cc:209`); the mirror never mutates the roots it reads, so that
+    file still seeds until Nix's own pass removes it. That errs toward
+    keeping, which is the safe direction for a set collected by complement.
+    """
     try:
         entries = list(os.scandir(state_dir / "temproots"))
     except OSError as exc:
@@ -202,12 +209,12 @@ def _walk_temp_roots(state_dir: Path, roots: set[str]) -> None:
         if entry.name.startswith(".") or not entry.is_file(follow_symlinks=False):
             continue
         try:
-            lines = Path(entry.path).read_text(errors="replace").splitlines()
+            content = Path(entry.path).read_bytes()
         except OSError as exc:
             if _suppressed(exc):
                 continue
             raise
-        roots.update(line.strip() for line in lines if line.strip())
+        roots.update(part.decode(errors="replace") for part in content.split(b"\x00") if part.strip())
 
 
 def walk_stable(state_dir: Path, store_dir: str) -> dict[str, tuple[str, str]]:
