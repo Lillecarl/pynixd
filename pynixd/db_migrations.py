@@ -81,6 +81,8 @@ class Migration:
 DERIVATION_STATS_TABLE = f"{TABLE_PREFIX}DerivationStats"
 
 PATH_ACCESS_TABLE = f"{TABLE_PREFIX}PathAccess"
+LIVENESS_ROOT_TABLE = f"{TABLE_PREFIX}GCRoot"
+LIVENESS_TABLE = f"{TABLE_PREFIX}Live"
 """When each store path was last named over the daemon protocol.
 
 The key is the path text, and not the `id` of `ValidPaths`. Nix gives a row
@@ -131,6 +133,31 @@ MIGRATIONS: tuple[Migration, ...] = (
             f"CREATE INDEX IF NOT EXISTS idx_pynixd_path_access_time ON {PATH_ACCESS_TABLE}(lastReferencedAt)",
         ),
         creates=(PATH_ACCESS_TABLE,),
+    ),
+    Migration(
+        version=3,
+        name="liveness",
+        statements=(
+            # The roots Nix would trace, as the mirror last saw them. `link`
+            # is the filesystem link for stable roots; volatile roots
+            # (`proc`, `temp`) never land here -- they join the closure
+            # query as a parameter, because they change every pass and
+            # writing them would churn the table for no reader.
+            f"CREATE TABLE IF NOT EXISTS {LIVENESS_ROOT_TABLE} ("
+            "link TEXT PRIMARY KEY, "
+            "target TEXT NOT NULL, "
+            "kind TEXT NOT NULL"
+            ")",
+            f"CREATE INDEX IF NOT EXISTS idx_pynixd_gcroot_kind ON {LIVENESS_ROOT_TABLE}(kind)",
+            # The live set, whole per epoch. Readers take the newest epoch
+            # only; a pass that dies mid-write leaves rows no reader sees,
+            # and the next pass's prune removes them. Dead is the
+            # complement against `ValidPaths`, so no dead row is ever
+            # stored at all.
+            f"CREATE TABLE IF NOT EXISTS {LIVENESS_TABLE} (path TEXT PRIMARY KEY, epoch INTEGER NOT NULL)",
+            f"CREATE INDEX IF NOT EXISTS idx_pynixd_live_epoch ON {LIVENESS_TABLE}(epoch)",
+        ),
+        creates=(LIVENESS_ROOT_TABLE, LIVENESS_TABLE),
     ),
 )
 
