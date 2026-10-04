@@ -548,6 +548,16 @@ class Collector:
             return None
 
 
+def _trace_due(last_check: float, now: float, interval: float) -> bool:
+    """A Nix trace is due when the last one is older than the interval.
+
+    Refreshes run on every wake and cost nothing; traces hold the garbage
+    collector lock for minutes, so they run at most this often no matter
+    how the links flap.
+    """
+    return now - last_check >= interval
+
+
 class LivenessWatch:
     """The cutover evidence, gathered one slow pass at a time.
 
@@ -583,6 +593,17 @@ class LivenessWatch:
             return None
         return cls(RootsTracker(layout.state_dir, str(layout.store_dir), db_path), local)
 
+    async def refresh(self) -> set[str]:
+        """Refresh the mirror without asking Nix anything.
+
+        Walks plus sqlite: no locks, no trace, seconds at most. The tick
+        runs this on every wake, so the roots table and the live snapshot
+        stay current even when traces are rare. The planner will read from
+        this instead of tracing when the mirror is proven; until then it is
+        what the traces compare against.
+        """
+        return await run_sync(self.tracker.refresh)
+
     async def check(self) -> bool:
         """Refresh the mirror, ask Nix, log the differential, file the streak.
 
@@ -591,7 +612,7 @@ class LivenessWatch:
         so the cutover decision reads a log, not a dashboard. The streak
         table carries the count across restarts.
         """
-        live = await run_sync(self.tracker.refresh)
+        live = await self.refresh()
         theirs = await self._nix_live()
         only_mine, only_theirs = self.tracker.differential(theirs)
         agreed = not only_mine and not only_theirs

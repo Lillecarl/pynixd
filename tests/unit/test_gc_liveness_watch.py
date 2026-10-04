@@ -21,7 +21,7 @@ import pytest
 from nix_daemon_protocol import GCAction
 from nix_daemon_protocol.store_path import StorePath
 from pynixd.db_migrations import apply_migrations
-from pynixd.gc import LivenessWatch
+from pynixd.gc import LivenessWatch, _trace_due
 from pynixd.liveness import read_streak
 from pynixd.store_layout import StoreLayout
 
@@ -86,6 +86,23 @@ async def test_agreement_answers_true_and_asks_nix_once():
 async def test_divergence_either_way_answers_false():
     assert await _watch({A, B}, {A})[0].check() is False
     assert await _watch({A}, {A, B})[0].check() is False
+
+
+async def test_refresh_never_asks_nix():
+    """Refresh walks the mirror and asks Nix nothing: no lock, no trace."""
+    watch, tracker, local = _watch({A, B}, {A, B})
+
+    assert await watch.refresh() == {A, B}
+
+    assert tracker.refreshed == 1
+    assert local.calls == []
+
+
+def test_trace_due_bounds_traces_by_age():
+    """A trace is due when the last one is older than the interval."""
+    assert _trace_due(0.0, 100.0, 60.0) is True
+    assert _trace_due(90.0, 100.0, 60.0) is False
+    assert _trace_due(40.0, 100.0, 60.0) is True
 
 
 async def _migrated_db(tmp_path: Path) -> Path:
