@@ -11,6 +11,21 @@ Lillecarl/pynixd#62.
 The client runs on raw subprocess pipes, and not on `run_subproc`: the
 helper decodes strict UTF-8, so it would crash on the very bytes this test
 is about.
+
+NIX-DEFECT (#23): `nix log` serves the line back with `0x8b` replaced by
+U+FFFD, although pynixd serves it raw. The client's build hook
+(`build-remote`) logs over its fromHook pipe as JSON, and
+`JSONLogger::write` in `src/libutil/logging.cc:254` dumps with
+`error_handler_t::replace`, so the byte becomes U+FFFD there. The
+client-side goal then writes that `resBuildLogLine` field into its own log
+file (`src/libstore/build/derivation-building-goal.cc:675`), which is the
+record `nix log` reads. pynixd cannot fix this from its side: the
+corruption happens inside the client's own hook after pynixd's bytes
+arrive, and pynixd's own record of the same line is raw (measured in the
+guest against the session store's `.bz2`). Reported on the fork as
+Lillecarl/nix#369. The FFFD assertion below is a
+tripwire: it fails when the fork fixes its JSON logger, and then it should
+assert the raw bytes. Issue Lillecarl/pynixd#63.
 """
 
 from __future__ import annotations
@@ -91,9 +106,9 @@ async def test_build_with_non_utf8_log_succeeds(
     out = stdout.strip()
     assert out != b""
 
-    # The log travels back through `nix log`, the channel the pubsub test
-    # proves: it serves the buffered stream from the server that built it.
-    # Raw pipes again, for the same bytes the helper cannot decode.
+    # The log comes back through `nix log`, which reads the client-side
+    # record the build wrote (see the module docstring for whose bytes those
+    # are). Raw pipes again, for the same bytes the helper cannot decode.
     log_proc = await asyncio.create_subprocess_exec(
         str(CLIENT_BIN),
         "log",
@@ -118,9 +133,9 @@ async def test_build_with_non_utf8_log_succeeds(
         # answered, which the byte assertion below cannot.
         source=log_err.decode("utf-8", errors="replace").strip(),
     )
-    # The line survived the round trip. The exact magic bytes are asserted at
-    # the wire layer (`test_log_bytes_round_trip.py`): the client-side record
-    # path serves one byte back as U+FFFD (observed `1f ef bf bd 08`), and
-    # that provenance is still open. Issue Lillecarl/pynixd#62.
-    assert b"not-utf8" in log_out
+    # Nix's hook replaces the byte (see the module docstring), so the
+    # recorded line carries U+FFFD where the builder wrote `0x8b`. This
+    # asserts that exact divergence: pynixd served the line raw, and this is
+    # what the client's record made of it.
+    assert b"\x1f\xef\xbf\xbd\x08not-utf8" in log_out
     log.info("binary_log_build_done", out=out.decode())
