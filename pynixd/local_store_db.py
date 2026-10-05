@@ -158,6 +158,22 @@ _ROOT_CLOSURE_OF_SEEDS = """
     SELECT id FROM closure
 """
 
+# The build closure of one derivation: the derivation and everything it
+# references, transitively. A derivation's `Refs` are exactly its build
+# inputs -- input derivations and sources -- so one indexed walk names
+# the whole closure in a single statement. The scheduler records this
+# when it decides to build, as build-kind: the decision is the use-event
+# for the closure, and merely pushing the derivation around is not.
+# Issue #65.
+_BUILD_CLOSURE_OF_DRV = """
+    WITH RECURSIVE closure(id) AS (
+        SELECT id FROM ValidPaths WHERE path = ?
+        UNION
+        SELECT r.reference FROM closure c JOIN Refs r ON c.id = r.referrer
+    )
+    SELECT path FROM ValidPaths WHERE id IN (SELECT id FROM closure)
+"""
+
 
 @dataclass(frozen=True)
 class RootAttribution:
@@ -758,6 +774,25 @@ class LocalStoreDB:
         if self.active and not self.read_only:
             queue = self.pending_build_references if kind == "build" else self.pending_references
             queue.update(str(path) for path in paths)
+
+    async def mark_build_closure(self, drv_path: str) -> None:
+        """Record the build closure of a derivation pynixd decided to build.
+
+        Best-effort: a mark that fails must not fail the build it records,
+        so every failure is a debug line and an empty queue. The scheduler
+        calls this at assignment, which is the use-event for the closure:
+        pushing the derivation around -- planning queries, client requests
+        naming it -- observes the head, never the inputs. Issue #65.
+        """
+        if not self.active or self.read_only:
+            return
+        try:
+            async with self.execute(_BUILD_CLOSURE_OF_DRV, (drv_path,)) as cursor:
+                rows = await cursor.fetchall()
+        except (aiosqlite.Error, ValueError):
+            log.debug("mark_build_closure_failed", drv_path=drv_path, exc_info=True)
+            return
+        self.mark_paths((str(row[0]) for row in rows), kind="build")
 
     async def record_build_stats(
         self,

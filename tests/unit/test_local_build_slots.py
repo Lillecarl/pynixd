@@ -212,6 +212,11 @@ class _AssignScheduler:
         del store
         self.executed.append(build.build_id)
 
+    def _record_build_closure(self, drv_path: str) -> None:
+        # The assignment is the unit under test here, not the recording:
+        # `test_build_closure_records.py` pins what a decision records.
+        del drv_path
+
 
 def _request(name: str) -> BuildDerivationRequest:
     return BuildDerivationRequest(

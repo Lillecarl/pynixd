@@ -124,8 +124,8 @@ class CountingStore:
         self.valid = valid
         self.questions = 0
 
-    async def execute(self, request: object) -> IsValidPathResponse:
-        del request
+    async def execute(self, request: object, mark: bool = True) -> IsValidPathResponse:
+        del request, mark
         self.questions += 1
         return IsValidPathResponse(valid=self.valid)
 

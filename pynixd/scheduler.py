@@ -68,6 +68,12 @@ class Scheduler:
         self.allocator = BuildAllocator(self.stores, self.local_store, self.ranker)
         self.trigger_event = anyio.Event()
         self.running = False
+        self._mark_tasks: set[asyncio.Task[None]] = set()
+        """Build-closure recordings in flight.
+
+        The decision records the closure without waiting for it, so the
+        tasks live here until done instead of orphaned on the loop.
+        """
 
     @property
     def stores(self) -> Mapping[StoreId, DaemonStore]:
@@ -393,6 +399,7 @@ class Scheduler:
                 build.build_task = asyncio.create_task(
                     self.execute_build(build, rs.store),
                 )
+                self._record_build_closure(str(build.request.drv_path))
                 assigned_this_pass[rs.store_id] = assigned_this_pass.get(rs.store_id, 0) + 1
             else:
                 # All compatible stores are busy, or this build can't be placed
@@ -407,6 +414,23 @@ class Scheduler:
                 waiting_slot.append(build)
 
         return waiting_slot
+
+    def _record_build_closure(self, drv_path: str) -> None:
+        """Record the closure of an assigned build as build-kind, in the background.
+
+        The assignment is the use-event for the closure: pynixd decided to
+        build this derivation, so its inputs are genuinely in use. Merely
+        pushing the derivation around -- planning queries, client requests
+        naming it -- never records beyond the head. The recording must not
+        slow assignment, so it runs as a tracked task and the flush writes
+        it on its own schedule. Issue #65.
+        """
+        db = getattr(self.local_store, "db", None)
+        if db is None:
+            return
+        task = asyncio.create_task(db.mark_build_closure(drv_path))
+        self._mark_tasks.add(task)
+        task.add_done_callback(self._mark_tasks.discard)
 
     def _local_slot_is_full(
         self,

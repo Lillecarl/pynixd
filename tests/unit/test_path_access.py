@@ -339,6 +339,39 @@ class TestFlushingByKind:
 
 
 @pytest.mark.anyio
+class TestRecordingABuildClosure:
+    """A decided build records its closure as build-kind. Issue #65."""
+
+    async def test_a_build_decision_records_the_closure_as_build_kind(self, tmp_path: Path) -> None:
+        """The derivation and everything it references land in the build table.
+
+        The access table stays empty: deciding to build observes the
+        inputs, and an observation must not freshen. The planner then
+        keeps judging build inputs by age instead of retiring them the
+        moment something builds against them.
+
+        Perturbation: record the closure as runtime-kind and an old
+        compiler stops ageing out while nightly builds name it.
+        """
+        _store_with_a_closure(tmp_path)
+        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
+            await db.mark_build_closure(HELLO)
+            await db.flush_references()
+
+            assert await _access_times(db) == {}
+            assert set(await _build_times(db)) == {HELLO, LIBC}
+
+    async def test_a_build_decision_for_an_unknown_path_records_nothing(self, tmp_path: Path) -> None:
+        _store_with_a_closure(tmp_path)
+        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
+            await db.mark_build_closure(GONE)
+            await db.flush_references()
+
+            assert await _access_times(db) == {}
+            assert await _build_times(db) == {}
+
+
+@pytest.mark.anyio
 class TestFlushingUnderContention:
     """A locked database delays the flush; it never kills the pool.
 
