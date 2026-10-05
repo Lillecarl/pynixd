@@ -686,6 +686,12 @@ class Server:
             await self.unix_server.wait_closed()
             self.unix_server = None
 
+        # Answer every established client before tearing down the state
+        # their operations read. The listeners are gone, so no new client
+        # can connect, and each old one gets an explicit error instead of
+        # a dead socket. Issue #64.
+        await self.ctx.sessions.shutdown()
+
         if self.ctx.db:
             await self.ctx.db.close()
             self.ctx.db = None

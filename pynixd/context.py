@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
 
+from .sessions import ClientSessions
 from .store.daemon import DaemonStore
 from .trust import TrustPolicy
 
@@ -38,6 +39,13 @@ class PynixdContext:
     """Who may connect over the Unix listener, and who is trusted.
 
     `Server.start` replaces the default with what the local store's Nix reads.
+    """
+    sessions: ClientSessions = field(default_factory=ClientSessions)
+    """Established client sessions, for the shutdown path.
+
+    `DaemonProxy.run` registers each session on entry and unregisters on
+    exit; `Server.close` answers and closes them after closing the
+    listeners. Issue #64.
     """
     output_locations: dict[str, StoreId] = field(default_factory=dict)
     """Where each output a backend built now lives.

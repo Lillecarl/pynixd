@@ -7,6 +7,7 @@ and dispatches them to request type handle() classmethods.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import TYPE_CHECKING, Any, cast
 
@@ -215,6 +216,9 @@ class DaemonProxy:
         """Run the full session lifecycle."""
         metrics.DAEMON_SESSIONS_TOTAL.labels(transport=self.transport).inc()
         metrics.DAEMON_SESSIONS.labels(transport=self.transport).inc()
+        # Register before the handshake: from here on this session exists,
+        # and shutdown must answer it. Issue #64.
+        self.ctx.sessions.track(self, asyncio.current_task())
         try:
             await self.handshake()
             self._open_sync_reader()
@@ -224,6 +228,7 @@ class DaemonProxy:
         except Exception:
             log.exception("session_error")
         finally:
+            self.ctx.sessions.untrack(self)
             metrics.DAEMON_SESSIONS.labels(transport=self.transport).dec()
             if self._temp_roots is not None:
                 await self._temp_roots.close()
