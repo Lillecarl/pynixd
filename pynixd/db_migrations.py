@@ -81,6 +81,15 @@ class Migration:
 DERIVATION_STATS_TABLE = f"{TABLE_PREFIX}DerivationStats"
 
 PATH_ACCESS_TABLE = f"{TABLE_PREFIX}PathAccess"
+BUILD_ACCESS_TABLE = f"{TABLE_PREFIX}BuildAccess"
+"""When each store path was last named as a build input.
+
+Build-kind observations land here instead of `PynixdPathAccess`: a build
+that touches a compiler must not freshen it the way serving it to a
+client does, or build garbage never ages out. Nothing reads this table
+yet -- it reserves the signal for liveness -- and the planner ignores it
+on purpose. Issue #65.
+"""
 LIVENESS_ROOT_TABLE = f"{TABLE_PREFIX}GCRoot"
 LIVENESS_TABLE = f"{TABLE_PREFIX}Live"
 LIVENESS_STREAK_TABLE = f"{TABLE_PREFIX}LivenessStreak"
@@ -180,6 +189,17 @@ MIGRATIONS: tuple[Migration, ...] = (
             ")",
         ),
         creates=(LIVENESS_STREAK_TABLE,),
+    ),
+    Migration(
+        version=5,
+        name="build-access",
+        statements=(
+            f"CREATE TABLE IF NOT EXISTS {BUILD_ACCESS_TABLE} ("
+            "path TEXT PRIMARY KEY, "
+            "lastBuildReferencedAt INTEGER NOT NULL"
+            ")",
+        ),
+        creates=(BUILD_ACCESS_TABLE,),
     ),
 )
 

@@ -35,13 +35,14 @@ from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from itertools import batched
 from pathlib import Path
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, Literal, Self
 
 import aiosqlite
 import anyio
 import structlog
 
 from .db_migrations import (
+    BUILD_ACCESS_TABLE,
     DERIVATION_STATS_TABLE,
     PATH_ACCESS_TABLE,
     SchemaState,
@@ -71,6 +72,15 @@ TOUCH_PATH_ACCESS = f"""
 INSERT INTO {PATH_ACCESS_TABLE} (path, lastReferencedAt)
 SELECT path, unixepoch() FROM ValidPaths WHERE path IN (SELECT value FROM json_each(?))
 ON CONFLICT (path) DO UPDATE SET lastReferencedAt = excluded.lastReferencedAt
+"""
+
+# The build-kind twin of the touch above. Same shape, same batching, its
+# own table: a path observed while building records when, without moving
+# the age the planner judges it by.
+TOUCH_BUILD_ACCESS = f"""
+INSERT INTO {BUILD_ACCESS_TABLE} (path, lastBuildReferencedAt)
+SELECT path, unixepoch() FROM ValidPaths WHERE path IN (SELECT value FROM json_each(?))
+ON CONFLICT (path) DO UPDATE SET lastBuildReferencedAt = excluded.lastBuildReferencedAt
 """
 
 # The referrers of each seed, transitively, seeds included: the mirror of
@@ -107,6 +117,22 @@ WHERE COALESCE(a.lastReferencedAt, v.registrationTime) < ?
 PRUNE_PATH_ACCESS = f"""
 DELETE FROM {PATH_ACCESS_TABLE}
 WHERE path NOT IN (SELECT path FROM ValidPaths)
+"""
+
+PRUNE_BUILD_ACCESS = f"""
+DELETE FROM {BUILD_ACCESS_TABLE}
+WHERE path NOT IN (SELECT path FROM ValidPaths)
+"""
+
+MarkKind = Literal["runtime", "build"]
+"""Which queue a mark joins.
+
+`runtime` is observed use: serving a path to a client, or a goal
+ensuring an output. It writes `lastReferencedAt`, which the planner
+reads as freshness. `build` is a build input seen while planning or
+running a build. It writes `lastBuildReferencedAt`, which nothing reads
+yet -- it reserves the signal for liveness -- so a binary that stays
+live stops keeping its entire build closure fresh for ever. Issue #65.
 """
 
 # One root's closure over the same edges the liveness query walks:
@@ -307,15 +333,25 @@ class LocalStoreDB:
         self.pending_references: set[str] = set()
         """Full store paths named in traffic since the last flush.
 
-        One queue: every marked path touches its own head, nothing more.
-        The two-queue split died here -- with no closure expansion there
-        is nothing for a build queue to spare, and a `.drv` head touches
-        like any other genuinely referenced path.
+        One queue per kind: runtime marks touch their own heads, build
+        marks touch theirs, nothing more. The two-queue split first died
+        here when closure expansion went away -- with no closure there
+        was nothing for a build queue to spare. Issue #65 brings it back
+        with a different meaning: the split is no longer heads against
+        closures, but observed use against build inputs, so a binary that
+        stays live stops keeping its entire build closure fresh for ever.
 
         Plain strings, because two `StorePath` classes reach this set and
         the SQL statement wants the text. `pynixd.store_path.StorePath`
         keeps the path without the `/nix/store/` prefix and adds it back
         in `__str__`, and the wire `StorePath` is a `str` of the whole path.
+        """
+        self.pending_build_references: set[str] = set()
+        """Build inputs named while planning or running a build.
+
+        Flushed to `PynixdBuildAccess`, which the planner ignores on
+        purpose: these observations record liveness signal for later,
+        they never freshen. See `MarkKind`.
         """
 
         self.flush_task: asyncio.Task[None] | None = None
@@ -676,8 +712,8 @@ class LocalStoreDB:
         """Drop the rows for paths the store no longer holds. Returns the count.
 
         This is the join that keeping pynixd's tables inside Nix's database
-        buys: one statement compares `PynixdPathAccess` against `ValidPaths`.
-        Without it the table grows for ever, because a path that the garbage
+        buys: one statement compares each access table against `ValidPaths`.
+        Without it the tables grow for ever, because a path that the garbage
         collector deletes leaves its access time behind.
         """
         if not self.active or self.read_only or not self.schema.usable:
@@ -686,6 +722,8 @@ class LocalStoreDB:
             async with self.acquire_conn() as db:
                 cursor = await db.execute(PRUNE_PATH_ACCESS)
                 removed = cursor.rowcount
+                cursor = await db.execute(PRUNE_BUILD_ACCESS)
+                removed += cursor.rowcount
                 await db.commit()
         except aiosqlite.Error:
             log.warning("prune_path_access_failed", exc_info=True)
@@ -696,11 +734,11 @@ class LocalStoreDB:
 
     # ── Last reference times ──────────────────────────────────────────
 
-    def mark_path(self, path: StorePath | str) -> None:
+    def mark_path(self, path: StorePath | str, kind: MarkKind = "runtime") -> None:
         """Note that something referenced `path` just now."""
-        self.mark_paths((path,))
+        self.mark_paths((path,), kind=kind)
 
-    def mark_paths(self, paths: Iterable[StorePath | str]) -> None:
+    def mark_paths(self, paths: Iterable[StorePath | str], kind: MarkKind = "runtime") -> None:
         """Note that something referenced each of `paths` just now.
 
         Heads only: the flush touches exactly these paths, and unmarked
@@ -708,12 +746,18 @@ class LocalStoreDB:
         queries names hundreds of paths, not hundreds of thousands, so
         the write stays milliseconds against the daemon's own database.
 
-        The write happens later. `flush_loop` drains the set every few
+        `kind` picks the queue. Serving a path and ensuring an output
+        are observed use (`runtime`); a build input seen while planning
+        or running a build is (`build`), recorded without freshening.
+        The default keeps every existing caller on the runtime queue.
+
+        The write happens later. `flush_loop` drains the queues every few
         seconds, so a burst of queries costs one statement and not one
         for each path.
         """
         if self.active and not self.read_only:
-            self.pending_references.update(str(path) for path in paths)
+            queue = self.pending_build_references if kind == "build" else self.pending_references
+            queue.update(str(path) for path in paths)
 
     async def record_build_stats(
         self,
@@ -779,24 +823,28 @@ class LocalStoreDB:
         return None
 
     async def flush_references(self) -> None:
-        """Write the pending reference times into the access table.
+        """Write the pending reference times into the access tables.
 
-        One queue, one statement, heads only. `ValidPaths.registrationTime`
-        is read, never written: Nix writes it once at registration, stock
-        `nix-collect-garbage --delete-older-than` reads it as entry age,
-        and pynixd needs no code for either. `PynixdPathAccess` is the
-        column that says what pynixd saw, and it is the only column
-        pynixd writes. Issue Lillecarl/nanopynix#166 has the whole argument.
+        Two queues, one statement per thousand marks each, heads only.
+        `ValidPaths.registrationTime` is read, never written: Nix writes
+        it once at registration, stock `nix-collect-garbage
+        --delete-older-than` reads it as entry age, and pynixd needs no
+        code for either. `PynixdPathAccess` is the column that says what
+        pynixd saw served, `PynixdBuildAccess` what it saw built, and the
+        planner reads only the first. Issue Lillecarl/nanopynix#166 has
+        the whole argument; issue #65 splits the queues.
         """
         if not self.active or self.read_only:
             return
-        if not self.pending_references:
+        if not self.pending_references and not self.pending_build_references:
             return
 
         for attempt in range(3):
             paths = self.pending_references
             self.pending_references = set()
-            if not paths:
+            build_paths = self.pending_build_references
+            self.pending_build_references = set()
+            if not paths and not build_paths:
                 break
             try:
                 t0 = time.monotonic()
@@ -809,10 +857,14 @@ class LocalStoreDB:
                         for chunk in batched(sorted(paths), 1000):
                             await db.execute(TOUCH_PATH_ACCESS, (json.dumps(chunk),))
                             await db.commit()
+                        for chunk in batched(sorted(build_paths), 1000):
+                            await db.execute(TOUCH_BUILD_ACCESS, (json.dumps(chunk),))
+                            await db.commit()
                 elapsed = time.monotonic() - t0
                 log.debug(
                     "db_flush_complete",
                     marked=len(paths),
+                    build_marked=len(build_paths),
                     path_access=self.schema.usable,
                     elapsed_ms=elapsed * 1000,
                 )
@@ -826,6 +878,7 @@ class LocalStoreDB:
                 # retries anyway. Unwritten marks merge back in, so no
                 # reference is lost, only delayed.
                 self.pending_references |= paths
+                self.pending_build_references |= build_paths
                 if attempt >= 2:
                     log.exception("db_flush_failed")
                     break

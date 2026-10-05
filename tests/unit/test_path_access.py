@@ -31,7 +31,7 @@ import anyio
 import pytest
 from pydantic import BaseModel, ConfigDict
 
-from pynixd.db_migrations import PATH_ACCESS_TABLE
+from pynixd.db_migrations import BUILD_ACCESS_TABLE, PATH_ACCESS_TABLE
 from pynixd.local_store_db import LocalStoreDB
 from pynixd.serde import (
     IsValidPathRequest,
@@ -74,6 +74,11 @@ async def _access_times(db: LocalStoreDB) -> dict[str, int]:
 
 async def _registration_times(db: LocalStoreDB) -> dict[str, int]:
     async with db.execute("SELECT path, registrationTime FROM ValidPaths") as cursor:
+        return {str(row[0]): int(row[1]) for row in await cursor.fetchall()}
+
+
+async def _build_times(db: LocalStoreDB) -> dict[str, int]:
+    async with db.execute(f"SELECT path, lastBuildReferencedAt FROM {BUILD_ACCESS_TABLE}") as cursor:
         return {str(row[0]): int(row[1]) for row in await cursor.fetchall()}
 
 
@@ -265,6 +270,72 @@ class TestFlushingTheReferences:
             await db.flush_references()
 
             assert set(await _access_times(db)) == {drv}
+
+
+@pytest.mark.anyio
+class TestFlushingByKind:
+    """Build-kind marks record without freshening. Issue #65."""
+
+    async def test_a_build_mark_reaches_the_build_table_alone(self, tmp_path: Path) -> None:
+        """A compiler seen while building is recorded, not refreshed.
+
+        The access table -- the one the planner reads as freshness --
+        stays empty, so a binary that stays live stops keeping its
+        entire build closure fresh for ever. The observation itself
+        lands in the build table, which reserves the signal for liveness.
+
+        Perturbation: flush build marks into the access table and the
+        planner can no longer tell use from building.
+        """
+        _store_with_a_closure(tmp_path)
+        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
+            db.mark_path(LIBC, kind="build")
+            await db.flush_references()
+
+            assert await _access_times(db) == {}
+            assert set(await _build_times(db)) == {LIBC}
+
+    async def test_a_runtime_mark_stays_out_of_the_build_table(self, tmp_path: Path) -> None:
+        _store_with_a_closure(tmp_path)
+        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
+            db.mark_path(HELLO)
+            await db.flush_references()
+
+            assert set(await _access_times(db)) == {HELLO}
+            assert await _build_times(db) == {}
+
+    async def test_both_queues_drain_together(self, tmp_path: Path) -> None:
+        _store_with_a_closure(tmp_path)
+        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
+            db.mark_paths([HELLO])
+            db.mark_paths([LIBC], kind="build")
+            await db.flush_references()
+
+            assert db.pending_references == set()
+            assert db.pending_build_references == set()
+            assert set(await _access_times(db)) == {HELLO}
+            assert set(await _build_times(db)) == {LIBC}
+
+    async def test_a_collected_path_leaves_both_tables(self, tmp_path: Path) -> None:
+        """Prune compares each access table against `ValidPaths`.
+
+        Without it the build table would grow for ever: every build
+        decision records a closure, and the collector deletes the paths
+        while their build times stay behind.
+        """
+        _store_with_a_closure(tmp_path)
+        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
+            db.mark_paths([HELLO])
+            db.mark_paths([LIBC], kind="build")
+            await db.flush_references()
+            async with db.acquire_conn() as conn:
+                await conn.execute("DELETE FROM ValidPaths WHERE path = ?", (HELLO,))
+                await conn.execute("DELETE FROM ValidPaths WHERE path = ?", (LIBC,))
+                await conn.commit()
+
+            assert await db.prune_path_access() == 2
+            assert await _access_times(db) == {}
+            assert await _build_times(db) == {}
 
 
 @pytest.mark.anyio
