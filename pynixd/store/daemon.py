@@ -483,8 +483,13 @@ class DaemonStore(Store):
             self.record_failure()
             raise
 
-    async def execute(self, request, client=None, suppress_last=False, skip_probe=False):
-        """Execute an operation, dispatching to a registered executor or falling back to call()."""
+    async def execute(self, request, client=None, suppress_last=False, skip_probe=False, mark=True):
+        """Execute an operation, dispatching to a registered executor or falling back to call().
+
+        `mark` is accepted and ignored here: only `LocalDBStore` records
+        reference observations, so planning queries pass `mark=False`
+        uniformly instead of branching on the store class. Issue #65.
+        """
         if not skip_probe:
             await self.probe()
 

@@ -331,7 +331,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
     async def _ensure_opaque(self) -> GoalResult:
         store_path = StorePath(self.derived_path.drv_path)
         path = StorePath(path=self.derived_path.drv_path)
-        response = await self.engine.ctx.local_store.execute(IsValidPathRequest(path=path))
+        response = await self.engine.ctx.local_store.execute(IsValidPathRequest(path=path), mark=False)
         if response.valid:
             return self._opaque_success(store_path)
 
@@ -648,7 +648,9 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         resolved_outputs: dict[str, StorePath] = {}
         for key, realisation in built.items():
             path = StorePath(str(realisation.out_path))
-            valid = await self.engine.ctx.local_store.execute(IsValidPathRequest(path=StorePath(path=str(path))))
+            valid = await self.engine.ctx.local_store.execute(
+                IsValidPathRequest(path=StorePath(path=str(path))), mark=False
+            )
             if not valid.valid:
                 return None
             resolved_outputs[key.rpartition("!")[2]] = path
@@ -724,6 +726,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
                     build_mode=int(self.build_mode),
                 ),
                 client=client,
+                mark=False,
             )
         except (BackendError, DaemonProtocolError, OSError, EOFError) as ex:
             # A miss is the ordinary answer for a derivation that the client
@@ -739,7 +742,9 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         resolved_outputs: dict[str, StorePath] = {}
         for key, realisation in built.items():
             path = StorePath(str(realisation.out_path))
-            valid = await self.engine.ctx.local_store.execute(IsValidPathRequest(path=StorePath(path=str(path))))
+            valid = await self.engine.ctx.local_store.execute(
+                IsValidPathRequest(path=StorePath(path=str(path))), mark=False
+            )
             if not valid.valid:
                 return None
             resolved_outputs[key.rpartition("!")[2]] = path
@@ -810,7 +815,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             wanted=sorted(wanted),
         )
         try:
-            await self.engine.ctx.local_store.execute(request, client=client)
+            await self.engine.ctx.local_store.execute(request, client=client, mark=False)
         except (BackendError, DaemonProtocolError, OSError, EOFError) as ex:
             # An upstream miss is the normal answer for a derivation that the
             # client must build, and a broken upstream connection must not end
@@ -930,7 +935,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             # the whole path.
             out_path = StorePath(str(realisation.out_path))
             valid = await self.engine.ctx.local_store.execute(
-                IsValidPathRequest(path=StorePath(path=str(out_path))),
+                IsValidPathRequest(path=StorePath(path=str(out_path))), mark=False
             )
             if not valid.valid:
                 continue
@@ -964,6 +969,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
                             signatures=set(realisation.signatures),
                         ),
                     ),
+                    mark=False,
                 )
             except Exception:
                 log.warning("register_drv_output_failed", drv_output=str(realisation.id), exc_info=True)
@@ -1215,7 +1221,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
                 needed.add(output_name)
                 continue
             response = await self.engine.ctx.local_store.execute(
-                IsValidPathRequest(path=StorePath(path=str(output_path))),
+                IsValidPathRequest(path=StorePath(path=str(output_path))), mark=False
             )
             if not response.valid:
                 needed.add(output_name)
@@ -1253,7 +1259,9 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
 
         results: dict[str, GoalResult] = {}
         for output_name, path in selected.items():
-            response = await self.engine.ctx.local_store.execute(IsValidPathRequest(path=StorePath(path=str(path))))
+            response = await self.engine.ctx.local_store.execute(
+                IsValidPathRequest(path=StorePath(path=str(path))), mark=False
+            )
             if response.valid:
                 results[output_name] = GoalResult(
                     result=goal_success().result,
@@ -1370,11 +1378,11 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             return None
         wire_path = StorePath(path=str(path))
         try:
-            await self.engine.ctx.local_store.execute(EnsurePathRequest(path=wire_path), client=client)
+            await self.engine.ctx.local_store.execute(EnsurePathRequest(path=wire_path), client=client, mark=False)
         except (BackendError, DaemonProtocolError) as ex:
             log.debug("upstream_substitute_miss", path=str(path), reason=str(ex))
             return None
-        response = await self.engine.ctx.local_store.execute(IsValidPathRequest(path=wire_path))
+        response = await self.engine.ctx.local_store.execute(IsValidPathRequest(path=wire_path), mark=False)
         if not response.valid:
             return None
         log.debug("substituted_through_the_local_daemon", path=str(path))

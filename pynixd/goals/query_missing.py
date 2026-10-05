@@ -322,8 +322,7 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
         wire_path = SerdeDerivedPath(value=str(derived_path))
         try:
             response = await self.engine.ctx.local_store.execute(
-                QueryMissingRequest(derived_paths={wire_path}),
-                client=self.client,
+                QueryMissingRequest(derived_paths={wire_path}), client=self.client, mark=False
             )
         except (BackendError, DaemonProtocolError, OSError, EOFError) as ex:
             # The plan is a question, and a question that fails is not a
@@ -378,7 +377,9 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
             plan.unknown.add(StorePath(path=str(path)))
 
     async def _classify_output_path(self, path: StorePath, plan: QueryMissingPlan) -> bool:
-        response = await self.engine.ctx.local_store.execute(IsValidPathRequest(path=StorePath(path=str(path))))
+        response = await self.engine.ctx.local_store.execute(
+            IsValidPathRequest(path=StorePath(path=str(path))), mark=False
+        )
         if response.valid:
             return True
         availability = await self._can_substitute(path)
@@ -419,8 +420,7 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
             return SubstitutionAvailability.unavailable()
         wire_path = StorePath(path=str(path))
         response = await self.engine.ctx.local_store.execute(
-            QuerySubstitutablePathInfosRequest(paths={wire_path: ContentAddress("")}),
-            client=self.client,
+            QuerySubstitutablePathInfosRequest(paths={wire_path: ContentAddress("")}), client=self.client, mark=False
         )
         info = next((one for one in response.infos if one.path == wire_path), None)
         if info is None:

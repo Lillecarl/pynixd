@@ -116,7 +116,9 @@ class SubstitutePathGoal(ExecutionGoal[SubstituteAttempt]):
         return SubstituteAttempt(found=True, result=result)
 
     async def _is_valid_local_path(self, path: StorePath) -> bool:
-        response = await self.engine.ctx.local_store.execute(IsValidPathRequest(path=StorePath(path=str(path))))
+        response = await self.engine.ctx.local_store.execute(
+            IsValidPathRequest(path=StorePath(path=str(path))), mark=False
+        )
         return bool(response.valid)
 
 
