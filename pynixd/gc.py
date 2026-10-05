@@ -203,6 +203,13 @@ class Collector:
         batch = self._bound_batch(self.ctx.local_store, ordered, weights, usage, target_usage)
         if limit is not None:
             batch = batch[:limit]
+        planned_paths = {str(path) for path in planned}
+        if set(batch) != planned_paths:
+            # Slicing breaks the referrer closure the planners promise, and
+            # gc.cc refuses a batch whose referrer rides below the slice.
+            # Re-close: referrers in the plan join, seeds that escape it drop.
+            # Issues #69 and #70.
+            batch = await self._close_batch(self.ctx.local_store, batch, planned_paths)
         if action != PynixdGCAction.EXECUTE:
             self._log_top(batch, weights, pressure)
             return self._answered(
@@ -478,6 +485,40 @@ class Collector:
             log.warning("gc_referrer_query_failed", exc_info=True)
             return None
 
+    async def _close_batch(self, local: Store, batch: list[str], planned: set[str]) -> list[str]:
+        """The batch closed under referrers again, against the plan.
+
+        Each seed brings its transitive referrers; a seed whose closure
+        escapes the plan cannot be deleted now, so it drops instead of
+        poisoning the request. Membership in the plan is the liveness
+        answer: the planners closed the plan, so every referrer the
+        database knows is either planned or live. Seeds first in batch
+        order, joined referrers after. An unanswerable database plans
+        nothing rather than half a batch.
+        """
+        query = getattr(getattr(local, "db", None), "query_referrer_closure", None)
+        if query is None:
+            log.warning("gc_batch_close_unavailable")
+            return []
+        kept: dict[str, None] = {}
+        for seed in batch:
+            try:
+                closed = await query({seed})
+            except Exception:
+                log.warning("gc_batch_close_failed", exc_info=True)
+                return []
+            if closed is None:
+                log.warning("gc_batch_close_unavailable")
+                return []
+            outside = {path for path in closed if path not in planned}
+            if outside:
+                log.info("gc_batch_seed_dropped", seed=seed, live_referrers=len(outside))
+                continue
+            for path in closed:
+                kept.setdefault(path)
+        order = {path: index for index, path in enumerate(batch)}
+        return sorted(kept, key=lambda path: (0, order[path]) if path in order else (1, path))
+
     async def _held_by(self, store: Store, paths: set[StorePath]) -> set[StorePath]:
         """The paths of *paths* that *store* confirms it has.
 
@@ -511,6 +552,14 @@ class Collector:
         batch leaves lines for paths that stayed. The outcome line says
         which one happened; the buffered lines travel in the response
         either way.
+
+        A refusal no longer abandons the batch. `gc.cc:778` throws on the
+        first live path and deletes nothing, but it names no names, so the
+        retry bisects blindly: halves that pass delete, halves that refuse
+        split again, down to single paths that report refused and drop.
+        Desync is expected -- a root that arrived after the plan -- which is
+        why Nix does the removing, and the pass deletes what it validly can
+        instead of nothing. Issue #70.
         """
         local = self.ctx.local_store
         # A pooled connection keeps a worker of the daemon alive, and that
@@ -529,29 +578,48 @@ class Collector:
 
         for path in batch:
             await say(f"deleting '{path}'")
-        try:
-            resp = await local.call(
-                _request(GCAction.DELETE_SPECIFIC, {StorePath(path) for path in batch}),
-                raise_on_error=True,
-            )
-        except BackendError as exc:
-            # `gc.cc:778` throws on the first live path and abandons the whole
-            # request. The plan subtracts what Nix called live, so this is a
-            # root that arrived after it. The next pass sees the new state.
-            log.warning("gc_pass_refused", asked=len(batch), reason=str(exc))
-            await say(f"delete refused: {exc}")
-            return self._answered(PynixdCollectGarbageResponse(store_paths=set(), bytes=0), lines)
 
-        left = set(batch) - {str(path) for path in resp.paths_deleted}
-        if left:
-            # The set is closed under referrers and Nix called none of it
-            # alive, so a path left behind means a root arrived mid-pass.
-            log.warning("gc_pass_partial", asked=len(batch), left=len(left))
-            await say(f"delete partial: {len(left)} paths left behind")
-        log.info("gc_pass_done", deleted=len(resp.paths_deleted), bytes=resp.bytes_freed)
-        await say(f"deleted {len(resp.paths_deleted)} paths, {resp.bytes_freed} bytes freed")
+        deleted: set[str] = set()
+        freed = 0
+        refused = 0
+        pending = [list(batch)]
+        while pending:
+            current = pending.pop()
+            if not current:
+                continue
+            try:
+                resp = await local.call(
+                    _request(GCAction.DELETE_SPECIFIC, {StorePath(path) for path in current}),
+                    raise_on_error=True,
+                )
+            except BackendError as exc:
+                if len(current) == 1:
+                    log.warning("gc_path_refused", path=current[0], reason=str(exc))
+                    refused += 1
+                    continue
+                log.warning("gc_batch_refused", asked=len(current), reason=str(exc))
+                middle = len(current) // 2
+                pending.append(current[:middle])
+                pending.append(current[middle:])
+                continue
+            got = {str(path) for path in resp.paths_deleted}
+            deleted |= got
+            freed += resp.bytes_freed
+            left = set(current) - got
+            if left:
+                # Asked and abandoned without error: a root arrived for
+                # these mid-pass (a temp root lands silently, `gc.cc`
+                # skips it in the deletion loop). They stay for the next
+                # pass, which re-plans from the new state.
+                log.warning("gc_pass_partial", asked=len(current), left=len(left))
+
+        log.info("gc_pass_done", deleted=len(deleted), refused=refused, bytes=freed)
+        if refused:
+            await say(f"delete refused for {refused} live paths, deleted the rest")
+        await say(f"deleted {len(deleted)} paths, {freed} bytes freed")
         return self._answered(
-            PynixdCollectGarbageResponse(store_paths=resp.paths_deleted, bytes=resp.bytes_freed), lines
+            PynixdCollectGarbageResponse(store_paths={StorePath(path) for path in deleted}, bytes=freed),
+            lines,
         )
 
     def _bound_batch(

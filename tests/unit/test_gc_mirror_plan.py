@@ -24,6 +24,7 @@ from nix_daemon_protocol import (
 )
 from nix_daemon_protocol.store_path import StorePath
 from pynixd.db_migrations import LIVENESS_ROOT_TABLE, apply_migrations
+from pynixd.exceptions import BackendError
 from pynixd.gc import Collector
 from pynixd.store_layout import StoreLayout
 
@@ -36,12 +37,22 @@ class FakeDB:
     """The two access queries, answering from a fixed stale set."""
 
     stale: set[str] = field(default_factory=set)
+    referrers: dict[str, set[str]] = field(default_factory=dict)
 
     async def query_paths_not_referenced_since(self, _max_age: int) -> set[str]:
         return set(self.stale)
 
     async def query_referrer_closure(self, seeds: set[str]) -> set[str]:
-        return set(seeds)
+        if not self.referrers:
+            return set(seeds)
+        closed = set(seeds)
+        queue = list(seeds)
+        while queue:
+            for ref in self.referrers.get(queue.pop(), ()):
+                if ref not in closed:
+                    closed.add(ref)
+                    queue.append(ref)
+        return closed
 
 
 @dataclass
@@ -213,3 +224,84 @@ async def test_a_broken_mirror_falls_back_to_the_nix_trace(tmp_path: Path) -> No
 
     assert {str(path) for path in await collector.plan()} == {b}
     assert str(GCAction.RETURN_LIVE) in local.calls
+
+
+@pytest.mark.anyio
+async def test_close_batch_completes_the_slice(tmp_path: Path) -> None:
+    """A sliced batch pulls its planned referrers back in.
+
+    The weight order puts the 8 GB image first and its small spec below the
+    slice; gc.cc refuses the image without the spec in the same request, so
+    the slice rejoins it. Issue #69.
+    """
+    image = f"/nix/store/{HASH_A}-image"
+    spec = f"/nix/store/{HASH_B}-spec"
+    state, store, _a, _b = _lab(tmp_path)
+    local = FakeLocal(
+        layout=StoreLayout.relocated_store(store_dir=store, state_dir=state),
+        db=FakeDB(referrers={image: {spec}}),
+    )
+    collector = Collector(FakeContext(local=local))  # type: ignore[arg-type] -- fakes
+
+    assert await collector._close_batch(local, [image], {image, spec}) == [image, spec]
+
+
+@pytest.mark.anyio
+async def test_close_batch_drops_a_live_anchored_seed(tmp_path: Path) -> None:
+    """A seed whose referrer escaped the plan drops instead of poisoning."""
+    image = f"/nix/store/{HASH_A}-image"
+    spec = f"/nix/store/{HASH_B}-spec"
+    state, store, _a, _b = _lab(tmp_path)
+    local = FakeLocal(
+        layout=StoreLayout.relocated_store(store_dir=store, state_dir=state),
+        db=FakeDB(referrers={image: {spec}}),
+    )
+    collector = Collector(FakeContext(local=local))  # type: ignore[arg-type] -- fakes
+
+    assert await collector._close_batch(local, [image], {image}) == []
+
+
+@pytest.mark.anyio
+async def test_delete_bisects_past_a_live_path(tmp_path: Path) -> None:
+    """One live path costs retries, not the batch.
+
+    The daemon throws on the first live path and deletes nothing; the retry
+    splits blindly until single live paths report refused and drop, and the
+    dead remainder deletes. Issue #70.
+    """
+    first = f"/nix/store/{HASH_A}-first"
+    live = f"/nix/store/{HASH_A}-live"
+    second = f"/nix/store/{HASH_B}-second"
+
+    @dataclass
+    class _Deleted:
+        paths_deleted: set[Any]
+        bytes_freed: int
+
+    @dataclass
+    class DeletingLocal(FakeLocal):
+        attempts: list[frozenset[str]] = field(default_factory=list)
+
+        async def retire_idle_connections(self) -> int:
+            return 0
+
+        async def call(self, request: Any, **_kwargs: Any) -> Any:
+            asked = {str(path) for path in request.paths_to_delete}
+            self.attempts.append(frozenset(asked))
+            if live in asked:
+                raise BackendError(f"Cannot delete path '{live}' since it is still alive")
+            return _Deleted({StorePath(path) for path in asked}, 0)
+
+    state, store, _a, _b = _lab(tmp_path)
+    local = DeletingLocal(
+        layout=StoreLayout.relocated_store(store_dir=store, state_dir=state),
+        db=FakeDB(),
+    )
+    collector = Collector(FakeContext(local=local))  # type: ignore[arg-type] -- fakes
+
+    lines: list[Any] = []
+    resp = await collector._delete([first, live, second], {}, lines, None)
+
+    assert {str(path) for path in resp.store_paths} == {first, second}
+    assert any("refused" in line.text for line in lines)
+    assert len(local.attempts) > 1
