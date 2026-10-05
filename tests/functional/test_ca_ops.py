@@ -828,3 +828,60 @@ async def test_dynamic_drv_wrapper_via_pynixd(
     assert not out_path.endswith(".drv"), f"Wrapper output should not be a .drv, got: {out_path}"
 
     log.info("wrapper_via_pynixd", path=out_path)
+
+
+@pytest.mark.ca_derivations
+async def test_deep_dynamic_drv_chain_via_pynixd(
+    profiler: pyinstrument.Profiler,
+    dyn_env,
+) -> None:
+    """Build the 5-deep dynamic derivation chain (deepWrapper) through pynixd.
+
+    deepWrapper consumes producer!out!out!out!out!out, five levels of
+    SingleDerivedPath::Built nesting, where test_dynamic_drv_wrapper_via_pynixd
+    covers two. Each level peels one childMap layer and rebuilds the remainder,
+    so a passing build proves recursive resolution, unparsing and rebuilding
+    at depth. Issue #10.
+    """
+    server, uri = dyn_env
+    build_cmd = [
+        str(CLIENT_BIN),
+        "build",
+        "--option",
+        "builders",
+        "",
+        "--store",
+        uri,
+        "--impure",
+        "--file",
+        str(TEST_NIX),
+        "dyn.deepWrapper",
+        "--no-link",
+        "--print-out-paths",
+    ]
+    rc, stdout, stderr, stdboth = await run_subproc(
+        build_cmd,
+        nix_config=DYN_NIX_CONFIG,
+        expected_retcode=0,
+    )
+    assert rc == 0, f"Deep dynamic chain build via pynixd failed:\n{stdboth}"
+    out_path = stdout.strip()
+    assert out_path.startswith("/nix/store/"), f"Unexpected output: {out_path}"
+    assert not out_path.endswith(".drv"), f"Deep chain output should not be a .drv, got: {out_path}"
+
+    # The chain resolves producer!out (which is target.drv) and builds it,
+    # so the final content is target's output. A level that failed to peel
+    # would error the build or deliver a .drv path instead.
+    cat_cmd = [
+        str(CLIENT_BIN),
+        "store",
+        "cat",
+        "--store",
+        uri,
+        out_path,
+    ]
+    rc, content, _, stdboth = await run_subproc(cat_cmd, nix_config=DYN_NIX_CONFIG)
+    assert rc == 0, f"Reading deep chain output failed:\n{stdboth}"
+    assert content == "deep-target", f"Deep chain resolved to wrong content: {content!r}"
+
+    log.info("deep_dynamic_chain_via_pynixd", path=out_path)
