@@ -493,9 +493,22 @@ class Server:
 
     async def start(self) -> None:
         """Start the server listeners and background tasks."""
-        if self._started:
-            raise RuntimeError("Server already started")
-        self._started = True
+        try:
+            if self._started:
+                raise RuntimeError("Server already started")
+            self._started = True
+            await self._start_inner()
+        except BaseException:
+            # A start that raises leaves started state behind: stores hold
+            # pool connections and database handles, and their threads keep
+            # the interpreter alive after the traceback. Tear down before
+            # the error leaves, or the process never exits. Issue #61.
+            with contextlib.suppress(Exception):
+                await self.close()
+            raise
+
+    async def _start_inner(self) -> None:
+        """Open stores, start tasks, and bind every listener."""
         local_store = self.ctx.local_store
 
         await local_store.start()
