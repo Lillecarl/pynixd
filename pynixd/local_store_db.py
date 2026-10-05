@@ -514,14 +514,13 @@ class LocalStoreDB:
         can_write = os.access(db_dir, os.W_OK)
         read_only = not can_write
 
+        instance = cls(
+            db_path=db_path,
+            store_path=layout.real_store_dir,
+            read_only=read_only,
+            reference_flush_interval=reference_flush_interval,
+        )
         try:
-            instance = cls(
-                db_path=db_path,
-                store_path=layout.real_store_dir,
-                read_only=read_only,
-                reference_flush_interval=reference_flush_interval,
-            )
-
             async with instance.acquire_conn() as db:
                 if not read_only:
                     # The journal mode is Nix's to choose, and this used to set
@@ -561,6 +560,13 @@ class LocalStoreDB:
                 db_path=db_path,
                 error=e,
             )
+            # The probe above already opened pool connections, and each one
+            # holds a worker thread: returning with them open leaks threads
+            # that keep short-lived processes from exiting, the same class
+            # of failure as issue #61 one level up. Close what the probe
+            # opened, then report the store as having no database.
+            with suppress(Exception):
+                await instance.close_db_pool()
             return cls.inactive(layout, reference_flush_interval=reference_flush_interval)
 
         instance.schema = await apply_migrations(db_path, read_only=read_only)
