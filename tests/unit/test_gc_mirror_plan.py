@@ -243,7 +243,7 @@ async def test_close_batch_completes_the_slice(tmp_path: Path) -> None:
     )
     collector = Collector(FakeContext(local=local))  # type: ignore[arg-type] -- fakes
 
-    assert await collector._close_batch(local, [image], {image, spec}) == [image, spec]
+    assert await collector._close_batch(local, [image], {image, spec}) == [image, spec]  # type: ignore[arg-type] -- fakes
 
 
 @pytest.mark.anyio
@@ -258,7 +258,7 @@ async def test_close_batch_drops_a_live_anchored_seed(tmp_path: Path) -> None:
     )
     collector = Collector(FakeContext(local=local))  # type: ignore[arg-type] -- fakes
 
-    assert await collector._close_batch(local, [image], {image}) == []
+    assert await collector._close_batch(local, [image], {image}) == []  # type: ignore[arg-type] -- fakes
 
 
 @pytest.mark.anyio

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import asyncio
 import functools
+import inspect
 import json
 import os
 import time
@@ -80,7 +80,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     for item in items:
         if (
             isinstance(item, pytest.Function)
-            and asyncio.iscoroutinefunction(item.obj)
+            and inspect.iscoroutinefunction(item.obj)
             and not getattr(item.obj, "_pynixd_timeout_wrapped", False)
         ):
             item.obj = _wrap_with_timeout(item)
