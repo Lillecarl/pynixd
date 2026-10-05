@@ -1,17 +1,10 @@
-"""Build-kind observations never freshen. Issue #65.
+"""Decided builds freshen their closure; observations freshen what they name.
 
-A binary that stays live must stop keeping its entire build closure
-fresh for ever: every build that names the compiler records the use in
-the build table, and the planner -- which reads only the access table
--- keeps judging the compiler by age.
-
-The test backdates an old access row for the compiler, records repeated
-build-kind observations the way nightly builds would, and asserts the
-dry-run still names it. A runtime observation of the product spares it,
-which proves the split and not just the absence of marks.
-
-Perturbation: flush the build observations into the access table and the
-compiler reads fresh, so the plan spares it.
+A build decision queues its derivation plus its declared inputs as build
+seeds, and the flush expands them over the build closure into the same
+access table runtime seeds reach. Planning queries stay silent. The
+planner therefore judges every path by when something genuinely used
+it -- served, ensured, or built -- and by nothing else. Issue #65.
 """
 
 from __future__ import annotations
@@ -53,11 +46,12 @@ async def _backdate(store_path: Path, paths: set[str], age: int) -> None:
         await conn.commit()
 
 
-async def test_build_observations_do_not_freshen(tmp_path: Path) -> None:
+async def test_build_seeds_freshen_the_closure_they_name(tmp_path: Path) -> None:
+    """An old input queued as a build seed reads fresh afterwards."""
     store_path = tmp_path / "store"
     store_path.mkdir()
-    compiler = await _add(store_path, tmp_path, "compiler.txt", "old, and every build names it\n")
-    product = await _add(store_path, tmp_path, "product.txt", "old, and clients read it\n")
+    compiler = await _add(store_path, tmp_path, "compiler.txt", "old, but a build names it\n")
+    idle = await _add(store_path, tmp_path, "idle.txt", "old, and nothing names it\n")
 
     spec = make_test_spec(
         store_id="local",
@@ -71,17 +65,12 @@ async def test_build_observations_do_not_freshen(tmp_path: Path) -> None:
         ssh_port=None,
         http_port=None,
     ) as server:
-        await _backdate(store_path, {compiler, product}, STALE_AGE)
+        await _backdate(store_path, {compiler, idle}, STALE_AGE)
         db = getattr(server.ctx.local_store, "db", None)
         assert db is not None
-        # Nightly builds name the compiler, over and over. Build-kind.
-        for _ in range(3):
-            db.mark_paths([compiler], kind="build")
-        await db.flush_references()
-        # A client reads the product. Runtime-kind.
-        db.mark_paths([product])
+        db.mark_paths([compiler], kind="build")
         await db.flush_references()
 
         resp = await Collector(server.ctx).run(PynixdGCAction.DRY_RUN)
 
-    assert {str(path) for path in resp.store_paths} == {compiler}
+    assert {str(path) for path in resp.store_paths} == {idle}

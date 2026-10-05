@@ -42,7 +42,6 @@ import anyio
 import structlog
 
 from .db_migrations import (
-    BUILD_ACCESS_TABLE,
     DERIVATION_STATS_TABLE,
     PATH_ACCESS_TABLE,
     SchemaState,
@@ -62,25 +61,47 @@ log = structlog.get_logger(__name__)
 
 # ── SQL constants ─────────────────────────────────────────────────────
 
-# The marked paths, and only them: heads, never closures. Expanding a
-# seed over its references once touched tens of thousands of rows per
-# flush -- a system closure in a single write transaction, racing the
-# daemon's own writes every few seconds -- for paths nobody observed.
-# Unmarked paths resolve their age from `registrationTime`, so nothing
-# needs the closure's testimony.
+# The touched paths, and only them: the flush expands each queued seed
+# over its closure first, so this writes the union. Unmarked paths
+# resolve their age from `registrationTime`, so nothing needs the
+# closure's testimony twice.
 TOUCH_PATH_ACCESS = f"""
 INSERT INTO {PATH_ACCESS_TABLE} (path, lastReferencedAt)
 SELECT path, unixepoch() FROM ValidPaths WHERE path IN (SELECT value FROM json_each(?))
 ON CONFLICT (path) DO UPDATE SET lastReferencedAt = excluded.lastReferencedAt
 """
 
-# The build-kind twin of the touch above. Same shape, same batching, its
-# own table: a path observed while building records when, without moving
-# the age the planner judges it by.
-TOUCH_BUILD_ACCESS = f"""
-INSERT INTO {BUILD_ACCESS_TABLE} (path, lastBuildReferencedAt)
-SELECT path, unixepoch() FROM ValidPaths WHERE path IN (SELECT value FROM json_each(?))
-ON CONFLICT (path) DO UPDATE SET lastBuildReferencedAt = excluded.lastBuildReferencedAt
+# The runtime closure of a seed set: the seeds and everything reachable
+# through references, never crossing a derivation boundary. A `.drv`
+# file's references are its build inputs, so walking through one would
+# refresh a build closure from a mere observation -- the pushed
+# derivations stay heads. Store derivation paths always end in `.drv`,
+# so the suffix is the boundary. The parameter is a JSON array of store
+# paths. Issue #65.
+_RUNTIME_CLOSURE_OF_SEEDS = """
+    WITH RECURSIVE closure(id) AS (
+        SELECT id FROM ValidPaths WHERE path IN (SELECT value FROM json_each(?))
+        UNION
+        SELECT r.reference FROM closure c
+        JOIN Refs r ON c.id = r.referrer
+        JOIN ValidPaths cvp ON cvp.id = c.id
+        WHERE cvp.path NOT LIKE '%.drv'
+    )
+    SELECT path FROM ValidPaths WHERE id IN (SELECT id FROM closure)
+"""
+
+# The build closure of a seed set: the seeds and everything reachable
+# through references, derivations included. The scheduler seeds this
+# with the derivation it decided to build plus the inputs the request
+# names, so the walk covers the whole build closure whether or not the
+# store has registered every layer. Same array parameter. Issue #65.
+_BUILD_CLOSURE_OF_SEEDS = """
+    WITH RECURSIVE closure(id) AS (
+        SELECT id FROM ValidPaths WHERE path IN (SELECT value FROM json_each(?))
+        UNION
+        SELECT r.reference FROM closure c JOIN Refs r ON c.id = r.referrer
+    )
+    SELECT path FROM ValidPaths WHERE id IN (SELECT id FROM closure)
 """
 
 # The referrers of each seed, transitively, seeds included: the mirror of
@@ -119,20 +140,15 @@ DELETE FROM {PATH_ACCESS_TABLE}
 WHERE path NOT IN (SELECT path FROM ValidPaths)
 """
 
-PRUNE_BUILD_ACCESS = f"""
-DELETE FROM {BUILD_ACCESS_TABLE}
-WHERE path NOT IN (SELECT path FROM ValidPaths)
-"""
-
 MarkKind = Literal["runtime", "build"]
-"""Which queue a mark joins.
+"""Which seed set a mark joins, and so which closure the flush expands.
 
-`runtime` is observed use: serving a path to a client, or a goal
-ensuring an output. It writes `lastReferencedAt`, which the planner
-reads as freshness. `build` is a build input seen while planning or
-running a build. It writes `lastBuildReferencedAt`, which nothing reads
-yet -- it reserves the signal for liveness -- so a binary that stays
-live stops keeping its entire build closure fresh for ever. Issue #65.
+`runtime` is observed use: a path a client names. `build` is a decided
+build: the derivation plus the inputs its request names. Both expand to
+path lists at flush and upsert the same freshness column -- kind lives
+only at gather time, in which CTE runs, never in what is stored. The
+runtime walk stops at derivation boundaries, so pushing a derivation
+around refreshes its head and never its build closure. Issue #65.
 """
 
 # One root's closure over the same edges the liveness query walks:
@@ -158,16 +174,14 @@ _ROOT_CLOSURE_OF_SEEDS = """
     SELECT id FROM closure
 """
 
-# The build closure of one derivation: the derivation and everything it
-# references, transitively. A derivation's `Refs` are exactly its build
-# inputs -- input derivations and sources -- so one indexed walk names
-# the whole closure in a single statement. The scheduler records this
-# when it decides to build, as build-kind: the decision is the use-event
-# for the closure, and merely pushing the derivation around is not.
-# Issue #65.
-_BUILD_CLOSURE_OF_DRV = """
+# The build closure of a seed set: the seeds and everything reachable
+# through references, derivations included. The scheduler seeds this
+# with the derivation it decided to build plus the inputs the request
+# names, so the walk covers the whole build closure whether or not the
+# store has registered every layer. Same array parameter. Issue #65.
+_BUILD_CLOSURE_OF_SEEDS = """
     WITH RECURSIVE closure(id) AS (
-        SELECT id FROM ValidPaths WHERE path = ?
+        SELECT id FROM ValidPaths WHERE path IN (SELECT value FROM json_each(?))
         UNION
         SELECT r.reference FROM closure c JOIN Refs r ON c.id = r.referrer
     )
@@ -347,15 +361,14 @@ class LocalStoreDB:
         self.reference_flush_interval = reference_flush_interval
 
         self.pending_references: set[str] = set()
-        """Full store paths named in traffic since the last flush.
+        """Seeds for runtime-closure expansion: full store paths named in
+        traffic since the last flush.
 
-        One queue per kind: runtime marks touch their own heads, build
-        marks touch theirs, nothing more. The two-queue split first died
-        here when closure expansion went away -- with no closure there
-        was nothing for a build queue to spare. Issue #65 brings it back
-        with a different meaning: the split is no longer heads against
-        closures, but observed use against build inputs, so a binary that
-        stays live stops keeping its entire build closure fresh for ever.
+        Seeds, not paths: the flush expands each seed over the runtime
+        closure -- references transitively, never crossing a derivation
+        boundary -- and upserts the union. A burst of queries names
+        hundreds of seeds, not hundreds of thousands of paths, so
+        queueing stays an in-memory set insert no matter the burst size.
 
         Plain strings, because two `StorePath` classes reach this set and
         the SQL statement wants the text. `pynixd.store_path.StorePath`
@@ -363,11 +376,10 @@ class LocalStoreDB:
         in `__str__`, and the wire `StorePath` is a `str` of the whole path.
         """
         self.pending_build_references: set[str] = set()
-        """Build inputs named while planning or running a build.
-
-        Flushed to `PynixdBuildAccess`, which the planner ignores on
-        purpose: these observations record liveness signal for later,
-        they never freshen. See `MarkKind`.
+        """Seeds for build-closure expansion: decided derivations plus the
+        inputs their requests name. The flush expands them over the build
+        closure into the same access table runtime seeds reach: kind lives
+        in which closure runs, never in what is stored. See `MarkKind`.
         """
 
         self.flush_task: asyncio.Task[None] | None = None
@@ -734,8 +746,8 @@ class LocalStoreDB:
         """Drop the rows for paths the store no longer holds. Returns the count.
 
         This is the join that keeping pynixd's tables inside Nix's database
-        buys: one statement compares each access table against `ValidPaths`.
-        Without it the tables grow for ever, because a path that the garbage
+        buys: one statement compares `PynixdPathAccess` against `ValidPaths`.
+        Without it the table grows for ever, because a path that the garbage
         collector deletes leaves its access time behind.
         """
         if not self.active or self.read_only or not self.schema.usable:
@@ -744,8 +756,6 @@ class LocalStoreDB:
             async with self.acquire_conn() as db:
                 cursor = await db.execute(PRUNE_PATH_ACCESS)
                 removed = cursor.rowcount
-                cursor = await db.execute(PRUNE_BUILD_ACCESS)
-                removed += cursor.rowcount
                 await db.commit()
         except aiosqlite.Error:
             log.warning("prune_path_access_failed", exc_info=True)
@@ -761,44 +771,26 @@ class LocalStoreDB:
         self.mark_paths((path,), kind=kind)
 
     def mark_paths(self, paths: Iterable[StorePath | str], kind: MarkKind = "runtime") -> None:
-        """Note that something referenced each of `paths` just now.
+        """Queue each of `paths` as a seed for the next flush.
 
-        Heads only: the flush touches exactly these paths, and unmarked
-        paths resolve their age from `registrationTime`. A burst of
-        queries names hundreds of paths, not hundreds of thousands, so
-        the write stays milliseconds against the daemon's own database.
+        Seeds only: the flush expands each seed over its closure -- the
+        runtime closure for `runtime` seeds, the build closure for `build`
+        seeds -- and upserts the union. A burst of queries names hundreds
+        of seeds, not hundreds of thousands of paths, so queueing stays
+        an in-memory set insert no matter the burst size.
 
-        `kind` picks the queue. Serving a path and ensuring an output
-        are observed use (`runtime`); a build input seen while planning
-        or running a build is (`build`), recorded without freshening.
-        The default keeps every existing caller on the runtime queue.
+        `kind` picks the seed set. Serving a path queues it for runtime
+        expansion; the scheduler queues a decided build's derivation plus
+        its declared inputs for build expansion. The default keeps every
+        existing caller on the runtime queue.
 
         The write happens later. `flush_loop` drains the queues every few
-        seconds, so a burst of queries costs one statement and not one
-        for each path.
+        seconds, so a burst of queries costs two closure reads and
+        small chunked writes, not one write per path.
         """
         if self.active and not self.read_only:
             queue = self.pending_build_references if kind == "build" else self.pending_references
             queue.update(str(path) for path in paths)
-
-    async def mark_build_closure(self, drv_path: str) -> None:
-        """Record the build closure of a derivation pynixd decided to build.
-
-        Best-effort: a mark that fails must not fail the build it records,
-        so every failure is a debug line and an empty queue. The scheduler
-        calls this at assignment, which is the use-event for the closure:
-        pushing the derivation around -- planning queries, client requests
-        naming it -- observes the head, never the inputs. Issue #65.
-        """
-        if not self.active or self.read_only:
-            return
-        try:
-            async with self.execute(_BUILD_CLOSURE_OF_DRV, (drv_path,)) as cursor:
-                rows = await cursor.fetchall()
-        except (aiosqlite.Error, ValueError):
-            log.debug("mark_build_closure_failed", drv_path=drv_path, exc_info=True)
-            return
-        self.mark_paths((str(row[0]) for row in rows), kind="build")
 
     async def record_build_stats(
         self,
@@ -864,16 +856,18 @@ class LocalStoreDB:
         return None
 
     async def flush_references(self) -> None:
-        """Write the pending reference times into the access tables.
+        """Expand the pending seeds over their closures and touch the union.
 
-        Two queues, one statement per thousand marks each, heads only.
-        `ValidPaths.registrationTime` is read, never written: Nix writes
-        it once at registration, stock `nix-collect-garbage
-        --delete-older-than` reads it as entry age, and pynixd needs no
-        code for either. `PynixdPathAccess` is the column that says what
-        pynixd saw served, `PynixdBuildAccess` what it saw built, and the
-        planner reads only the first. Issue Lillecarl/nanopynix#166 has
-        the whole argument; issue #65 splits the queues.
+        The queues hold seeds, not paths: runtime seeds expand over the
+        runtime closure, build seeds over the build closure, both through
+        read-only walks, and one table takes the union. `ValidPaths`
+        `registrationTime` is read, never written: Nix writes it once at
+        registration, stock `nix-collect-garbage --delete-older-than`
+        reads it as entry age, and pynixd needs no code for either.
+        `PynixdPathAccess` is the column that says what pynixd saw, and
+        it is the only column pynixd writes. Issue
+        Lillecarl/nanopynix#166 has the whole argument; issue #65 picks
+        the closure by context.
         """
         if not self.active or self.read_only:
             return
@@ -881,49 +875,58 @@ class LocalStoreDB:
             return
 
         for attempt in range(3):
-            paths = self.pending_references
+            runtime_seeds = self.pending_references
             self.pending_references = set()
-            build_paths = self.pending_build_references
+            build_seeds = self.pending_build_references
             self.pending_build_references = set()
-            if not paths and not build_paths:
+            if not runtime_seeds and not build_seeds:
                 break
             try:
                 t0 = time.monotonic()
                 async with self.acquire_conn() as db:
-                    # One statement per thousand marks, each committed on
-                    # its own: no transaction safety is needed here, and a
-                    # short write holds the lock briefly enough that the
-                    # daemon's own writers get in between chunks.
+                    touched: set[str] = set()
+                    # The walks read; only the chunks below write, each
+                    # committed on its own: no transaction safety is
+                    # needed here, and a short write holds the lock
+                    # briefly enough that the daemon's own writers get in
+                    # between chunks.
                     if self.schema.usable:
-                        for chunk in batched(sorted(paths), 1000):
+                        if runtime_seeds:
+                            touched.update(await self._expand_closure(db, _RUNTIME_CLOSURE_OF_SEEDS, runtime_seeds))
+                        if build_seeds:
+                            touched.update(await self._expand_closure(db, _BUILD_CLOSURE_OF_SEEDS, build_seeds))
+                        for chunk in batched(sorted(touched), 1000):
                             await db.execute(TOUCH_PATH_ACCESS, (json.dumps(chunk),))
-                            await db.commit()
-                        for chunk in batched(sorted(build_paths), 1000):
-                            await db.execute(TOUCH_BUILD_ACCESS, (json.dumps(chunk),))
                             await db.commit()
                 elapsed = time.monotonic() - t0
                 log.debug(
                     "db_flush_complete",
-                    marked=len(paths),
-                    build_marked=len(build_paths),
+                    runtime_seeds=len(runtime_seeds),
+                    build_seeds=len(build_seeds),
+                    touched=len(touched),
                     path_access=self.schema.usable,
                     elapsed_ms=elapsed * 1000,
                 )
                 break
             except aiosqlite.Error:
                 # Lock contention with the daemon or another writer: put
-                # the marks back and retry with backoff. A failed flush
+                # the seeds back and retry with backoff. A failed flush
                 # used to close the whole pool, which left every fast
                 # path erroring until a restart; contention is transient,
                 # the pool is not the problem, and the next interval
-                # retries anyway. Unwritten marks merge back in, so no
+                # retries anyway. Unwritten seeds merge back in, so no
                 # reference is lost, only delayed.
-                self.pending_references |= paths
-                self.pending_build_references |= build_paths
+                self.pending_references |= runtime_seeds
+                self.pending_build_references |= build_seeds
                 if attempt >= 2:
                     log.exception("db_flush_failed")
                     break
                 await anyio.sleep(1 << attempt)
+
+    async def _expand_closure(self, db: aiosqlite.Connection, query: str, seeds: set[str]) -> set[str]:
+        """The closure of `seeds` under `query`, as path strings."""
+        async with db.execute(query, (json.dumps(sorted(seeds)),)) as cursor:
+            return {str(row[0]) for row in await cursor.fetchall()}
 
     def start(self) -> None:
         """Start background regtime flush task. Call from async context."""

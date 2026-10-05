@@ -34,7 +34,7 @@ from .substitution_queue import SubstitutionQueue
 from .system_features import effective_required_features
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterable, Mapping
 
     from nix_daemon_protocol.aliases import StorePathSet
     from nix_daemon_protocol.ids import BuildId, RequestId, StoreId
@@ -49,6 +49,18 @@ if TYPE_CHECKING:
     )
 
 log = structlog.get_logger(__name__)
+
+
+def build_decision_seeds(drv_path: str, input_srcs: Iterable[str]) -> set[str]:
+    """The seed set a build decision records, as build-kind.
+
+    The derivation plus the inputs its request names: no derivation file
+    is read, because the wire request already carries every input path.
+    Deeper layers resolve through the store's own references at flush --
+    if they needed building, their own decisions record them in turn.
+    Issue #65.
+    """
+    return {drv_path, *input_srcs}
 
 
 class Scheduler:
@@ -68,12 +80,6 @@ class Scheduler:
         self.allocator = BuildAllocator(self.stores, self.local_store, self.ranker)
         self.trigger_event = anyio.Event()
         self.running = False
-        self._mark_tasks: set[asyncio.Task[None]] = set()
-        """Build-closure recordings in flight.
-
-        The decision records the closure without waiting for it, so the
-        tasks live here until done instead of orphaned on the loop.
-        """
 
     @property
     def stores(self) -> Mapping[StoreId, DaemonStore]:
@@ -399,7 +405,6 @@ class Scheduler:
                 build.build_task = asyncio.create_task(
                     self.execute_build(build, rs.store),
                 )
-                self._record_build_closure(str(build.request.drv_path))
                 assigned_this_pass[rs.store_id] = assigned_this_pass.get(rs.store_id, 0) + 1
             else:
                 # All compatible stores are busy, or this build can't be placed
@@ -414,23 +419,6 @@ class Scheduler:
                 waiting_slot.append(build)
 
         return waiting_slot
-
-    def _record_build_closure(self, drv_path: str) -> None:
-        """Record the closure of an assigned build as build-kind, in the background.
-
-        The assignment is the use-event for the closure: pynixd decided to
-        build this derivation, so its inputs are genuinely in use. Merely
-        pushing the derivation around -- planning queries, client requests
-        naming it -- never records beyond the head. The recording must not
-        slow assignment, so it runs as a tracked task and the flush writes
-        it on its own schedule. Issue #65.
-        """
-        db = getattr(self.local_store, "db", None)
-        if db is None:
-            return
-        task = asyncio.create_task(db.mark_build_closure(drv_path))
-        self._mark_tasks.add(task)
-        task.add_done_callback(self._mark_tasks.discard)
 
     def _local_slot_is_full(
         self,
@@ -565,6 +553,20 @@ class Scheduler:
         3. _collect_outputs — Pull outputs, register realisations, record stats
         """
         build.assigned_store_id = store.store_id
+        # The decision is the use-event for the closure: queue the
+        # derivation plus the inputs its request names as build seeds.
+        # Synchronous queueing only -- the flush expands and writes on
+        # its own schedule -- so recording never slows the build start.
+        # Issue #65.
+        db = getattr(self.local_store, "db", None)
+        if db is not None:
+            db.mark_paths(
+                build_decision_seeds(
+                    str(build.request.drv_path),
+                    (str(p) for p in build.request.derivation.input_srcs),
+                ),
+                kind="build",
+            )
         build_resp: BuildDerivationResponse | None = None
         completed = False
         try:

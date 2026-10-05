@@ -201,6 +201,19 @@ MIGRATIONS: tuple[Migration, ...] = (
         ),
         creates=(BUILD_ACCESS_TABLE,),
     ),
+    Migration(
+        version=6,
+        name="single access table",
+        statements=(
+            # The build table never earned a reader: freshness for build
+            # inputs rejoined the access table instead, expanded by
+            # context-specific closures at flush. Its rows die with it;
+            # they were a signal, never a record anyone owned.
+            f"DROP TABLE IF EXISTS {BUILD_ACCESS_TABLE}",
+        ),
+        creates=(),
+        drops=(BUILD_ACCESS_TABLE,),
+    ),
 )
 
 TARGET_VERSION = MIGRATIONS[-1].version if MIGRATIONS else 0

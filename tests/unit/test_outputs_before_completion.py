@@ -84,6 +84,8 @@ class FakeScheduler:
         self.queue = FakeQueue(self.steps)
         self.collection_fails = collection_fails
         self.triggers = 0
+        self.local_store = None
+        """No local store here: `execute_build` records nothing without one."""
 
     def trigger(self) -> None:
         self.triggers += 1

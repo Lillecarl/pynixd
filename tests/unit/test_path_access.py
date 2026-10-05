@@ -13,9 +13,11 @@ that was missing.
 `PynixdPathAccess` is the second half. `registrationTime` says "when this
 path entered the store", and `nix path-info --json` reports it as that, so
 one number cannot answer both questions afterwards. Issue Lillecarl/nanopynix#166.
-`registrationTime` is therefore read, never written, and the flush touches
-marked heads only: no closure expansion, no 100k-row write transactions
-against the daemon's own database.
+`registrationTime` is therefore read, never written, and the flush expands
+each queued seed over its closure: the runtime closure for served paths,
+the build closure for decided builds, upserting the union. Unmarked paths
+resolve their age from `registrationTime` instead. Issue #65 picks the
+closure by context.
 """
 
 from __future__ import annotations
@@ -31,7 +33,7 @@ import anyio
 import pytest
 from pydantic import BaseModel, ConfigDict
 
-from pynixd.db_migrations import BUILD_ACCESS_TABLE, PATH_ACCESS_TABLE
+from pynixd.db_migrations import PATH_ACCESS_TABLE
 from pynixd.local_store_db import LocalStoreDB
 from pynixd.serde import (
     IsValidPathRequest,
@@ -48,6 +50,7 @@ if TYPE_CHECKING:
 HELLO = "/nix/store/00000000000000000000000000000001-hello"
 LIBC = "/nix/store/00000000000000000000000000000002-libc"
 GONE = "/nix/store/00000000000000000000000000000003-gone"
+DRV = "/nix/store/00000000000000000000000000000004-x.drv"
 
 
 def _store_with_a_closure(tmp_path: Path) -> Path:
@@ -72,13 +75,26 @@ async def _access_times(db: LocalStoreDB) -> dict[str, int]:
         return {str(row[0]): int(row[1]) for row in await cursor.fetchall()}
 
 
+def _store_with_a_drv(tmp_path: Path) -> None:
+    """A store database where a derivation references `hello`, which references `libc`."""
+    db_path = tmp_path / "nix" / "var" / "nix" / "db" / "db.sqlite"
+    db_path.parent.mkdir(parents=True)
+    with closing(sqlite3.connect(db_path)) as conn, conn:
+        conn.execute(
+            "CREATE TABLE ValidPaths ("
+            "id INTEGER PRIMARY KEY, path TEXT UNIQUE NOT NULL, "
+            "deriver TEXT, registrationTime INTEGER)",
+        )
+        conn.execute("CREATE TABLE Refs (referrer INTEGER, reference INTEGER)")
+        conn.execute("INSERT INTO ValidPaths (id, path, registrationTime) VALUES (1, ?, 0)", (DRV,))
+        conn.execute("INSERT INTO ValidPaths (id, path, registrationTime) VALUES (2, ?, 0)", (HELLO,))
+        conn.execute("INSERT INTO ValidPaths (id, path, registrationTime) VALUES (3, ?, 0)", (LIBC,))
+        conn.execute("INSERT INTO Refs (referrer, reference) VALUES (1, 2)")
+        conn.execute("INSERT INTO Refs (referrer, reference) VALUES (2, 3)")
+
+
 async def _registration_times(db: LocalStoreDB) -> dict[str, int]:
     async with db.execute("SELECT path, registrationTime FROM ValidPaths") as cursor:
-        return {str(row[0]): int(row[1]) for row in await cursor.fetchall()}
-
-
-async def _build_times(db: LocalStoreDB) -> dict[str, int]:
-    async with db.execute(f"SELECT path, lastBuildReferencedAt FROM {BUILD_ACCESS_TABLE}") as cursor:
         return {str(row[0]): int(row[1]) for row in await cursor.fetchall()}
 
 
@@ -181,24 +197,24 @@ class TestTheFieldFilter:
 
 @pytest.mark.anyio
 class TestFlushingTheReferences:
-    async def test_a_marked_path_reaches_the_table_alone(self, tmp_path: Path) -> None:
-        """Heads only: `libc` is referenced by `hello`, and stays unmarked.
+    async def test_a_mark_expands_the_runtime_closure(self, tmp_path: Path) -> None:
+        """Serving `hello` freshens `hello` and the `libc` it references.
 
-        The flush used to expand every seed over its transitive closure,
-        touching tens of thousands of rows per mark -- one system closure
-        in a single write transaction, racing the daemon's own writes --
-        for paths nobody observed. Unmarked paths resolve their age from
-        `registrationTime` instead, so the closure's testimony is missed
-        nowhere that matters.
+        The queue holds seeds and the flush expands them: one closure
+        read plus small chunked writes per flush, no matter the burst
+        size. Unmarked paths resolve their age from `registrationTime`
+        instead, so the closure's testimony is missed nowhere that
+        matters.
 
-        Perturbation: expand the closure again and `libc` lands in the table.
+        Perturbation: touch heads only and `libc` rots while `hello`
+        stays fresh, although no client can use one without the other.
         """
         _store_with_a_closure(tmp_path)
         async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
             db.mark_path(HELLO)
             await db.flush_references()
 
-            assert set(await _access_times(db)) == {HELLO}
+            assert set(await _access_times(db)) == {HELLO, LIBC}
 
     async def test_the_registration_time_is_never_written(self, tmp_path: Path) -> None:
         """Nix's column is read, never written: entry age stays honest.
@@ -242,14 +258,16 @@ class TestFlushingTheReferences:
             await db.flush_references()
             assert db.pending_references == set()
 
-    async def test_a_derivation_marks_its_head_like_any_path(self, tmp_path: Path) -> None:
-        """No queue, no suffix rule: a marked head is touched, named or not.
+    async def test_a_derivation_seed_stops_at_the_boundary(self, tmp_path: Path) -> None:
+        """A pushed derivation refreshes its head, never its build closure.
 
-        Derivations once queued separately so their build inputs would not
-        refresh; with no closure expansion there is nothing to spare them
-        from, and the head is genuinely referenced either way.
+        The runtime walk does not traverse out of `.drv` nodes: a
+        derivation's references are its build inputs, and walking through
+        one would refresh a build closure from a mere observation. Only a
+        build decision -- which uses the build walk -- names those paths.
 
-        Perturbation: skip `.drv` paths in `mark_paths` and no row appears.
+        Perturbation: walk through derivations and every planning query
+        that names a `.drv` freshens its whole build closure.
         """
         drv = "/nix/store/00000000000000000000000000000001-x.drv"
         dep = "/nix/store/00000000000000000000000000000002-dep"
@@ -273,36 +291,55 @@ class TestFlushingTheReferences:
 
 
 @pytest.mark.anyio
-class TestFlushingByKind:
-    """Build-kind marks record without freshening. Issue #65."""
+class TestExpandingClosuresByKind:
+    """Kind picks the walk, never the table. Issue #65."""
 
-    async def test_a_build_mark_reaches_the_build_table_alone(self, tmp_path: Path) -> None:
-        """A compiler seen while building is recorded, not refreshed.
+    async def test_a_build_seed_expands_through_derivations(self, tmp_path: Path) -> None:
+        """A decided build freshens its whole build closure.
 
-        The access table -- the one the planner reads as freshness --
-        stays empty, so a binary that stays live stops keeping its
-        entire build closure fresh for ever. The observation itself
-        lands in the build table, which reserves the signal for liveness.
-
-        Perturbation: flush build marks into the access table and the
-        planner can no longer tell use from building.
+        The build walk follows references everywhere, derivations
+        included: the decision is the use-event for the closure, and
+        merely pushing the derivation around never records beyond the
+        head. One table takes the union either way.
         """
+        _store_with_a_drv(tmp_path)
+        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
+            db.mark_paths([DRV], kind="build")
+            await db.flush_references()
+
+            assert set(await _access_times(db)) == {DRV, HELLO, LIBC}
+
+    async def test_a_runtime_seed_stops_at_derivations(self, tmp_path: Path) -> None:
+        _store_with_a_drv(tmp_path)
+        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
+            db.mark_paths([DRV])
+            await db.flush_references()
+
+            assert set(await _access_times(db)) == {DRV}
+
+    async def test_both_kinds_agree_off_derivations(self, tmp_path: Path) -> None:
+        """Below a derivation the two walks are the same walk."""
+        _store_with_a_drv(tmp_path)
+        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
+            db.mark_paths([HELLO])
+            await db.flush_references()
+            runtime = set(await _access_times(db))
+            async with db.acquire_conn() as conn:
+                await conn.execute(f"DELETE FROM {PATH_ACCESS_TABLE}")
+                await conn.commit()
+            db.mark_paths([HELLO], kind="build")
+            await db.flush_references()
+            build = set(await _access_times(db))
+
+        assert runtime == build == {HELLO, LIBC}
+
+    async def test_an_unknown_seed_records_nothing(self, tmp_path: Path) -> None:
         _store_with_a_closure(tmp_path)
         async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
-            db.mark_path(LIBC, kind="build")
+            db.mark_paths([GONE], kind="build")
             await db.flush_references()
 
             assert await _access_times(db) == {}
-            assert set(await _build_times(db)) == {LIBC}
-
-    async def test_a_runtime_mark_stays_out_of_the_build_table(self, tmp_path: Path) -> None:
-        _store_with_a_closure(tmp_path)
-        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
-            db.mark_path(HELLO)
-            await db.flush_references()
-
-            assert set(await _access_times(db)) == {HELLO}
-            assert await _build_times(db) == {}
 
     async def test_both_queues_drain_together(self, tmp_path: Path) -> None:
         _store_with_a_closure(tmp_path)
@@ -313,20 +350,12 @@ class TestFlushingByKind:
 
             assert db.pending_references == set()
             assert db.pending_build_references == set()
-            assert set(await _access_times(db)) == {HELLO}
-            assert set(await _build_times(db)) == {LIBC}
+            assert set(await _access_times(db)) == {HELLO, LIBC}
 
-    async def test_a_collected_path_leaves_both_tables(self, tmp_path: Path) -> None:
-        """Prune compares each access table against `ValidPaths`.
-
-        Without it the build table would grow for ever: every build
-        decision records a closure, and the collector deletes the paths
-        while their build times stay behind.
-        """
+    async def test_a_collected_path_leaves_the_table(self, tmp_path: Path) -> None:
         _store_with_a_closure(tmp_path)
         async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
             db.mark_paths([HELLO])
-            db.mark_paths([LIBC], kind="build")
             await db.flush_references()
             async with db.acquire_conn() as conn:
                 await conn.execute("DELETE FROM ValidPaths WHERE path = ?", (HELLO,))
@@ -335,40 +364,6 @@ class TestFlushingByKind:
 
             assert await db.prune_path_access() == 2
             assert await _access_times(db) == {}
-            assert await _build_times(db) == {}
-
-
-@pytest.mark.anyio
-class TestRecordingABuildClosure:
-    """A decided build records its closure as build-kind. Issue #65."""
-
-    async def test_a_build_decision_records_the_closure_as_build_kind(self, tmp_path: Path) -> None:
-        """The derivation and everything it references land in the build table.
-
-        The access table stays empty: deciding to build observes the
-        inputs, and an observation must not freshen. The planner then
-        keeps judging build inputs by age instead of retiring them the
-        moment something builds against them.
-
-        Perturbation: record the closure as runtime-kind and an old
-        compiler stops ageing out while nightly builds name it.
-        """
-        _store_with_a_closure(tmp_path)
-        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
-            await db.mark_build_closure(HELLO)
-            await db.flush_references()
-
-            assert await _access_times(db) == {}
-            assert set(await _build_times(db)) == {HELLO, LIBC}
-
-    async def test_a_build_decision_for_an_unknown_path_records_nothing(self, tmp_path: Path) -> None:
-        _store_with_a_closure(tmp_path)
-        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
-            await db.mark_build_closure(GONE)
-            await db.flush_references()
-
-            assert await _access_times(db) == {}
-            assert await _build_times(db) == {}
 
 
 @pytest.mark.anyio
@@ -405,7 +400,7 @@ class TestFlushingUnderContention:
 
             assert calls == 3
             assert db.active
-            assert set(await _access_times(db)) == {HELLO}
+            assert set(await _access_times(db)) == {HELLO, LIBC}
 
     async def test_a_hopeless_flush_requeues_and_surrenders_loudly(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
