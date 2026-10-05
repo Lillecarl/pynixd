@@ -22,10 +22,11 @@ from pynixd.proxy import DaemonProxy
 FEATURES_OF_NIX_LATEST = {
     ndp.FEATURE_REALISATION_WITH_PATH,
     ndp.FEATURE_DELETE_DEAD_SPECIFIC_REFERRERS,
+    ndp.FEATURE_ADD_TEMP_ROOTS,
 }
 """What `WorkerProto::latest` of the master branch offers.
 
-`worker-protocol.cc` builds it from these two names. A `nix` client and a
+`worker-protocol.cc` builds it from these three names. A `nix` client and a
 `nix-daemon` of that branch each send this set.
 """
 
@@ -95,16 +96,19 @@ def test_the_ledger_names_every_feature_that_pynixd_does_not_claim() -> None:
         assert reason, feature
 
 
-def test_pynixd_claims_the_build_trace_feature() -> None:
-    """The first codec landed, and it is the one the report was about.
+def test_pynixd_claims_the_build_trace_and_batch_roots_features() -> None:
+    """The first two codecs landed: realisations and batch temp roots.
 
     `realisation-with-path-not-hash` covers `DrvOutput`,
     `UnkeyedRealisation`, `BuildResult.builtOutputs`, `QueryRealisation` and
     `RegisterDrvOutput`. Measured before it: the `ca` suite against Nix 2.35
     answered 2 of 24 through pynixd, and 19 of the 24 raised "the daemon is
     missing the 'realisation-with-path-not-hash' protocol feature".
+
+    `addTempRoots` covers op 49, which the proxy serves itself the way it
+    serves op 11. Issue #66.
     """
-    assert ndp.SUPPORTED_STANDARD_FEATURES == frozenset({ndp.FEATURE_REALISATION_WITH_PATH})
+    assert ndp.SUPPORTED_STANDARD_FEATURES == frozenset({ndp.FEATURE_REALISATION_WITH_PATH, ndp.FEATURE_ADD_TEMP_ROOTS})
 
 
 def test_the_negotiation_is_the_intersection() -> None:
@@ -115,10 +119,11 @@ def test_the_negotiation_is_the_intersection() -> None:
 
 
 def test_a_client_of_the_master_branch_negotiates_the_build_trace() -> None:
-    """A `nix` client of the master branch names both features of `latest`.
+    """A `nix` client of the master branch names three features of `latest`.
 
-    pynixd names one of the two back, so a realisation survives the proxy and
-    `delete-dead-specific-referrers` stays off. Issue #14.
+    pynixd names two of the three back, so a realisation survives the proxy,
+    batch roots arrive as op 49, and `delete-dead-specific-referrers` stays
+    off. Issue #14.
 
     **This is what the codecs can do, and not what a proxy will claim.**
     `DaemonProxy.honourable_features` narrows it again to what every store
@@ -127,7 +132,7 @@ def test_a_client_of_the_master_branch_negotiates_the_build_trace() -> None:
     """
     negotiated = wire.negotiate_features(FEATURES_OF_NIX_LATEST, ndp.SUPPORTED_STANDARD_FEATURES)
 
-    assert negotiated == frozenset({ndp.FEATURE_REALISATION_WITH_PATH})
+    assert negotiated == frozenset({ndp.FEATURE_REALISATION_WITH_PATH, ndp.FEATURE_ADD_TEMP_ROOTS})
 
 
 class _Store:
