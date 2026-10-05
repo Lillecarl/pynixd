@@ -667,6 +667,17 @@ class PynixdSettings(BaseSettings):
     gap is the hysteresis. Without a target the triggered pass is
     unbounded, like the scheduled one.
     """
+    gc_watermark_max_passes: int = 20
+    """Bounded passes per watermark trigger before the watch sleeps again.
+
+    One pass relieves a little; a flood that lands all at once needs many,
+    and a poll interval between each turns minutes of deleting into hours
+    of waiting. The drive runs back to back while pressure stays over the
+    watermark, stopping early when a pass frees nothing -- refused everything
+    or planned nothing -- because more passes change nothing until the world
+    does. Twenty covered a 95%-to-70% relief with room; raise it for a
+    faster full drain, lower it to spread big reliefs across polls.
+    """
     gc_liveness_interval: float | None = None
     """Seconds between liveness differential checks. `None` gathers no evidence.
 

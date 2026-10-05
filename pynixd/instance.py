@@ -37,6 +37,8 @@ if TYPE_CHECKING:
     import asyncssh
     from aiohttp import web
 
+    from .daemon_extensions.pynixd_collect_garbage import PynixdCollectGarbageResponse
+
 log = structlog.get_logger(__name__)
 
 # The size of `sun_path` in `struct sockaddr_un`, per platform. The kernel
@@ -339,11 +341,12 @@ class Server:
         A full pass traces the roots under the garbage collector lock, which
         holds up builds for as long as the trace takes -- far too dear to
         run every minute. The watch instead reads the disk usage, which costs
-        a `statvfs` and no locks: over `gc_high_watermark` it runs a bounded
-        pass (the target is the floor, so pressure has hysteresis built in),
-        and every `gc_interval` it runs the full pass regardless. An hour of
-        writes cannot fill the disk unanswered when the watch answers in a
-        minute; the full pass stays the backstop for slow drift.
+        a `statvfs` and no locks: over `gc_high_watermark` it drives bounded
+        passes back to back until pressure drops (the target is the floor,
+        so pressure has hysteresis built in), and every `gc_interval` it runs
+        the full pass regardless. An hour of writes cannot fill the disk
+        unanswered when the watch answers in a minute; the full pass stays
+        the backstop for slow drift.
         """
         settings = self.ctx.settings
         log.info(
@@ -356,11 +359,31 @@ class Server:
         while True:
             await anyio.sleep(settings.gc_poll_interval)
             if self._over_watermark():
-                await self._gc_pass("watermark")
+                await self._drive_to_target()
                 continue
             if time.monotonic() - last_full >= settings.gc_interval:
                 last_full = time.monotonic()
                 await self._gc_pass("scheduled")
+
+    async def _drive_to_target(self) -> None:
+        """Bounded passes back to back until pressure drops or progress stops.
+
+        One watermark pass relieves a little; a flood needs many, and a
+        poll interval between each turns minutes of deleting into hours of
+        waiting. So the drive re-checks pressure right after each pass and
+        runs the next while still over the watermark: up to
+        `gc_watermark_max_passes` passes, stopping early when a pass frees
+        nothing -- refused everything or planned nothing -- because more
+        passes change nothing until the world does. Issue #71.
+        """
+        cap = self.ctx.settings.gc_watermark_max_passes
+        for _ in range(cap):
+            if not self._over_watermark():
+                return
+            resp = await self._gc_pass("watermark")
+            if resp is None or not resp.store_paths:
+                return
+        log.info("gc_drive_capped", cap=cap)
 
     def _over_watermark(self) -> bool:
         """Whether disk pressure currently warrants a bounded pass."""
@@ -375,8 +398,13 @@ class Server:
             return False
         return usage.used / usage.total > watermark
 
-    async def _gc_pass(self, reason: str) -> None:
-        """One EXECUTE pass, with the metrics the loop always reports."""
+    async def _gc_pass(self, reason: str) -> PynixdCollectGarbageResponse | None:
+        """One EXECUTE pass, with the metrics the loop always reports.
+
+        Answers what the pass deleted, or `None` when it deleted nothing:
+        refused, errored, or planned nothing. The drive uses the answer to
+        stop when passes stop freeing.
+        """
         started = time.monotonic()
         try:
             resp = await Collector(self.ctx).run(PynixdGCAction.EXECUTE)
@@ -387,9 +415,11 @@ class Server:
             # the posture until the liveness mirror is proven. Info, not
             # error, and no cycle metric either way.
             log.info("gc_execute_not_permitted", reason=reason)
+            return None
         except Exception:
             metrics.GC_CYCLES.labels(result="error").inc()
             log.exception("gc_pass_failed", reason=reason)
+            return None
         else:
             metrics.GC_CYCLES.labels(result="ok").inc()
             metrics.GC_PATHS_DELETED.inc(len(resp.store_paths))
@@ -399,6 +429,7 @@ class Server:
             # the other question.
             metrics.GC_LAST_SUCCESS.set(time.time())
             log.info("gc_loop_pass", reason=reason, deleted=len(resp.store_paths), bytes=resp.bytes)
+            return resp
         finally:
             metrics.GC_CYCLE_DURATION.observe(time.monotonic() - started)
 
