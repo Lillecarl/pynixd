@@ -88,10 +88,12 @@ class FakeLocal:
     live: set[str] = field(default_factory=set)
     sizes: dict[str, int] = field(default_factory=lambda: {A: 100, B: 200})
     calls: list[str] = field(default_factory=list)
+    marks: list[tuple[str, bool]] = field(default_factory=list)
     deleted: list[str] = field(default_factory=list)
 
     async def execute(self, request: Any, **_kwargs: Any) -> Any:
         self.calls.append(type(request).__name__)
+        self.marks.append((type(request).__name__, bool(_kwargs.get("mark", True))))
         if isinstance(request, QueryAllValidPathsRequest):
             return QueryAllValidPathsResponse(paths={StorePath(A), StorePath(B)})
         if isinstance(request, QueryClosureRequest):
@@ -206,6 +208,25 @@ async def test_an_unanswerable_closure_falls_back_to_the_seeds(tmp_path: Path) -
         resp = await collector.run(PynixdGCAction.DRY_RUN)
 
     assert {str(path) for path in resp.store_paths} == {B}
+
+
+@pytest.mark.anyio
+async def test_gc_bookkeeping_queries_do_not_mark_the_judged(tmp_path: Path) -> None:
+    """Weighing and keep-closure name dead candidates; marking them would freshen the judged.
+
+    A dry-run must not move what it measures: the paths a pass weighs and
+    closes over are under judgment, and recording them as referenced would
+    keep every candidate fresh for ever. The veto keeps its marks --
+    volatile seeds are live roots, and recording last-seen-live is what
+    the access table is for.
+    """
+    collector, local, state_dir = _collector(tmp_path)
+    with live_temp_root(state_dir, "99", f"{A}\x00".encode()):
+        await collector.run(PynixdGCAction.DRY_RUN)
+
+    assert ("QueryPathInfosRequest", False) in local.marks
+    closure_marks = sorted(mark for name, mark in local.marks if name == "QueryClosureRequest")
+    assert closure_marks == [False, True]
 
 
 @pytest.mark.anyio

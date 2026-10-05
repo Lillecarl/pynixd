@@ -100,6 +100,7 @@ class StatsTestStore(LocalDBStore):
         client=None,
         suppress_last=False,
         skip_probe=False,
+        mark=True,
     ):
 
         if isinstance(request, QueryAllValidPathsRequest):

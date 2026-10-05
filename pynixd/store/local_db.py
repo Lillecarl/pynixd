@@ -195,12 +195,19 @@ class LocalDBStore(LocalStore):
         await self.db.close()
         await super().close()
 
-    async def execute(self, request, client=None, suppress_last=False, skip_probe=False):  # type: ignore[no-untyped-def] -- the parent is untyped
+    async def execute(self, request, client=None, suppress_last=False, skip_probe=False, mark=True):  # type: ignore[no-untyped-def] -- the parent is untyped
         """Note the paths of the request, then run it.
 
         This is the one place that sees every operation, whichever route
         answers it: a fast path over SQLite, or the wire. `LocalStoreDB`
         collects the paths and writes them a few seconds later.
+
+        `mark` is for the collector's own bookkeeping queries: weighing
+        names dead candidates to read their sizes, and recording those
+        names as referenced would freshen exactly the paths the pass is
+        judging. A dry-run must not move what it measures, so those calls
+        pass `mark=False`. The veto keeps its marks: its seeds are live
+        roots, and recording last-seen-live is what the access table is for.
 
         `mark_path` and `mark_paths` had no caller anywhere, in any project of
         this repository. The set they fill was therefore always empty,
@@ -209,7 +216,8 @@ class LocalDBStore(LocalStore):
         `registrationTime` was never refreshed, and the LRU garbage collection
         that the refresh exists for never had an input. Issue Lillecarl/nanopynix#166.
         """
-        self.db.mark_paths(referenced_paths(request))
+        if mark:
+            self.db.mark_paths(referenced_paths(request))
         return await super().execute(request, client=client, suppress_last=suppress_last, skip_probe=skip_probe)
 
     # ── Fast-path overrides ────────────────────────────────────────

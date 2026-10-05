@@ -273,7 +273,13 @@ class Collector:
             return {}
         local = self.ctx.local_store
         try:
-            resp = await local.execute(QueryPathInfosRequest(paths=paths))
+            # Unmarked: these are the judged, not the living. Marking them
+            # would freshen every candidate the pass weighs, and a dry-run
+            # must not move what it measures. `mark` is a LocalDBStore
+            # capability, not a Store one, so the attribute reads through
+            # `getattr` like the other local-only answers here.
+            execute = getattr(local, "execute")
+            resp = await execute(QueryPathInfosRequest(paths=paths), mark=False)
         except Exception:
             log.warning("gc_weigh_infos_failed", exc_info=True)
             return None
@@ -385,7 +391,10 @@ class Collector:
             held |= await self._held_by(store, all_paths)
 
         unheld = all_paths - held
-        keep: set[StorePath] = (await local.execute(QueryClosureRequest(paths=unheld))).paths
+        # Unmarked, like the weighing: these are candidates under judgment,
+        # and naming them must not freshen them.
+        execute = getattr(local, "execute")
+        keep: set[StorePath] = (await execute(QueryClosureRequest(paths=unheld), mark=False)).paths
         if not unheld <= keep:
             # `DaemonStore.query_closure` answers an empty set for a store that
             # does not carry the feature, and the difference below would then

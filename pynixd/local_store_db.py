@@ -4,13 +4,14 @@ Provides a connection pool for direct SQL queries against the local store DB.
 Operations that support fast-path SQL queries use ``store.db.acquire_conn()``
 directly rather than going through a dispatcher.
 
-Reference updates are batched writes into pynixd's own access table, split
-in two queues. Runtime references touch the reference closure of each
-seed; derivations touch the head only, because a derivation's references
-are its build inputs, and expanding those on every build would keep
-build garbage fresh for ever. Nix's own tables are never written: not
-even `registrationTime`, which Nix writes once at registration and
-`nix path-info` reports as the entry age.
+Reference updates are batched writes into pynixd's own access table:
+heads only, never closures. Marking one path used to touch its whole
+transitive closure -- tens of thousands of rows in one write transaction
+against the daemon's own database, every few seconds -- for paths nobody
+observed. A row now means exactly "named in traffic"; anything untouched
+resolves its age from `registrationTime` instead. Nix's own tables are
+never written: not even `registrationTime`, which Nix writes once at
+registration and `nix path-info` reports as the entry age.
 
 If the database can't be opened (permissions, missing file, wrong schema),
 logs a warning and becomes unavailable — callers fall back to the daemon.
@@ -32,6 +33,7 @@ import sqlite3
 import time
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
+from itertools import batched
 from pathlib import Path
 from typing import TYPE_CHECKING, Self
 
@@ -59,33 +61,13 @@ log = structlog.get_logger(__name__)
 
 # ── SQL constants ─────────────────────────────────────────────────────
 
-# The references of each seed, transitively, seeds included: runtime
-# edges only. Lix's UpdateRegistrationTimeRecursive also crosses into
-# derivers and their references; the touch must not follow, because a
-# derivation's references are its build inputs, and a live output would
-# otherwise keep its whole build closure fresh for ever. The parameter is
-# a JSON array of store paths.
-_REFERENCES_OF_SEEDS = """
-    WITH RECURSIVE closure(id) AS (
-        SELECT id FROM ValidPaths WHERE path IN (SELECT value FROM json_each(?))
-        UNION
-        SELECT r.reference
-        FROM closure c JOIN Refs r ON c.id = r.referrer
-    )
-    SELECT id FROM closure
-"""
-
+# The marked paths, and only them: heads, never closures. Expanding a
+# seed over its references once touched tens of thousands of rows per
+# flush -- a system closure in a single write transaction, racing the
+# daemon's own writes every few seconds -- for paths nobody observed.
+# Unmarked paths resolve their age from `registrationTime`, so nothing
+# needs the closure's testimony.
 TOUCH_PATH_ACCESS = f"""
-INSERT INTO {PATH_ACCESS_TABLE} (path, lastReferencedAt)
-SELECT path, unixepoch() FROM ValidPaths WHERE id IN ({_REFERENCES_OF_SEEDS})
-ON CONFLICT (path) DO UPDATE SET lastReferencedAt = excluded.lastReferencedAt
-"""
-
-# The build queue: derivation heads, never expanded. A `.drv` path names
-# build-time references by the data model, so expanding here would re-pin
-# the build closure the split exists to release. The head itself is
-# genuinely in use, and touching it says exactly that.
-TOUCH_PATH_ACCESS_HEADS = f"""
 INSERT INTO {PATH_ACCESS_TABLE} (path, lastReferencedAt)
 SELECT path, unixepoch() FROM ValidPaths WHERE path IN (SELECT value FROM json_each(?))
 ON CONFLICT (path) DO UPDATE SET lastReferencedAt = excluded.lastReferencedAt
@@ -322,18 +304,16 @@ class LocalStoreDB:
         self.read_only: bool = read_only
         self.reference_flush_interval = reference_flush_interval
 
-        self.pending_runtime: set[str] = set()
-        self.pending_build: set[str] = set()
-        """Full store paths that something referenced since the last flush.
+        self.pending_references: set[str] = set()
+        """Full store paths named in traffic since the last flush.
 
-        Two queues, split by what the path's references mean. A `.drv`
-        path names build-time references by the data model; every other
-        path names runtime references. The flush expands the runtime
-        queue over reference closures and touches the build queue heads
-        only, so a live output stops keeping its build closure fresh.
+        One queue: every marked path touches its own head, nothing more.
+        The two-queue split died here -- with no closure expansion there
+        is nothing for a build queue to spare, and a `.drv` head touches
+        like any other genuinely referenced path.
 
-        Plain strings, because two `StorePath` classes reach these sets
-        and both SQL statements want the text. `pynixd.store_path.StorePath`
+        Plain strings, because two `StorePath` classes reach this set and
+        the SQL statement wants the text. `pynixd.store_path.StorePath`
         keeps the path without the `/nix/store/` prefix and adds it back
         in `__str__`, and the wire `StorePath` is a `str` of the whole path.
         """
@@ -413,7 +393,11 @@ class LocalStoreDB:
             if conn is None:
                 mode = "ro" if self.read_only else "rw"
                 uri = f"file:{self.db_path}?mode={mode}"
-                conn = await aiosqlite.connect(uri, uri=True)
+                # Thirty seconds of busy wait, not five: this file is the
+                # Nix daemon's own database, and under heavy builders a
+                # flush that gives up early used to take the whole pool
+                # down with it. Contention here is normal, not failure.
+                conn = await aiosqlite.connect(uri, uri=True, timeout=30)
                 async with self._pool_lock:
                     self._all_conns.append(conn)
 
@@ -453,9 +437,8 @@ class LocalStoreDB:
                 yield cursor
             finally:
                 with suppress(ValueError, aiosqlite.Error):
-                    # ValueError: aiosqlite raises it for a connection that
-                    # `close_db_pool` already closed, which `flush_references`
-                    # does when a write fails.
+                    # ValueError: aiosqlite raises it for a connection
+                    # that went away underneath the read.
                     await cursor.close()
 
     @classmethod
@@ -720,24 +703,17 @@ class LocalStoreDB:
     def mark_paths(self, paths: Iterable[StorePath | str]) -> None:
         """Note that something referenced each of `paths` just now.
 
-        Derivations queue as build heads, everything else as runtime
-        seeds: the suffix decides, not the operation, because the edge
-        kind is a property of the path. A missed `.drv` by suffix --
-        an output path ending in `.drv`, which Nix permits in theory --
-        touches its head only; it stays correct through the mirror, which
-        still calls it dead or alive on its own evidence.
+        Heads only: the flush touches exactly these paths, and unmarked
+        paths resolve their age from `registrationTime`. A burst of
+        queries names hundreds of paths, not hundreds of thousands, so
+        the write stays milliseconds against the daemon's own database.
 
-        The write happens later. `flush_loop` drains the queues every few
-        seconds, so a burst of queries over one closure costs one statement
-        and not one for each path.
+        The write happens later. `flush_loop` drains the set every few
+        seconds, so a burst of queries costs one statement and not one
+        for each path.
         """
         if self.active and not self.read_only:
-            for path in paths:
-                text = str(path)
-                if text.endswith(".drv"):
-                    self.pending_build.add(text)
-                else:
-                    self.pending_runtime.add(text)
+            self.pending_references.update(str(path) for path in paths)
 
     async def record_build_stats(
         self,
@@ -805,44 +781,55 @@ class LocalStoreDB:
     async def flush_references(self) -> None:
         """Write the pending reference times into the access table.
 
-        Two queues, two statements, one table, no Nix column. The runtime
-        queue expands over reference closures; the build queue touches
-        heads only. `ValidPaths.registrationTime` is read, never written:
-        Nix writes it once at registration, stock `nix-collect-garbage
-        --delete-older-than` reads it as entry age, and pynixd needs no
-        code for either. `PynixdPathAccess` is the column that says what
-        pynixd saw, and it is the only column pynixd writes.
-        Issue Lillecarl/nanopynix#166 has the whole argument.
+        One queue, one statement, heads only. `ValidPaths.registrationTime`
+        is read, never written: Nix writes it once at registration, stock
+        `nix-collect-garbage --delete-older-than` reads it as entry age,
+        and pynixd needs no code for either. `PynixdPathAccess` is the
+        column that says what pynixd saw, and it is the only column
+        pynixd writes. Issue Lillecarl/nanopynix#166 has the whole argument.
         """
         if not self.active or self.read_only:
             return
-        if not self.pending_runtime and not self.pending_build:
+        if not self.pending_references:
             return
 
-        runtime = self.pending_runtime
-        self.pending_runtime = set()
-        build = self.pending_build
-        self.pending_build = set()
-
-        try:
-            t0 = time.monotonic()
-            async with self.acquire_conn() as db:
-                if runtime and self.schema.usable:
-                    await db.execute(TOUCH_PATH_ACCESS, (json.dumps(sorted(runtime)),))
-                if build and self.schema.usable:
-                    await db.execute(TOUCH_PATH_ACCESS_HEADS, (json.dumps(sorted(build)),))
-                await db.commit()
-            elapsed = time.monotonic() - t0
-            log.debug(
-                "db_flush_complete",
-                runtime_seeds=len(runtime),
-                build_heads=len(build),
-                path_access=self.schema.usable,
-                elapsed_ms=elapsed * 1000,
-            )
-        except aiosqlite.Error:
-            log.exception("db_flush_failed")
-            await self.close_db_pool()
+        for attempt in range(3):
+            paths = self.pending_references
+            self.pending_references = set()
+            if not paths:
+                break
+            try:
+                t0 = time.monotonic()
+                async with self.acquire_conn() as db:
+                    # One statement per thousand marks, each committed on
+                    # its own: no transaction safety is needed here, and a
+                    # short write holds the lock briefly enough that the
+                    # daemon's own writers get in between chunks.
+                    if self.schema.usable:
+                        for chunk in batched(sorted(paths), 1000):
+                            await db.execute(TOUCH_PATH_ACCESS, (json.dumps(chunk),))
+                            await db.commit()
+                elapsed = time.monotonic() - t0
+                log.debug(
+                    "db_flush_complete",
+                    marked=len(paths),
+                    path_access=self.schema.usable,
+                    elapsed_ms=elapsed * 1000,
+                )
+                break
+            except aiosqlite.Error:
+                # Lock contention with the daemon or another writer: put
+                # the marks back and retry with backoff. A failed flush
+                # used to close the whole pool, which left every fast
+                # path erroring until a restart; contention is transient,
+                # the pool is not the problem, and the next interval
+                # retries anyway. Unwritten marks merge back in, so no
+                # reference is lost, only delayed.
+                self.pending_references |= paths
+                if attempt >= 2:
+                    log.exception("db_flush_failed")
+                    break
+                await anyio.sleep(1 << attempt)
 
     def start(self) -> None:
         """Start background regtime flush task. Call from async context."""

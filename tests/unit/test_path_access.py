@@ -13,18 +13,21 @@ that was missing.
 `PynixdPathAccess` is the second half. `registrationTime` says "when this
 path entered the store", and `nix path-info --json` reports it as that, so
 one number cannot answer both questions afterwards. Issue Lillecarl/nanopynix#166.
-`registrationTime` is therefore read, never written, and freshness splits
-in two queues: runtime seeds expand over reference closures, derivation
-heads touch alone, so live outputs stop keeping build inputs fresh.
+`registrationTime` is therefore read, never written, and the flush touches
+marked heads only: no closure expansion, no 100k-row write transactions
+against the daemon's own database.
 """
 
 from __future__ import annotations
 
 import sqlite3
 import time
-from contextlib import closing
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, closing
 from typing import TYPE_CHECKING
 
+import aiosqlite
+import anyio
 import pytest
 from pydantic import BaseModel, ConfigDict
 
@@ -173,14 +176,24 @@ class TestTheFieldFilter:
 
 @pytest.mark.anyio
 class TestFlushingTheReferences:
-    async def test_a_marked_path_reaches_the_table_with_its_closure(self, tmp_path: Path) -> None:
-        """`libc` was never named, and it is referenced because `hello` is."""
+    async def test_a_marked_path_reaches_the_table_alone(self, tmp_path: Path) -> None:
+        """Heads only: `libc` is referenced by `hello`, and stays unmarked.
+
+        The flush used to expand every seed over its transitive closure,
+        touching tens of thousands of rows per mark -- one system closure
+        in a single write transaction, racing the daemon's own writes --
+        for paths nobody observed. Unmarked paths resolve their age from
+        `registrationTime` instead, so the closure's testimony is missed
+        nowhere that matters.
+
+        Perturbation: expand the closure again and `libc` lands in the table.
+        """
         _store_with_a_closure(tmp_path)
         async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
             db.mark_path(HELLO)
             await db.flush_references()
 
-            assert set(await _access_times(db)) == {HELLO, LIBC}
+            assert set(await _access_times(db)) == {HELLO}
 
     async def test_the_registration_time_is_never_written(self, tmp_path: Path) -> None:
         """Nix's column is read, never written: entry age stays honest.
@@ -217,23 +230,21 @@ class TestFlushingTheReferences:
 
             assert all(t > 1 for t in (await _access_times(db)).values())
 
-    async def test_both_queues_drain(self, tmp_path: Path) -> None:
+    async def test_the_pending_set_is_emptied(self, tmp_path: Path) -> None:
         _store_with_a_closure(tmp_path)
         async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
             db.mark_paths([HELLO, LIBC])
             await db.flush_references()
-            assert db.pending_runtime == set()
-            assert db.pending_build == set()
+            assert db.pending_references == set()
 
-    async def test_a_derivation_marks_its_head_and_not_its_inputs(self, tmp_path: Path) -> None:
-        """Build-time references queue separately and expand nowhere.
+    async def test_a_derivation_marks_its_head_like_any_path(self, tmp_path: Path) -> None:
+        """No queue, no suffix rule: a marked head is touched, named or not.
 
-        The `.drv` path names its inputs by the data model; expanding the
-        closure here would refresh the whole build closure on every build
-        and keep build garbage fresh for ever. The head is genuinely in
-        use, so it is touched; its inputs age on their own evidence.
+        Derivations once queued separately so their build inputs would not
+        refresh; with no closure expansion there is nothing to spare them
+        from, and the head is genuinely referenced either way.
 
-        Perturbation: queue the derivation as runtime and DEP lands in the table.
+        Perturbation: skip `.drv` paths in `mark_paths` and no row appears.
         """
         drv = "/nix/store/00000000000000000000000000000001-x.drv"
         dep = "/nix/store/00000000000000000000000000000002-dep"
@@ -254,6 +265,76 @@ class TestFlushingTheReferences:
             await db.flush_references()
 
             assert set(await _access_times(db)) == {drv}
+
+
+@pytest.mark.anyio
+class TestFlushingUnderContention:
+    """A locked database delays the flush; it never kills the pool.
+
+    Production taught this: a flush that hit `database is locked` closed
+    the whole pool, and every fast path errored until a restart. Contention
+    with the daemon is normal on a busy store, so the flush re-queues and
+    retries, and the pool outlives any single flush.
+    """
+
+    async def test_a_locked_flush_retries_and_keeps_the_pool(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _store_with_a_closure(tmp_path)
+        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
+            calls = 0
+            real = LocalStoreDB.acquire_conn
+
+            @asynccontextmanager
+            async def flaky(self: LocalStoreDB) -> AsyncIterator[aiosqlite.Connection]:
+                nonlocal calls
+                calls += 1
+                if calls <= 2:
+                    raise sqlite3.OperationalError("database is locked")
+                async with real(self) as conn:
+                    yield conn
+
+            monkeypatch.setattr(LocalStoreDB, "acquire_conn", flaky)
+            monkeypatch.setattr(anyio, "sleep", self._no_sleep)
+            db.mark_path(HELLO)
+            await db.flush_references()
+
+            assert calls == 3
+            assert db.active
+            assert set(await _access_times(db)) == {HELLO}
+
+    async def test_a_hopeless_flush_requeues_and_surrenders_loudly(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Three strikes: the marks go back, the pool stays, the error logs."""
+        db_path = _store_with_a_closure(tmp_path)
+        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
+            calls = 0
+
+            @asynccontextmanager
+            async def always_locked(self: LocalStoreDB) -> AsyncIterator[aiosqlite.Connection]:
+                nonlocal calls
+                calls += 1
+                raise sqlite3.OperationalError("database is locked")
+                yield
+
+            monkeypatch.setattr(LocalStoreDB, "acquire_conn", always_locked)
+            monkeypatch.setattr(anyio, "sleep", self._no_sleep)
+            db.mark_path(HELLO)
+            await db.flush_references()
+
+            assert calls == 3
+            assert db.active
+            assert db.pending_references == {HELLO}
+            # The mock still fails every acquire, so read past it: nothing
+            # was written in three attempts.
+            with closing(sqlite3.connect(db_path)) as conn:
+                assert conn.execute(f"SELECT * FROM {PATH_ACCESS_TABLE}").fetchall() == []
+
+    @staticmethod
+    async def _no_sleep(delay: float) -> None:
+        """Backoff without the wait: the attempts are what this tests."""
+        return None
 
 
 @pytest.mark.anyio
