@@ -6,6 +6,7 @@ from . import (
     add_multiple_to_store,  # noqa: F401
     add_perm_root,  # noqa: F401
     add_temp_root,  # noqa: F401
+    add_temp_roots,  # noqa: F401
     add_to_store,  # noqa: F401
     add_to_store_nar,  # noqa: F401
     build_derivation,  # noqa: F401

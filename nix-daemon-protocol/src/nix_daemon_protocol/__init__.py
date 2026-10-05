@@ -12,6 +12,8 @@ from .add_signatures import AddSignaturesRequest as AddSignaturesRequest
 from .add_signatures import AddSignaturesResponse as AddSignaturesResponse
 from .add_temp_root import AddTempRootRequest as AddTempRootRequest
 from .add_temp_root import AddTempRootResponse as AddTempRootResponse
+from .add_temp_roots import AddTempRootsRequest as AddTempRootsRequest
+from .add_temp_roots import AddTempRootsResponse as AddTempRootsResponse
 from .add_to_store import AddToStoreRequest as AddToStoreRequest
 from .add_to_store import AddToStoreResponse as AddToStoreResponse
 from .add_to_store_nar import AddToStoreNarRequest as AddToStoreNarRequest

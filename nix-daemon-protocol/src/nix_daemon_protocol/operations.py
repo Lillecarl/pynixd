@@ -52,4 +52,5 @@ STANDARD_OPERATIONS: Final[tuple[StandardOperation, ...]] = (
     StandardOperation(45, "AddBuildLog", proto(1, 32)),
     StandardOperation(46, "BuildPathsWithResults", proto(1, 34)),
     StandardOperation(47, "AddPermRoot", proto(1, 36)),
+    StandardOperation(49, "AddTempRoots", proto(1, 38)),
 )

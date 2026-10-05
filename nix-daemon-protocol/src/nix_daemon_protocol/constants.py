@@ -79,6 +79,14 @@ A builder registers one of its own outputs with it. See
 `STANDARD_FEATURES` below for the surface that uses it.
 """
 
+FEATURE_ADD_TEMP_ROOTS: Final[str] = "addTempRoots"
+"""The `AddTempRoots` operation, code 49.
+
+A client pins a set of temporary roots with one round trip instead of one
+`AddTempRoot` per path. The gated shape is a plain store-path set, which
+this package already reads.
+"""
+
 STANDARD_FEATURES: Final[frozenset[str]] = frozenset(
     {
         FEATURE_REALISATION_WITH_PATH,
@@ -86,12 +94,14 @@ STANDARD_FEATURES: Final[frozenset[str]] = frozenset(
         FEATURE_DISABLE_SET_OPTIONS,
         FEATURE_ADD_TO_STORE_SCANNING,
         FEATURE_SUBMIT_OUTPUT,
+        FEATURE_ADD_TEMP_ROOTS,
     }
 )
 """Each feature name that Nix defines, whether or not a peer offers it.
 
-`WorkerProto::latest` of the master branch offers the first two. The other
-three belong to `WorkerProto::builderRpcV0`. Nix 2.34 offers none of the five.
+`WorkerProto::latest` of the master branch offers realisation-with-path,
+delete-dead-specific-referrers and addTempRoots. The other three belong to
+`WorkerProto::builderRpcV0`. Nix 2.34 offers none of the six.
 
 **`builderRpcV0` is not recursive Nix.** It is the `builder-rpc-v0`
 derivation feature of dynamic derivations, and it is a much smaller surface.
@@ -103,7 +113,7 @@ the thing recursive Nix exists for. Every output of such a build is
 content-addressed. `docs/notes/reentrancy.md` holds the detail, as Fact 9.
 """
 
-SUPPORTED_STANDARD_FEATURES: Final[frozenset[str]] = frozenset({FEATURE_REALISATION_WITH_PATH})
+SUPPORTED_STANDARD_FEATURES: Final[frozenset[str]] = frozenset({FEATURE_REALISATION_WITH_PATH, FEATURE_ADD_TEMP_ROOTS})
 """The standard features that this package has a codec for.
 
 A name belongs here when the codec that the name gates is in this package,

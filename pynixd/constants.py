@@ -9,6 +9,7 @@ from typing import Final
 # rest of the wire constants itself, and a second copy of the feature names
 # would be a second thing to keep true.
 from nix_daemon_protocol.constants import (
+    FEATURE_ADD_TEMP_ROOTS as FEATURE_ADD_TEMP_ROOTS,
     FEATURE_ADD_TO_STORE_SCANNING as FEATURE_ADD_TO_STORE_SCANNING,
     FEATURE_DELETE_DEAD_SPECIFIC_REFERRERS as FEATURE_DELETE_DEAD_SPECIFIC_REFERRERS,
     FEATURE_DISABLE_SET_OPTIONS as FEATURE_DISABLE_SET_OPTIONS,

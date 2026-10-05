@@ -21,6 +21,7 @@ from nix_daemon_protocol.logs import LogMessage, drain as drain_log_stream, read
 
 from ._lazy import ssh_connection_lost
 from .constants import (
+    FEATURE_ADD_TEMP_ROOTS as FEATURE_ADD_TEMP_ROOTS,
     FEATURE_EXCHANGE_PROTOCOL as FEATURE_EXCHANGE_PROTOCOL,
     MINIMUM_REMOTE_PROTOCOL as MINIMUM_REMOTE_PROTOCOL,
     PROTOCOL_VERSION as PROTOCOL_VERSION,

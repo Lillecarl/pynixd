@@ -303,6 +303,13 @@ class DaemonProxy:
             if store.no_schedule:
                 continue
             honourable &= set(store.features)
+        # Features the proxy honours itself, with no backend involved, rejoin
+        # after the intersection: the loop answers what every buildable store
+        # reads, and `addTempRoots` never reaches one — op 49 writes session
+        # roots the way op 11 does. Without this an old backend would unnamed
+        # the feature and new clients would silently hold no batch roots, the
+        # gate having no fallback. Issue #66.
+        honourable |= {wire.FEATURE_ADD_TEMP_ROOTS}
         return frozenset(honourable)
 
     async def handshake(self) -> None:
