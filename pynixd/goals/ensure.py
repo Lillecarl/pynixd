@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, TypeVar
 
+import anyio
 import structlog
 
 from nix_daemon_protocol.exceptions import DaemonProtocolError
@@ -815,7 +816,16 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             wanted=sorted(wanted),
         )
         try:
-            await self.engine.ctx.local_store.execute(request, client=client, mark=False)
+            with anyio.fail_after(self.engine.ctx.settings.substitution_import_timeout):
+                await self.engine.ctx.local_store.execute(request, client=client, mark=False)
+        except TimeoutError as ex:
+            # A fetch that makes no progress for the whole import budget is
+            # dead, and the goal must not wait out a client with it: the build
+            # road is still there. Issue #79 measured a 25-minute silence here.
+            # Before the other errors: TimeoutError is an OSError, and a
+            # timeout is a stall to report, not a miss to whisper.
+            log.warning("upstream_substitute_timeout", path=str(self.derived_path), reason=str(ex))
+            return None
         except (BackendError, DaemonProtocolError, OSError, EOFError) as ex:
             # An upstream miss is the normal answer for a derivation that the
             # client must build, and a broken upstream connection must not end
@@ -1378,7 +1388,16 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             return None
         wire_path = StorePath(path=str(path))
         try:
-            await self.engine.ctx.local_store.execute(EnsurePathRequest(path=wire_path), client=client, mark=False)
+            with anyio.fail_after(self.engine.ctx.settings.substitution_import_timeout):
+                await self.engine.ctx.local_store.execute(EnsurePathRequest(path=wire_path), client=client, mark=False)
+        except TimeoutError as ex:
+            # A fetch that makes no progress for the whole import budget is
+            # dead, and the goal must not wait out a client with it: the build
+            # road is still there. Issue #79 measured a 25-minute silence here.
+            # Before the other errors: TimeoutError is an OSError, and a
+            # timeout is a stall to report, not a miss to whisper.
+            log.warning("upstream_substitute_timeout", path=str(path), reason=str(ex))
+            return None
         except (BackendError, DaemonProtocolError) as ex:
             log.debug("upstream_substitute_miss", path=str(path), reason=str(ex))
             return None

@@ -8,12 +8,15 @@ Issue Lillecarl/nanopynix#187.
 
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
+import anyio
 import pytest
 
 from nix_daemon_protocol.exceptions import DaemonProtocolError
+from pynixd.config import PynixdSettings
 from pynixd.derived_path import DerivedPath
 from pynixd.goals.ensure import EnsureDerivedPathGoal
 from pynixd.goals.results import result_succeeded
@@ -77,7 +80,7 @@ class FakeLocalStore:
 
 
 def _goal(store: FakeLocalStore, client: ClientConn | None) -> EnsureDerivedPathGoal:
-    engine = SimpleNamespace(ctx=SimpleNamespace(local_store=store))
+    engine = SimpleNamespace(ctx=SimpleNamespace(local_store=store, settings=PynixdSettings()))
     goal = EnsureDerivedPathGoal(
         engine=cast("GoalEngine", engine),
         derived_path=DerivedPath(f"{_DRV}!out"),
@@ -147,3 +150,29 @@ async def test_an_invalid_path_after_the_fetch_is_not_a_success() -> None:
     store.execute = no_write  # type: ignore[method-assign] -- the fake states one behaviour for one test
 
     assert await goal._try_substitute_upstream(_PATH) is None
+
+
+@pytest.mark.anyio
+async def test_a_hung_upstream_fetch_fails_fast_to_the_build_road() -> None:
+    """An upstream `EnsurePath` that never answers must not hang the goal.
+
+    The live daemon waited 25 minutes on two inputs with no timeout and no
+    log line. Issue #79.
+    """
+    store = FakeLocalStore()
+    never = anyio.Event()
+
+    async def never_answers(request: Any, **kwargs: Any) -> Any:
+        store.requests.append((type(request).__name__, kwargs.get("client") is not None))
+        if isinstance(request, EnsurePathRequest):
+            await never.wait()
+            raise AssertionError("unreachable: the import budget cancels the wait")
+        return IsValidPathResponse(valid=False)
+
+    store.execute = never_answers  # type: ignore[method-assign] -- the fake states one behaviour for one test
+    goal = _goal(store, _client(_options(substituters="file:///cache")))
+    goal.engine.ctx.settings = PynixdSettings(substitution_import_timeout=0.01)
+
+    started = time.monotonic()
+    assert await goal._try_substitute_upstream(_PATH) is None
+    assert time.monotonic() - started < 5.0

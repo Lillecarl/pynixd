@@ -730,6 +730,7 @@ class PynixdSettings(BaseSettings):
     substitution_health_min_fill_ratio: float = 0.10
     substitution_health_min_success_ratio: float = 0.50
     substitution_query_timeout: float = 2.0
+    substitution_import_timeout: float = 300.0
 
     # Resource Monitoring
     psi_cpu_threshold: float = 15.0  # % pressure (some)
