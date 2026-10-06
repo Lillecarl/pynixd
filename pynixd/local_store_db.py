@@ -467,10 +467,21 @@ class LocalStoreDB:
 
             yield conn
         finally:
-            if conn is not None:
-                async with self._pool_lock:
-                    self._idle_conns.append(conn)
-            self._sem.release()
+            # Cleanup runs shielded: a cancellation landing here must not
+            # strand the connection or the semaphore with it. Everything
+            # inside is bounded (one instant rollback, one short lock).
+            with anyio.CancelScope(shield=True):
+                if conn is not None:
+                    # A checkout that failed or was cancelled can leave a
+                    # write transaction open; returned as-is, the pooled
+                    # connection holds the file lock until restart, and
+                    # every later writer fails behind it. Rollback is a
+                    # no-op on a clean connection.
+                    with suppress(Exception):
+                        await conn.rollback()
+                    async with self._pool_lock:
+                        self._idle_conns.append(conn)
+                self._sem.release()
 
     @asynccontextmanager
     async def execute(

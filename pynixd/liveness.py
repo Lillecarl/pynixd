@@ -434,18 +434,23 @@ def refresh_roots(db_path: Path, stable: dict[str, tuple[str, str]]) -> bool:
         }
     if current == stable:
         return False
-    with closing(sqlite3.connect(db_path)) as conn, conn:
-        for link in current:
-            if link not in stable:
-                conn.execute(f"DELETE FROM {LIVENESS_ROOT_TABLE} WHERE link = ?", (link,))
-        conn.executemany(
-            f"INSERT OR REPLACE INTO {LIVENESS_ROOT_TABLE} (link, target, kind) VALUES (?, ?, ?)",
-            [
-                (link, target, kind)
-                for link, (target, kind) in sorted(stable.items())
-                if current.get(link) != (target, kind)
-            ],
-        )
+    with closing(sqlite3.connect(db_path)) as conn:
+        # Wait behind the daemon's writers instead of failing instantly:
+        # a reconcile that gives up at once leaves the roots stale for
+        # that interval. Same 5s the sync readers already allow.
+        conn.execute("PRAGMA busy_timeout = 5000")
+        with conn:
+            for link in current:
+                if link not in stable:
+                    conn.execute(f"DELETE FROM {LIVENESS_ROOT_TABLE} WHERE link = ?", (link,))
+            conn.executemany(
+                f"INSERT OR REPLACE INTO {LIVENESS_ROOT_TABLE} (link, target, kind) VALUES (?, ?, ?)",
+                [
+                    (link, target, kind)
+                    for link, (target, kind) in sorted(stable.items())
+                    if current.get(link) != (target, kind)
+                ],
+            )
     return True
 
 
@@ -458,12 +463,16 @@ def write_snapshot(db_path: Path, live: set[str], epoch: int) -> None:
     which only an unclean recovery could leave behind. Dead needs no rows:
     it is the complement against `ValidPaths`.
     """
-    with closing(sqlite3.connect(db_path)) as conn, conn:
-        conn.execute(f"DELETE FROM {LIVENESS_TABLE}")
-        conn.executemany(
-            f"INSERT INTO {LIVENESS_TABLE} (path, epoch) VALUES (?, ?)",
-            [(path, epoch) for path in sorted(live)],
-        )
+    with closing(sqlite3.connect(db_path)) as conn:
+        # Same wait as the roots reconcile above: a snapshot that gives
+        # up at once leaves no liveness evidence for that interval.
+        conn.execute("PRAGMA busy_timeout = 5000")
+        with conn:
+            conn.execute(f"DELETE FROM {LIVENESS_TABLE}")
+            conn.executemany(
+                f"INSERT INTO {LIVENESS_TABLE} (path, epoch) VALUES (?, ?)",
+                [(path, epoch) for path in sorted(live)],
+            )
 
 
 def read_snapshot(db_path: Path) -> tuple[set[str], int] | None:
