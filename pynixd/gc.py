@@ -193,7 +193,9 @@ class Collector:
 
         The pass deletes in weight order, so a bounded pass frees the most
         with the fewest deletes, and a dry-run lists what goes first. The
-        weight blends size and age by disk pressure: an empty disk collects
+        pressure bound narrows execute passes only: a dry-run answers the
+        whole plan, so an under-target disk does not read as clean (#73).
+        The weight blends size and age by disk pressure: an empty disk collects
         oldest first, a full disk biggest first. `limit` takes the head of
         that order, and `target_usage` overrides the store's bound for one
         pass; both narrow only, and neither is plannable below zero.
@@ -246,7 +248,14 @@ class Collector:
             used, total = usage
             pressure = used / total if total else 0.5
         ordered = _by_weight(weights, pressure)
-        batch = self._bound_batch(self.ctx.local_store, ordered, weights, usage, target_usage)
+        if action != PynixdGCAction.EXECUTE:
+            # A dry-run answers the plan, not the pressure: the store's
+            # `gc_target_usage` bounds what an execute pass deletes, but a
+            # dry-run reports what is droppable, so an under-target disk
+            # does not read as clean. Issue #73.
+            batch = ordered
+        else:
+            batch = self._bound_batch(self.ctx.local_store, ordered, weights, usage, target_usage)
         if limit is not None:
             batch = batch[:limit]
         planned_paths = {str(path) for path in planned}

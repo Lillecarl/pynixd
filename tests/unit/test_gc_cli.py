@@ -61,7 +61,7 @@ async def test_show_paths_lists_every_planned_path_sorted(
     out = capsys.readouterr().out.splitlines()
     assert out[0] == PATH_B
     assert out[1] == PATH_C
-    assert out[2] == "dry-run: 2 paths, 30 bytes freed"
+    assert out[2] == "dry-run: 2 paths, up to 30 bytes"
 
 
 @pytest.mark.anyio
@@ -69,4 +69,4 @@ async def test_paths_stay_quiet_by_default(monkeypatch: pytest.MonkeyPatch, caps
     """Count and bytes only: the flag is what names names."""
     await gc_cli._gc_main(_args(monkeypatch))
 
-    assert capsys.readouterr().out.splitlines() == ["dry-run: 2 paths, 30 bytes freed"]
+    assert capsys.readouterr().out.splitlines() == ["dry-run: 2 paths, up to 30 bytes"]

@@ -108,6 +108,10 @@ class FakeLocal:
     def db(self) -> Any:
         return self
 
+    async def query_referrer_closure(self, seeds: set[str]) -> set[str]:
+        """The seeds themselves: nothing here refers to anything."""
+        return set(seeds)
+
     async def query_access_times(self, paths: set[str]) -> dict[str, float]:
         """`B` is old and big, `A` is fresh and small: `B` leads at any pressure.
 
@@ -252,16 +256,22 @@ async def test_target_usage_override_wins_over_the_store(tmp_path: Path, monkeyp
     Disk usage is mocked: a fresh tmpfs reports zero used, which already
     meets every positive target and would make the override unobservable.
     Thirty bytes a path against eighty of a hundred needs exactly one.
+
+    The override narrows execute passes only: a dry-run answers the whole
+    plan under either bound, so an under-target disk does not read as
+    clean (#73).
     """
     monkeypatch.setattr(Collector, "_disk_usage", staticmethod(lambda local: (80, 100)))
     collector, local, _state_dir = _collector(tmp_path, gc_target_usage=0.9, sizes={A: 30, B: 30})
 
-    assert (await collector.run(PynixdGCAction.DRY_RUN)).store_paths == set()
+    assert {str(path) for path in (await collector.run(PynixdGCAction.DRY_RUN)).store_paths} == {A, B}
 
-    resp = await collector.run(PynixdGCAction.DRY_RUN, target_usage=0.5)
+    assert (await collector.run(PynixdGCAction.EXECUTE)).store_paths == set()
+
+    resp = await collector.run(PynixdGCAction.EXECUTE, target_usage=0.5)
 
     assert {str(path) for path in resp.store_paths} == {B}
-    assert local.deleted == []
+    assert local.deleted == [B]
 
 
 @pytest.mark.anyio
