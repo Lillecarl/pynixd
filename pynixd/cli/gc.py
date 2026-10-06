@@ -103,6 +103,12 @@ async def _gc_main(args: argparse.Namespace) -> None:
         for path in sorted(str(path) for path in resp.store_paths):
             print(path)  # noqa: T201
     if resp.store_paths:
-        print(f"{label}: {len(resp.store_paths)} paths, {resp.bytes} bytes freed")  # noqa: T201
+        if action == PynixdGCAction.DRY_RUN:
+            # A sum of logical sizes: sparse files count their holes and
+            # shared files count per link, the way the daemon counts. An
+            # upper bound on what deleting frees, never a measurement.
+            print(f"dry-run: {len(resp.store_paths)} paths, up to {resp.bytes} bytes")  # noqa: T201
+        else:
+            print(f"gc: {len(resp.store_paths)} paths, {resp.bytes} bytes freed")  # noqa: T201
     else:
         print(f"{label}: no paths eligible")  # noqa: T201

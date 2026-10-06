@@ -18,7 +18,9 @@ pass by pressure instead of emptying the plan at once.
 from __future__ import annotations
 
 import shutil
+import stat
 import time
+from collections import deque
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -47,7 +49,7 @@ from .local_store_db import resolve_db_path
 from .store import is_http_binary_cache
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Iterable, Mapping, Sequence
 
     from .connection import ClientConn
     from .context import PynixdContext
@@ -56,6 +58,50 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 _MAX_FREED = 2**63 - 1
+
+
+def _physical_batch_total(top_paths: Iterable[str], store_dir: Path | None) -> int | None:
+    """Block bytes the batch holds, hardlinks counted once, or `None`.
+
+    The daemon counts `st.st_size` per deleted file (`deletePath` in
+    `file-system.cc`), so sparse files count their holes and two-link
+    files count twice -- the number `nix store gc` prints has the same
+    fiction. An operator deciding by `df` needs blocks, so this walks
+    the batch with `lstat` (never following symlinks), dedupes by
+    `(st_dev, st_ino)`, and sums `st_blocks * 512`. `None` on anything
+    unmeasurable -- no layout, a path that vanished, an unreadable
+    directory -- and the caller falls back to the daemon number.
+    """
+    if store_dir is None:
+        return None
+    total = 0
+    seen: set[tuple[int, int]] = set()
+    queue: deque[Path] = deque()
+    for top in top_paths:
+        if store_dir != Path("/nix/store") and top.startswith("/nix/store/"):
+            queue.append(store_dir / Path(top).relative_to("/nix/store"))
+        else:
+            queue.append(Path(top))
+    try:
+        while queue:
+            current = queue.popleft()
+            try:
+                info = current.lstat()
+            except OSError:
+                return None
+            key = (info.st_dev, info.st_ino)
+            if key in seen:
+                continue
+            seen.add(key)
+            total += info.st_blocks * 512
+            if stat.S_ISDIR(info.st_mode):
+                try:
+                    queue.extend(current.iterdir())
+                except OSError:
+                    return None
+    except OSError:
+        return None
+    return total
 
 
 def _request(action: GCAction, paths: set[StorePath]) -> CollectGarbageRequest:
@@ -569,6 +615,13 @@ class Collector:
         if not batch:
             return self._answered(PynixdCollectGarbageResponse(store_paths=set(), bytes=0), lines)
 
+        # Block bytes before sending: the files are gone after, and the
+        # daemon counts logical sizes. Measured only for the integer the
+        # operator watches; a pass that cannot measure reports the daemon
+        # number instead.
+        layout = getattr(local, "layout", None)
+        physical = _physical_batch_total(batch, getattr(layout, "real_store_dir", None))
+
         async def say(text: str) -> None:
             """One wire line, live when a client rides along, buffered always."""
             line = LogNext(text=text)
@@ -613,6 +666,12 @@ class Collector:
                 # pass, which re-plans from the new state.
                 log.warning("gc_pass_partial", asked=len(current), left=len(left))
 
+        if physical is not None and deleted == set(batch):
+            # The whole batch went, so the walked blocks are what left the
+            # disk. A partial pass keeps the daemon number: per-path
+            # attribution of shared blocks has no exact answer, and the
+            # logical sum stays an upper bound either way.
+            freed = physical
         log.info("gc_pass_done", deleted=len(deleted), refused=refused, bytes=freed)
         if refused:
             await say(f"delete refused for {refused} live paths, deleted the rest")
