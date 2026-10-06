@@ -85,7 +85,11 @@ def _walk_link(link: Path, target: Path, found: dict[str, tuple[str, str]], kind
     a link into the store the store path is the root, attributed to the
     intermediate. The booted and current system links live through this arm --
     `/run/booted-system` is absolute and outside the store, and the store path
-    behind it roots tens of thousands of paths. Stale links simply name
+    behind it roots tens of thousands of paths. The chain is followed
+    lexically and nothing in it is statted: the intermediate itself may
+    dangle -- a chroot store keeps its files under its root, so the absolute
+    store path behind an outside link never exists on the host, and Nix roots
+    it anyway (measured: `--print-live` names it). Stale links simply name
     nothing: Nix unlinks a stale link under `gcroots/auto` here, and the
     mirror never mutates the roots it reads.
     `found` maps the link -- or the intermediate, for an indirect root --
@@ -95,8 +99,6 @@ def _walk_link(link: Path, target: Path, found: dict[str, tuple[str, str]], kind
         found[str(link)] = (str(target), kind)
         return
     resolved = target if target.is_absolute() else link.parent / target
-    if not resolved.exists():
-        return
     if not resolved.is_symlink():
         return
     second = _readlink(resolved)

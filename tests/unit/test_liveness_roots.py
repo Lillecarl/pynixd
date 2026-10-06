@@ -2,12 +2,13 @@
 
 Root enumeration mirrors `gc.cc:231` (`findRoots`) and `local-gc.cc`
 (`/proc` scan): links, indirect links, plain files, processes, temporary
-roots. Existence follows the final target, exactly like Nix's `pathExists`
-check: a link through a missing target names nothing, in both. The closure
-stays one recursive CTE over Nix's own tables, so the only Python graph
-logic is the oracle below, which cross-checks the query on fixtures small
-enough to read. Production agreement with Nix is `test_liveness_tracker`;
-this file proves the pieces.
+roots. A direct link through a missing target names nothing, in Nix and
+here; an indirect chain is followed lexically, because a chroot store's
+files live under its root and the intermediate dangles by construction.
+The closure stays one recursive CTE over Nix's own tables, so the only
+Python graph logic is the oracle below, which cross-checks the query on
+fixtures small enough to read. Production agreement with Nix is
+`test_liveness_tracker`; this file proves the pieces.
 """
 
 from __future__ import annotations
@@ -42,11 +43,12 @@ HASH_D = "00000000000000000000000000000004"
 
 
 def _layout(root: Path) -> tuple[Path, Path, Path, dict[str, str]]:
-    """A state dir with every root shape, all targets real files.
+    """A state dir with every root shape, all final targets real files.
 
-    Targets exist because existence follows the final target, in Nix and
-    here: a link through a missing target names nothing. `proc` is a fake
-    process tree; the last mapping holds the store, its paths, and the
+    Final targets exist; only a missing final target names nothing, in Nix
+    and here. Intermediates are followed lexically either way: see
+    `test_stable_walk_roots_through_a_dangling_intermediate`. `proc` is a
+    fake process tree; the last mapping holds the store, its paths, and the
     environment block each name.
     """
     store = root / "store"
@@ -150,6 +152,35 @@ def test_stable_walk_follows_an_absolute_link_outside_the_store(tmp_path: Path) 
 
     assert walk_stable(state, str(store)) == {
         str(outside / "booted-system"): (str(target), "gcroot"),
+    }
+
+
+def test_stable_walk_roots_through_a_dangling_intermediate(tmp_path: Path) -> None:
+    """An indirect root whose intermediate dangles still roots its store path.
+
+    A chroot store keeps its files under its root, so the absolute store
+    path behind an outside link never exists on the host filesystem -- the
+    intermediate dangles by construction. Nix follows the chain lexically
+    anyway (measured: `--print-live` names the path), so the walk stats
+    nothing in it: only the final target's absence names nothing, as the
+    `dangling` link above still proves. Requiring the intermediate to exist
+    blinds the planner to every such root, and the LRU plan collects a live
+    path. Case: the gc_max_age failures.
+
+    Perturbation: gate the second arm of `_walk_link` on `exists()` and this fails.
+    """
+    state = tmp_path / "state"
+    auto = state / "gcroots" / "auto"
+    auto.mkdir(parents=True)
+    outside = tmp_path / "run"
+    outside.mkdir()
+    store = tmp_path / "store"
+    missing = f"{store}/{HASH_A}-rooted"
+    (outside / "root-link").symlink_to(missing)
+    (auto / "abc123").symlink_to(outside / "root-link")
+
+    assert walk_stable(state, str(store)) == {
+        str(outside / "root-link"): (missing, "gcroot"),
     }
 
 
