@@ -18,7 +18,7 @@
   lz4,
   brotli,
   asyncssh,
-  asyncinotify,
+  watchdog,
   structlog,
   pydantic,
   pydantic-settings,
@@ -80,7 +80,7 @@ pythonBuilder (finalAttrs: {
     prometheus-client
     anyio
     uvloop
-    asyncinotify
+    watchdog
     nix-daemon-protocol
   ];
 

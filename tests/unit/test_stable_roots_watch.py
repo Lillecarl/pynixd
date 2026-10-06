@@ -3,9 +3,10 @@
 `gc.cc:309` scans `gcroots` and `profiles`, and no profile path arrives
 through `gcroots/auto`, so both trees are watched: the profiles case
 below is the regression test for watching one tree and going blind on
-the other. Events run through real inotify on a lab state dir; only the
-overflow path is synthesised, because overflowing a kernel queue on
-purpose is not a test.
+the other. Events run through a real watchdog observer on a lab state
+dir. There is no overflow test: watchdog coalesces instead of
+overflowing, and a missed event degrades to the periodic poll either
+way, which is the check's property, not the watcher's.
 """
 
 from __future__ import annotations
@@ -15,7 +16,6 @@ from pathlib import Path
 
 import anyio
 import pytest
-from asyncinotify import Event, Inotify, Mask
 
 from pynixd.liveness_watch import DirtyFlag, StableRootsWatch
 
@@ -119,12 +119,3 @@ async def test_churn_outside_the_trees_stays_quiet(tmp_path: Path) -> None:
         (temproots / "123").write_text(f"{TARGET}\n")  # noqa: ASYNC240 -- the event under test
 
     assert await _stays_quiet(tmp_path, churn)
-
-
-def test_overflow_rescans_and_wakes(tmp_path: Path) -> None:
-    """A missed event reads as dirty, never as clean."""
-    _lab(tmp_path)
-    watch = StableRootsWatch(tmp_path)
-
-    with Inotify() as inotify:
-        assert watch._handle(Event(watch=None, mask=Mask.Q_OVERFLOW, cookie=0, name=None), inotify) is True
