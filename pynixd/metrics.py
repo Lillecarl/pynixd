@@ -398,6 +398,12 @@ GC_BYTES_FREED = Counter(
     "Bytes the collector reports it freed",
 )
 
+GC_TRIGGER_SKIPPED = Counter(
+    "pynixd_gc_trigger_skipped_total",
+    "Automatic GC triggers stood down by the cooldown",
+    ["reason"],  # watermark, scheduled
+)
+
 # Zero until the first pass finishes, so an alert reads it as
 # `== 0 or time() - it > N`. A timestamp that stops advancing is what says the
 # collector is stuck; no size gauge says that on its own.

@@ -678,6 +678,18 @@ class PynixdSettings(BaseSettings):
     does. Twenty covered a 95%-to-70% relief with room; raise it for a
     faster full drain, lower it to spread big reliefs across polls.
     """
+    gc_cooldown: float = 900.0
+    """Seconds between automatic GC triggers, watermark and scheduled alike.
+
+    Reading usage is free, so the watch checks every poll -- but a hovering
+    disk must not fire passes back to back forever. A watermark drive and a
+    scheduled full pass each start a quiet window of this length during
+    which further triggers stand down; the poll loop keeps watching, and the
+    next trigger fires when the window lapses with pressure still over. Set
+    it to a fraction of `gc_interval`: long enough that a covered hour is
+    not re-collected, short enough that a fresh flood waits minutes, not an
+    hour. Zero disables it, and every due trigger fires.
+    """
     gc_liveness_interval: float | None = None
     """Seconds between liveness differential checks. `None` gathers no evidence.
 

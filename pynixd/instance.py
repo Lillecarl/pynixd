@@ -41,6 +41,17 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
+
+def _trigger_due(now: float, last_trigger: float, cooldown: float) -> bool:
+    """Whether an automatic trigger may fire: the cooldown since the last one passed.
+
+    Watermark drives and scheduled full passes share the window, so a
+    hovering disk triggers at most once per cooldown no matter which rule
+    fires. Zero disables it.
+    """
+    return now - last_trigger >= cooldown
+
+
 # The size of `sun_path` in `struct sockaddr_un`, per platform. The kernel
 # copies the path into that array, so a longer one cannot be bound at all.
 # `sys.platform` and not a `uname` call, because the value is a property of
@@ -344,9 +355,11 @@ class Server:
         a `statvfs` and no locks: over `gc_high_watermark` it drives bounded
         passes back to back until pressure drops (the target is the floor,
         so pressure has hysteresis built in), and every `gc_interval` it runs
-        the full pass regardless. An hour of writes cannot fill the disk
-        unanswered when the watch answers in a minute; the full pass stays
-        the backstop for slow drift.
+        the full pass regardless. Triggers share a cooldown window, so a
+        hovering disk fires at most once per `gc_cooldown` no matter which
+        rule would run. An hour of writes cannot fill the disk unanswered
+        when the watch answers in a minute; the full pass stays the backstop
+        for slow drift.
         """
         settings = self.ctx.settings
         log.info(
@@ -356,14 +369,26 @@ class Server:
             watermark=settings.gc_high_watermark,
         )
         last_full = time.monotonic()
+        last_trigger = 0.0
         while True:
             await anyio.sleep(settings.gc_poll_interval)
+            now = time.monotonic()
             if self._over_watermark():
+                if not _trigger_due(now, last_trigger, settings.gc_cooldown):
+                    metrics.GC_TRIGGER_SKIPPED.labels(reason="watermark").inc()
+                    log.debug("gc_trigger_cooldown", reason="watermark")
+                    continue
                 await self._drive_to_target()
+                last_trigger = time.monotonic()
                 continue
-            if time.monotonic() - last_full >= settings.gc_interval:
-                last_full = time.monotonic()
+            if now - last_full >= settings.gc_interval:
+                last_full = now
+                if not _trigger_due(now, last_trigger, settings.gc_cooldown):
+                    metrics.GC_TRIGGER_SKIPPED.labels(reason="scheduled").inc()
+                    log.debug("gc_trigger_cooldown", reason="scheduled")
+                    continue
                 await self._gc_pass("scheduled")
+                last_trigger = time.monotonic()
 
     async def _drive_to_target(self) -> None:
         """Bounded passes back to back until pressure drops or progress stops.
