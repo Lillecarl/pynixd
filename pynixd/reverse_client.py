@@ -20,9 +20,12 @@ from . import wire
 from .config import ReverseInitiatorSettings, ScheduleMode
 from .proxy import DaemonProxy
 from .serde.auth import Role
+from .ssh_auth import load_pinned_keys
 from .wire import SSHNixReader, SSHNixWriter
 
 if TYPE_CHECKING:
+    from collections.abc import Collection
+
     from .context import PynixdContext
 
 log = structlog.get_logger(__name__)
@@ -31,7 +34,16 @@ _REGISTRATION_COMMAND = "pynixd-register"
 
 
 class _ReverseSSHServer(asyncssh.SSHServer):
-    """Minimal SSH server that accepts all public key authentication."""
+    """SSH server that pins the controller key when configured.
+
+    With no pins the acceptor from any controller registers, which is
+    the loopback shape only. With pins, any other key fails closed
+    here, before any channel — registration or daemon — opens.
+    """
+
+    def __init__(self, authorized_keys: Collection[asyncssh.SSHKey] = ()) -> None:
+        super().__init__()
+        self._authorized_keys = frozenset(authorized_keys)
 
     def begin_auth(self, username: str) -> bool:
         return True
@@ -40,7 +52,16 @@ class _ReverseSSHServer(asyncssh.SSHServer):
         return True
 
     def validate_public_key(self, username: str, key: asyncssh.SSHKey) -> bool:
-        return True
+        if not self._authorized_keys:
+            return True
+        if key in self._authorized_keys:
+            return True
+        log.warning(
+            "reverse_unknown_controller_key",
+            username=username,
+            fingerprint=key.get_fingerprint(),
+        )
+        return False
 
 
 class ReverseInitiator:
@@ -101,6 +122,17 @@ class ReverseInitiator:
 
     async def _connect_and_serve(self) -> None:
         host_keys = self._load_host_keys()
+        # Pinned controller keys, or empty for an explicit no-pins setup.
+        # A missing file raises here, failing the connection loudly on
+        # every attempt rather than serving an unnamed controller.
+        pins = load_pinned_keys(self._settings.authorized_controller_keys or [])
+        if pins:
+            log.info("reverse_controller_keys_pinned", keys=len(pins))
+        else:
+            log.warning(
+                "reverse_initiator_unpinned",
+                detail="any controller key opens sessions; loopback and authenticated tunnels only",
+            )
 
         log.info(
             "reverse_initiator_connecting",
@@ -112,7 +144,7 @@ class ReverseInitiator:
             self._settings.acceptor_host,
             self._settings.acceptor_port,
             server_host_keys=host_keys,
-            server_factory=_ReverseSSHServer,
+            server_factory=lambda: _ReverseSSHServer(pins),
             authorized_client_keys=None,
             process_factory=self._handle_request,
             encoding=None,

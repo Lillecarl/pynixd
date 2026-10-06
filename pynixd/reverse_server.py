@@ -21,14 +21,34 @@ from nix_daemon_protocol.ids import StoreId
 
 from .config import ReverseAcceptorSettings, ReverseStoreSpec
 from .constants import SSH_ENCRYPTION_ALGS
+from .ssh_auth import load_pinned_keys
 from .store.reverse import ReverseStore
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from .instance import Server
 
 log = structlog.get_logger(__name__)
 
 _REGISTRATION_COMMAND = "pynixd-register"
+
+
+def _known_hosts_matcher(
+    pins: list[asyncssh.SSHKey],
+) -> Callable[[str, str, int | None], tuple[list[asyncssh.SSHKey], list[object], list[object]]]:
+    """A `known_hosts` matcher that trusts exactly *pins*, no filenames.
+
+    asyncssh matches the builder's presented host key against the
+    returned trusted keys during the handshake, before `handle_builder`
+    ever runs. An empty pin set must never reach here: asyncssh reads
+    an empty list as "use ~/.ssh/known_hosts", not "trust nothing".
+    """
+
+    def _match(host: str, addr: str, port: int | None) -> tuple[list[asyncssh.SSHKey], list[object], list[object]]:
+        return (pins, [], [])
+
+    return _match
 
 
 async def start_reverse_acceptor(
@@ -59,6 +79,18 @@ async def start_reverse_acceptor(
             log.info("reverse_client_key_ephemeral_generated")
 
     _bg_tasks: set[asyncio.Task[None]] = set()
+
+    # Pinned builder host keys, or empty for an explicit no-pins setup.
+    # A missing file raises here, failing the acceptor at startup rather
+    # than opening it: an unreadable pin must never read as no pins.
+    pins = load_pinned_keys(settings.authorized_builder_keys or [])
+    if pins:
+        log.info("reverse_builder_keys_pinned", keys=len(pins))
+    else:
+        log.warning(
+            "reverse_acceptor_unpinned",
+            detail="any builder key registers; loopback and authenticated tunnels only",
+        )
 
     async def handle_builder(conn: asyncssh.SSHClientConnection) -> None:
         """Manage a registered builder's lifecycle.
@@ -149,7 +181,7 @@ async def start_reverse_acceptor(
         port=settings.port,
         acceptor=handle_builder,
         client_keys=[host_key],
-        known_hosts=None,
+        known_hosts=_known_hosts_matcher(pins) if pins else None,
         encoding=None,
         encryption_algs=SSH_ENCRYPTION_ALGS,
     )
