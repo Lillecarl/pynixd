@@ -354,17 +354,6 @@ class ReverseInitiatorSettings(BaseModel):
     system_features: list[str] = Field(default_factory=list)
     nix_bin: str = "nix"
     server_host_key_paths: list[Path] = Field(default_factory=list)
-    authorized_controller_keys: list[Path] | None
-    """Controller public keys the initiator pins, or `None` for none.
-
-    This field has no default, so a configuration has to answer it.
-    `None` serves any controller that reaches the builder: reachable
-    only for loopback tests and tunnels that authenticate elsewhere.
-    A controller the builder cannot name opens `nix-daemon --stdio`
-    sessions against it, so a reachable builder pins its controller.
-    Each path holds OpenSSH public keys, several per file; a missing
-    file fails the connection loudly, never silently. Issue #75.
-    """
     reconnect_min_delay: float = 1.0
     reconnect_max_delay: float = 60.0
     shutdown_on_connect_failure_seconds: float | None = None
@@ -668,9 +657,7 @@ class PynixdSettings(BaseSettings):
     reverse_acceptor: ReverseAcceptorSettings = Field(
         default_factory=lambda: ReverseAcceptorSettings(authorized_builder_keys=None)
     )
-    reverse_initiator: ReverseInitiatorSettings = Field(
-        default_factory=lambda: ReverseInitiatorSettings(authorized_controller_keys=None)
-    )
+    reverse_initiator: ReverseInitiatorSettings = Field(default_factory=ReverseInitiatorSettings)
 
     admin_users: set[str] = Field(default_factory=set)
 

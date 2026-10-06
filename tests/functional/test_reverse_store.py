@@ -35,21 +35,17 @@ def _keypair(tmp_path: Path, name: str) -> tuple[Path, Path]:
     return priv, pub
 
 
-def _controller_settings(tmp_path: Path, builder_pub: Path) -> tuple[PynixdSettings, Path]:
-    ctrl_priv, ctrl_pub = _keypair(tmp_path, "controller")
-    return (
-        PynixdSettings(
-            ssh_port=None,
-            unix_path=tmp_path / "controller.sock",
-            reverse_acceptor=ReverseAcceptorSettings(
-                enabled=True,
-                host="127.0.0.1",
-                port=0,
-                host_key_path=ctrl_priv,
-                authorized_builder_keys=[builder_pub],
-            ),
+def _controller_settings(tmp_path: Path, builder_pub: Path) -> PynixdSettings:
+    return PynixdSettings(
+        ssh_port=None,
+        unix_path=tmp_path / "controller.sock",
+        reverse_acceptor=ReverseAcceptorSettings(
+            enabled=True,
+            host="127.0.0.1",
+            port=0,
+            host_key_path=_keypair(tmp_path, "controller")[0],
+            authorized_builder_keys=[builder_pub],
         ),
-        ctrl_pub,
     )
 
 
@@ -57,7 +53,6 @@ def _builder_settings(
     tmp_path: Path,
     acceptor_port: int,
     builder_priv: Path,
-    ctrl_pub: Path | None,
     store_id: str,
 ) -> tuple[PynixdSettings, LocalSocketStore]:
     builder_path = STORE_PREFIX / store_id
@@ -76,7 +71,6 @@ def _builder_settings(
             store_id=store_id,
             systems=["x86_64-linux"],
             server_host_key_paths=[builder_priv],
-            authorized_controller_keys=[ctrl_pub] if ctrl_pub is not None else None,
             reconnect_min_delay=0.1,
             reconnect_max_delay=1.0,
         ),
@@ -87,9 +81,9 @@ def _builder_settings(
 async def test_reverse_store_registration(tmp_path: Path) -> None:
     """Builder connects to controller via reverse initiator, registers as a store.
 
-    Both directions pin the other's key: the acceptor names the builder
-    host key, the initiator names the controller key. Registration with
-    the expected properties proves the pinned handshake.
+    The acceptor pins the builder host key; the builder names no
+    controller key. Registration with the expected properties proves
+    the pinned handshake.
     """
     builder_store_id = "test-builder"
     builder_priv, builder_pub = _keypair(tmp_path, "builder")
@@ -97,7 +91,7 @@ async def test_reverse_store_registration(tmp_path: Path) -> None:
     # Each server's socket in this test's own directory. The default is
     # /run/pynixd, which exists only where the NixOS module runs pynixd,
     # and there it is the live service's.
-    ctrl_settings, ctrl_pub = _controller_settings(tmp_path, builder_pub)
+    ctrl_settings = _controller_settings(tmp_path, builder_pub)
 
     async with Server(settings=ctrl_settings) as controller:
         if controller.reverse_acceptor is None:
@@ -105,9 +99,7 @@ async def test_reverse_store_registration(tmp_path: Path) -> None:
         acceptor_port = controller.reverse_acceptor.get_port()
         log.info("controller_acceptor_listening", port=acceptor_port)
 
-        builder_settings, builder_local = _builder_settings(
-            tmp_path, acceptor_port, builder_priv, ctrl_pub, builder_store_id
-        )
+        builder_settings, builder_local = _builder_settings(tmp_path, acceptor_port, builder_priv, builder_store_id)
 
         builder = Server(
             stores={StoreId("local"): builder_local},
@@ -141,16 +133,14 @@ async def test_reverse_wrong_builder_key_registers_nothing(tmp_path: Path) -> No
     _builder_priv, builder_pub = _keypair(tmp_path, "builder")
     rogue_priv, _rogue_pub = _keypair(tmp_path, "rogue")
 
-    ctrl_settings, ctrl_pub = _controller_settings(tmp_path, builder_pub)
+    ctrl_settings = _controller_settings(tmp_path, builder_pub)
 
     async with Server(settings=ctrl_settings) as controller:
         if controller.reverse_acceptor is None:
             pytest.fail("Reverse acceptor did not start")
         acceptor_port = controller.reverse_acceptor.get_port()
 
-        builder_settings, builder_local = _builder_settings(
-            tmp_path, acceptor_port, rogue_priv, ctrl_pub, builder_store_id
-        )
+        builder_settings, builder_local = _builder_settings(tmp_path, acceptor_port, rogue_priv, builder_store_id)
 
         builder = Server(
             stores={StoreId("local"): builder_local},

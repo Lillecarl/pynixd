@@ -1,9 +1,8 @@
-"""The reverse path pins keys in both directions. Issue #75.
+"""The reverse path authenticates one way: the acceptor names builders.
 
-The initiator serves `nix-daemon --stdio` to whatever controller
-connects, and the acceptor registers whatever builder dials in, so
-an unpinned setup trusts the network. Pinned setups fail closed:
-any other key is refused before any channel opens, on each side.
+The builder serves whatever answers its dial — the dial travels an
+already-authenticated tunnel, and the builder's own host key is ephemeral
+by default — so no controller pin exists on that side. Issue #75.
 """
 
 from __future__ import annotations
@@ -14,6 +13,7 @@ import asyncssh
 import pytest
 
 from pynixd.reverse_client import _ReverseSSHServer
+from pynixd.reverse_server import _known_hosts_matcher
 from pynixd.ssh_auth import load_pinned_keys
 
 if TYPE_CHECKING:
@@ -30,21 +30,21 @@ def _keypair() -> tuple[asyncssh.SSHKey, asyncssh.SSHKey]:
     return asyncssh.import_public_key(public_bytes), asyncssh.import_public_key(public_bytes)
 
 
-def test_pinned_server_accepts_the_pinned_key() -> None:
+def test_builder_serves_any_controller_key() -> None:
+    """The builder performs no client authentication; the acceptor does."""
+    assert _ReverseSSHServer().validate_public_key("controller", _key()) is True
+
+
+def test_acceptor_trusts_the_pinned_builder_key() -> None:
     presented, pinned = _keypair()
     assert presented is not pinned
-    assert _ReverseSSHServer([pinned]).validate_public_key("builder", presented) is True
+    trusted, _, _ = _known_hosts_matcher([pinned])("builder", "10.0.0.2", 2235)
+    assert presented in trusted
 
 
-def test_pinned_server_rejects_any_other_key() -> None:
-    server = _ReverseSSHServer([_key()])
-    assert server.validate_public_key("builder", _key()) is False
-
-
-def test_unpinned_server_accepts_any_key() -> None:
-    """No pins is the explicit loopback opt-out, and it stays open."""
-    assert _ReverseSSHServer().validate_public_key("builder", _key()) is True
-    assert _ReverseSSHServer([]).validate_public_key("builder", _key()) is True
+def test_acceptor_trusts_no_other_builder_key() -> None:
+    trusted, _, _ = _known_hosts_matcher([_key()])("builder", "10.0.0.2", 2235)
+    assert _key() not in trusted
 
 
 def test_pinned_keys_load_from_files(tmp_path: Path) -> None:
