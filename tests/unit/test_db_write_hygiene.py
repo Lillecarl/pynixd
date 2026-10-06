@@ -1,18 +1,28 @@
-"""Failed checkouts return clean.
+"""Failed checkouts return clean, and flushes pop only flushed seeds.
 
 On 2026-10-06 every pynixd write to the store database failed for
 four hours with `database is locked` while fresh connections wrote
 fine: pooled connections carry their state across checkouts, and a
 checkout that failed mid-write held the file lock until restart.
-`acquire_conn` now rolls back on checkin; this pins that.
+`acquire_conn` now rolls back on checkin; the first test pins that.
+
+The flush used to drain its queues up front and merge seeds back on
+failure — any exit that skipped the merge (cancellation above all)
+lost references silently. It now snapshots the queues and subtracts
+only committed work, one transaction per chunk; the other tests pin
+both halves.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import sqlite3
+from contextlib import closing
+from typing import TYPE_CHECKING, Any
 
+import aiosqlite
 import pytest
 
+from pynixd.db_migrations import PATH_ACCESS_TABLE, apply_migrations
 from pynixd.local_store_db import LocalStoreDB
 
 if TYPE_CHECKING:
@@ -46,5 +56,78 @@ async def test_failed_checkout_returns_clean(tmp_path: Path) -> None:
             assert row[0] == 0
             await second.execute("INSERT INTO t VALUES (2)")
             await second.commit()
+    finally:
+        await db.close_db_pool()
+
+
+HELLO = "/nix/store/00000000000000000000000000000001-hello"
+LIBC = "/nix/store/00000000000000000000000000000002-libc"
+
+
+def _store_with_a_closure(tmp_path: Path) -> Path:
+    """A store database where `hello` references `libc`, migrated."""
+    db_path = tmp_path / "db.sqlite"
+    db_path.touch()
+    with closing(sqlite3.connect(db_path)) as conn, conn:
+        conn.execute(
+            "CREATE TABLE ValidPaths ("
+            "id INTEGER PRIMARY KEY, path TEXT UNIQUE NOT NULL, "
+            "deriver TEXT, registrationTime INTEGER)",
+        )
+        conn.execute("CREATE TABLE Refs (referrer INTEGER, reference INTEGER)")
+        conn.execute("INSERT INTO ValidPaths (id, path, registrationTime) VALUES (1, ?, 0)", (HELLO,))
+        conn.execute("INSERT INTO ValidPaths (id, path, registrationTime) VALUES (2, ?, 0)", (LIBC,))
+        conn.execute("INSERT INTO Refs (referrer, reference) VALUES (1, 2)")
+    return db_path
+
+
+async def _flushing_db(tmp_path: Path) -> LocalStoreDB:
+    """A `LocalStoreDB` whose schema is usable, for `flush_references`."""
+    db_path = _store_with_a_closure(tmp_path)
+    db = LocalStoreDB(
+        db_path=db_path,
+        store_path=tmp_path,
+        read_only=False,
+        reference_flush_interval=60.0,
+    )
+    db.schema = await apply_migrations(db_path, read_only=False)
+    assert db.schema.usable
+    return db
+
+
+async def _touched(db: LocalStoreDB) -> set[str]:
+    async with db.execute(f"SELECT path FROM {PATH_ACCESS_TABLE}") as cursor:
+        return {str(row[0]) for row in await cursor.fetchall()}
+
+
+@pytest.mark.anyio
+async def test_flush_subtracts_flushed_seeds(tmp_path: Path) -> None:
+    """Success empties the queues and touches the seed closure."""
+    db = await _flushing_db(tmp_path)
+    try:
+        db.pending_references = {HELLO}
+        await db.flush_references()
+
+        assert db.pending_references == set()
+        assert await _touched(db) == {HELLO, LIBC}
+    finally:
+        await db.close_db_pool()
+
+
+@pytest.mark.anyio
+async def test_failed_flush_keeps_seeds_queued(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Three failed attempts lose nothing: nothing was ever popped."""
+    db = await _flushing_db(tmp_path)
+    try:
+
+        async def boom(*args: Any, **kwargs: Any) -> set[str]:
+            raise aiosqlite.Error("database is locked")
+
+        monkeypatch.setattr(db, "_expand_closure", boom)
+        db.pending_references = {HELLO}
+        await db.flush_references()
+
+        assert db.pending_references == {HELLO}
+        assert await _touched(db) == set()
     finally:
         await db.close_db_pool()

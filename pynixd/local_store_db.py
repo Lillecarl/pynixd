@@ -882,33 +882,43 @@ class LocalStoreDB:
         """
         if not self.active or self.read_only:
             return
-        if not self.pending_references and not self.pending_build_references:
+        # Snapshot the queues instead of draining them: only committed
+        # work leaves, so a failure — or a cancellation, which skips any
+        # merge-back entirely — loses no reference. Seeds that arrive
+        # mid-flush stay queued for the next one.
+        runtime_seeds = set(self.pending_references)
+        build_seeds = set(self.pending_build_references)
+        if not runtime_seeds and not build_seeds:
             return
 
         for attempt in range(3):
-            runtime_seeds = self.pending_references
-            self.pending_references = set()
-            build_seeds = self.pending_build_references
-            self.pending_build_references = set()
-            if not runtime_seeds and not build_seeds:
-                break
             try:
                 t0 = time.monotonic()
                 async with self.acquire_conn() as db:
                     touched: set[str] = set()
-                    # The walks read; only the chunks below write, each
-                    # committed on its own: no transaction safety is
-                    # needed here, and a short write holds the lock
-                    # briefly enough that the daemon's own writers get in
-                    # between chunks.
+                    # The walks read; only the chunks below write, one
+                    # transaction each: a failed chunk rolls back to the
+                    # last commit instead of leaking into the pool, and a
+                    # short write holds the lock briefly enough that the
+                    # daemon's own writers get in between chunks.
                     if self.schema.usable:
                         if runtime_seeds:
                             touched.update(await self._expand_closure(db, _RUNTIME_CLOSURE_OF_SEEDS, runtime_seeds))
                         if build_seeds:
                             touched.update(await self._expand_closure(db, _BUILD_CLOSURE_OF_SEEDS, build_seeds))
                         for chunk in batched(sorted(touched), 1000):
-                            await db.execute(TOUCH_PATH_ACCESS, (json.dumps(chunk),))
-                            await db.commit()
+                            try:
+                                await db.execute(TOUCH_PATH_ACCESS, (json.dumps(chunk),))
+                                await db.commit()
+                            except aiosqlite.Error:
+                                with suppress(Exception):
+                                    await db.rollback()
+                                log.debug("db_flush_chunk_rolled_back", paths=len(chunk))
+                                raise
+                # Only flushed work leaves the queues. Rework on retry is
+                # harmless: touching is an idempotent upsert.
+                self.pending_references -= runtime_seeds
+                self.pending_build_references -= build_seeds
                 elapsed = time.monotonic() - t0
                 log.debug(
                     "db_flush_complete",
@@ -920,15 +930,12 @@ class LocalStoreDB:
                 )
                 break
             except aiosqlite.Error:
-                # Lock contention with the daemon or another writer: put
-                # the seeds back and retry with backoff. A failed flush
-                # used to close the whole pool, which left every fast
-                # path erroring until a restart; contention is transient,
-                # the pool is not the problem, and the next interval
-                # retries anyway. Unwritten seeds merge back in, so no
-                # reference is lost, only delayed.
-                self.pending_references |= runtime_seeds
-                self.pending_build_references |= build_seeds
+                # Lock contention with the daemon or another writer: retry
+                # with backoff. A failed flush used to close the whole
+                # pool, which left every fast path erroring until a
+                # restart; contention is transient, the pool is not the
+                # problem, and the next interval retries anyway. Nothing
+                # was popped, so no reference is lost, only delayed.
                 if attempt >= 2:
                     log.exception("db_flush_failed")
                     break
