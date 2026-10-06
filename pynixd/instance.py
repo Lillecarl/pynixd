@@ -337,6 +337,8 @@ class Server:
         if store is None:
             log.warning("remove_store_not_found", store_id=store_id)
             return
+        if self.scheduler:
+            self.scheduler.allocator.discard_store(store_id)
 
         local_store = self.local_store
         if isinstance(local_store, LocalDBStore):

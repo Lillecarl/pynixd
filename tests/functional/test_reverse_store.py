@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING
 
 import anyio
@@ -17,7 +18,7 @@ from pynixd.config import (
     ReverseInitiatorSettings,
 )
 from pynixd.store import DaemonStore, LocalSocketStore
-from tests.conftest import STORE_PREFIX, make_test_spec, rmtree_robust
+from tests.conftest import CLIENT_BIN, STORE_PREFIX, make_test_spec, rmtree_robust, run_subproc
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -156,3 +157,126 @@ async def test_reverse_wrong_builder_key_registers_nothing(tmp_path: Path) -> No
         finally:
             await builder.close()
             rmtree_robust(STORE_PREFIX / builder_store_id)
+
+
+_DELEGATED_EXPR = """with import <nixpkgs> {}; runCommand "pynixd-delegation-probe" {} "echo delegated > $out"
+"""
+"""A trivial build the test routes to the reverse builder."""
+
+
+def _controller_without_local_builds(tmp_path: Path, builder_pub: Path) -> tuple[PynixdSettings, LocalSocketStore]:
+    """Controller settings plus a local store that builds nothing.
+
+    An empty feature matrix fails every `supports_derivation`, so the
+    scheduler can never assign the local store: with a compatible reverse
+    builder registered the build must delegate, and without one it must fail
+    instead of hanging. That exclusivity is what proves delegation below.
+
+    The store lives under `STORE_PREFIX`, not `tmp_path`: the managed daemon
+    socket nests deep under the store, and the test name in `tmp_path` already
+    spends most of the 107-byte Unix socket budget.
+    """
+    store_path = STORE_PREFIX / "delegation-controller"
+    rmtree_robust(store_path)
+    local = LocalSocketStore(
+        make_test_spec(store_id="local", store_path=store_path, no_probe=True, feature_matrix={}),
+    )
+    return _controller_settings(tmp_path, builder_pub), local
+
+
+async def _wait_for_builder(controller: Server, builder_store_id: str) -> None:
+    store_id = StoreId(builder_store_id)
+    for _ in range(50):
+        if store_id in controller.stores:
+            return
+        await anyio.sleep(0.1)
+    pytest.fail("Builder did not register within 5 seconds")
+
+
+async def test_delegated_build_runs_on_the_builder(tmp_path: Path) -> None:
+    """A build the controller cannot take runs on the reverse builder. Issue #79."""
+    builder_store_id = "delegation-builder"
+    builder_priv, builder_pub = _keypair(tmp_path, "builder")
+    ctrl_settings, ctrl_local = _controller_without_local_builds(tmp_path, builder_pub)
+
+    async with Server(
+        stores={StoreId("local"): ctrl_local},
+        settings=ctrl_settings,
+    ) as controller:
+        if controller.reverse_acceptor is None:
+            pytest.fail("Reverse acceptor did not start")
+        acceptor_port = controller.reverse_acceptor.get_port()
+
+        builder_settings, builder_local = _builder_settings(tmp_path, acceptor_port, builder_priv, builder_store_id)
+        builder = Server(
+            stores={StoreId("local"): builder_local},
+            settings=builder_settings,
+        )
+        await builder.start()
+
+        try:
+            await _wait_for_builder(controller, builder_store_id)
+
+            expr_path = tmp_path / "delegated.nix"
+            expr_path.write_text(_DELEGATED_EXPR)  # noqa: ASYNC240 -- test setup
+            uri = f"unix://{ctrl_settings.unix_path}?root={ctrl_local.store_path}"
+
+            rc, stdout, stderr, _both = await run_subproc(
+                [
+                    str(CLIENT_BIN),
+                    "build",
+                    "--file",
+                    str(expr_path),
+                    "--store",
+                    uri,
+                    "--no-link",
+                    "--print-out-paths",
+                    "--print-build-logs",
+                    "--impure",
+                ],
+            )
+            assert rc == 0, stderr
+            assert "/nix/store/" in stdout
+            # The controller-local store supports no system, so no local
+            # build was possible: the builder is the only store that could
+            # have answered, and it says so on the client log.
+            assert f"building on {builder_store_id}" in stderr
+        finally:
+            await builder.close()
+            rmtree_robust(STORE_PREFIX / builder_store_id)
+            rmtree_robust(STORE_PREFIX / "delegation-controller")
+
+
+async def test_unbuildable_without_a_builder_fails_fast(tmp_path: Path) -> None:
+    """No compatible store is a fast error, never a silent wait. Issue #79."""
+    _builder_priv, builder_pub = _keypair(tmp_path, "builder")
+    ctrl_settings, ctrl_local = _controller_without_local_builds(tmp_path, builder_pub)
+
+    async with Server(
+        stores={StoreId("local"): ctrl_local},
+        settings=ctrl_settings,
+    ):
+        expr_path = tmp_path / "undelegated.nix"
+        expr_path.write_text(_DELEGATED_EXPR)  # noqa: ASYNC240 -- test setup
+        uri = f"unix://{ctrl_settings.unix_path}?root={ctrl_local.store_path}"
+
+        try:
+            started = time.monotonic()
+            rc, _stdout, _stderr, _both = await run_subproc(
+                [
+                    str(CLIENT_BIN),
+                    "build",
+                    "--file",
+                    str(expr_path),
+                    "--store",
+                    uri,
+                    "--no-link",
+                    "--print-out-paths",
+                    "--impure",
+                ],
+                expected_retcode=None,
+            )
+            assert rc != 0
+            assert time.monotonic() - started < 90.0
+        finally:
+            rmtree_robust(STORE_PREFIX / "delegation-controller")

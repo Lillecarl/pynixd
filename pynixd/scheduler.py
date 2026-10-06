@@ -82,7 +82,7 @@ class Scheduler:
         self.running = False
 
     @property
-    def stores(self) -> Mapping[StoreId, DaemonStore]:
+    def stores(self) -> dict[StoreId, DaemonStore]:
         return {
             store_id: store
             for store_id, store in self.ctx.stores.items()
@@ -124,6 +124,8 @@ class Scheduler:
         to queue even after the store is removed.
         """
         log.info("store_added_to_scheduler", store_id=store.store_id, dynamic=dynamic)
+        if isinstance(store, DaemonStore) and not store.no_schedule:
+            self.allocator.add_store(store)
         if dynamic and store.feature_matrix:
             self.add_dynamic_features(store.feature_matrix)
         self.trigger()

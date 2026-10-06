@@ -136,13 +136,28 @@ class BuildAllocator:
 
     def __init__(
         self,
-        stores: Mapping[StoreId, DaemonStore],
+        stores: dict[StoreId, DaemonStore],
         local_store: DaemonStore,
         ranker: StoreRanker,
     ) -> None:
         self.stores = stores
         self.local_store = local_store
         self.ranker = ranker
+
+    def add_store(self, store: DaemonStore) -> None:
+        """Register a store that arrived after construction.
+
+        The mapping passed in holds the stores of scheduler start; a dynamic
+        store (a reverse builder dialling in) never lands in it unless
+        somebody puts it there. Without this the allocator ranks a snapshot
+        while the scheduler filters the live set, so a compatible builder
+        reads as "compatible, keep waiting" for ever. Issue #79.
+        """
+        self.stores[store.store_id] = store
+
+    def discard_store(self, store_id: StoreId) -> None:
+        """Forget a removed store, so no pass ranks a closed connection."""
+        self.stores.pop(store_id, None)
 
     def rank_stores(
         self,

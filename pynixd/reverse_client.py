@@ -170,7 +170,14 @@ class ReverseInitiator:
                 SSHNixReader(process.stdin, identifier="reverse-initiator"),
                 SSHNixWriter(process.stdout, identifier="reverse-initiator"),
                 ctx=self._ctx,
-                role=Role.USER,
+                # The session on this channel is the controller this builder
+                # dialled: no other party answers that address but the tunnel
+                # makes reachable, and the acceptor pinned this builder's key
+                # before it listened. A USER here refuses every
+                # input-addressed build the controller delegates, so
+                # delegation through a reverse builder never works (the
+                # controller blacklists the builder after the first refusal).
+                role=Role.ADMIN,
                 username="reverse-initiator",
                 schedule_mode=ScheduleMode.proxy,
             )
