@@ -871,7 +871,10 @@ async def test_deep_dynamic_drv_chain_via_pynixd(
 
     # The chain resolves producer!out (which is target.drv) and builds it,
     # so the final content is target's output. A level that failed to peel
-    # would error the build or deliver a .drv path instead.
+    # would error the build or deliver a .drv path instead. Every wrapper
+    # level copies with `printf '%s\n'`, so the content ends with a newline;
+    # plain nix-daemon builds the same bytes, which is what caught the
+    # bare `"deep-target"` expectation here.
     cat_cmd = [
         str(CLIENT_BIN),
         "store",
@@ -882,6 +885,6 @@ async def test_deep_dynamic_drv_chain_via_pynixd(
     ]
     rc, content, _, stdboth = await run_subproc(cat_cmd, nix_config=DYN_NIX_CONFIG)
     assert rc == 0, f"Reading deep chain output failed:\n{stdboth}"
-    assert content == "deep-target", f"Deep chain resolved to wrong content: {content!r}"
+    assert content == "deep-target\n", f"Deep chain resolved to wrong content: {content!r}"
 
     log.info("deep_dynamic_chain_via_pynixd", path=out_path)
