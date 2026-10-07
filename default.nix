@@ -374,6 +374,16 @@ package
       inherit devEnv;
     };
 
+    # The Nix functional suite in a UML guest, where cleanup is a poweroff
+    # rather than a promise. `nix run --file . tests.guest-nixft.driver
+    # -- --out <abs>`. Issue #45.
+    guest-nixft = pkgs.callPackage ./tests/derivations/guest-nixft {
+      pynixd-lib = library;
+      src = lib.cleanSource ./.;
+      inherit (sources) vivarium;
+      nixft = nixFunctionalTests.nix_2_34;
+    };
+
     # pynixd as the Nix daemon of a guest, against nix-daemon on another,
     # over the paths a user takes: a local build, `ssh-ng://` and
     # `--builders`.
