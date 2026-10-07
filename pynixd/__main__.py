@@ -8,7 +8,9 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
+import os
 import signal
+import tracemalloc
 
 import anyio
 import structlog
@@ -58,6 +60,11 @@ def daemon_main(_args: argparse.Namespace) -> None:
     """CLI entry point for ``pynixd daemon`` — sets up logging and runs the async loop."""
     settings = load_settings()
     setup_logging(settings)
+
+    if os.environ.get("PYNIXD_BENCH"):
+        # Allocation census for the growth benchmark. Off unless asked:
+        # tracing costs throughput and keeps a traceback per allocation.
+        tracemalloc.start(5)
 
     anyio.run(async_daemon_main, backend="asyncio", backend_options={"loop_factory": uvloop.new_event_loop})
 

@@ -3,7 +3,8 @@
 One script serves every phase, and `vms.phase` picks the benchmark. `decode`
 and `raw` are micro-measurements; `system` is the whole pipeline through one
 client, and is the one that would notice a fault the other two cannot see.
-`storm` is the same pipeline under parallel clients.
+`storm` is the same pipeline under parallel clients. `growth` repeats one
+impure build and fails when any cost grows between iterations.
 """
 
 from __future__ import annotations
@@ -62,6 +63,8 @@ async def test(vms: Machines) -> None:
         await _system(vms)
     elif vms.phase == "storm":
         await _storm(vms)
+    elif vms.phase == "growth":
+        await _growth(vms)
     else:
         raise RuntimeError(f"no benchmark for phase {vms.phase!r}")
 
@@ -432,6 +435,45 @@ async def _storm(vms: Machines) -> None:
         )
 
     await _print_breakdown(vm)
+
+
+async def _growth(vms: Machines) -> None:
+    """Repeat one impure build, and fail when any cost grows.
+
+    The build shouts 50,000 log lines and writes a 1 MiB output, so the
+    log path and the transfer path both work per iteration. The first
+    build is warmup; the probe compares every later build against the
+    first measured one and fails on growth. Tracing runs only for this
+    phase: the unit restarts with `PYNIXD_BENCH=1` and hands stock
+    settings back in the `finally`, so no other phase pays for it.
+    """
+    [vm] = vms.values()
+    await vm.succeed("chmod 0777 /artifacts")
+
+    src = vms.settings["src"]
+    await vm.succeed(f"rm -rf /work && cp -r {src} /work && chmod -R u+w /work")
+
+    await vm.succeed("systemctl set-environment PYNIXD_BENCH=1 && systemctl restart pynixd.service")
+    try:
+        await vm.succeed(
+            f"for _ in $(seq 1 100); do [ -S {vms.settings['socket']} ] && break; sleep 0.2; done",
+            timeout=60,
+        )
+        command = (
+            "cd /work && PYTHONPATH=/work:/work/nix-daemon-protocol/src "
+            f"python tests/benchmark/growth_probe.py {vms.settings['socket']} {vms.settings['nixpkgs']} "
+            f"{vms.settings['src']}/tests/benchmark/growth.nix "
+            "> /artifacts/growth.log 2>&1"
+        )
+        rc, _ = await vm.execute(command, timeout=TIMEOUT, label="growth benchmark")
+        print(f"[benchmark] growth exit {rc}\n{(await vm.succeed('cat /artifacts/growth.log')).strip()}")
+        if rc != 0:
+            raise AssertionError(f"growth benchmark exited {rc}")
+    finally:
+        await vm.succeed(
+            "systemctl unset-environment PYNIXD_BENCH; systemctl restart pynixd.service; "
+            f"for _ in $(seq 1 100); do [ -S {vms.settings['socket']} ] && break; sleep 0.2; done"
+        )
 
 
 async def _goal_path(

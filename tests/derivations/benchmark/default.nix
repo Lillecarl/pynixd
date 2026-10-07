@@ -102,5 +102,10 @@ vivariumLib.mkTest {
       after = [ "boot" ];
       description = "parallel clients through each daemon";
     };
+    growth = {
+      script = ../../benchmark/run.py;
+      after = [ "boot" ];
+      description = "one impure build, repeated; nothing may grow";
+    };
   };
 }

@@ -10,6 +10,8 @@ knows instead of failing the whole request.
 
 from __future__ import annotations
 
+import gc
+import tracemalloc
 from typing import TYPE_CHECKING, Any
 
 from . import metrics
@@ -17,7 +19,7 @@ from . import metrics
 if TYPE_CHECKING:
     from .context import PynixdContext
 
-KNOWN_SECTIONS: tuple[str, ...] = ("queue", "stores", "sessions", "transfers", "totals")
+KNOWN_SECTIONS: tuple[str, ...] = ("queue", "stores", "sessions", "transfers", "totals", "benchmark")
 """Section names `collect` answers. New sections extend this tuple."""
 
 
@@ -35,6 +37,8 @@ def collect(ctx: PynixdContext, wants: list[str] | None = None) -> dict[str, Any
         sections["transfers"] = _transfers_section(ctx)
     if "totals" in wanted:
         sections["totals"] = _totals_section()
+    if "benchmark" in wanted:
+        sections["benchmark"] = _benchmark_section()
     return sections
 
 
@@ -99,4 +103,22 @@ def _totals_section() -> dict[str, Any]:
     return {
         "builds_completed": metrics.builds_completed_by_status(),
         "sessions_accepted": metrics.sessions_accepted_by_transport(),
+    }
+
+
+def _benchmark_section() -> dict[str, Any]:
+    """Allocator census for the growth benchmark. Cheap when tracing is off.
+
+    Production answers one boolean and runs no census. With `PYNIXD_BENCH=1`
+    the daemon traces every allocation, and the harness reads current and
+    peak bytes plus the live object count around each build.
+    """
+    if not tracemalloc.is_tracing():
+        return {"tracing": False}
+    current, peak = tracemalloc.get_traced_memory()
+    return {
+        "tracing": True,
+        "tracemalloc_current": current,
+        "tracemalloc_peak": peak,
+        "gc_objects": len(gc.get_objects()),
     }
