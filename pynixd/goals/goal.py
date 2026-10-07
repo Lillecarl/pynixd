@@ -71,6 +71,18 @@ class Goal[T]:
             task = self._task
         return await task
 
+    def cancel(self) -> bool:
+        """Cancel the goal's task. True when a live task was cancelled.
+
+        Sync, so a request teardown runs it even under cancellation. A
+        finished goal answers False: nothing watches it, nothing reaps it.
+        """
+        task = self._task
+        if task is None or task.done():
+            return False
+        task.cancel()
+        return True
+
     async def _run(self) -> T:
         """Execute the goal's core logic. Must be overridden by subclasses."""
         raise NotImplementedError

@@ -8,6 +8,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 import anyio
+import structlog
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, RequestId
 
@@ -40,6 +41,8 @@ if TYPE_CHECKING:
     from ..store import Store
     from ..store_path import StorePath
     from .goal import Goal
+
+log = structlog.get_logger(__name__)
 
 _REQUEST_IDS = itertools.count(1)
 """Names the live goal systems apart, for `BuildQueue`. Issue Lillecarl/nanopynix#286."""
@@ -137,6 +140,23 @@ class GoalEngine:
             return
         await scheduler.queue.unsubscribe(build_id, client)
 
+    def reap(self) -> int:
+        """Cancel every unfinished goal of this request.
+
+        One engine serves one request, so when the request ends nobody
+        watches its goals: answered, failed, or disconnected. A goal whose
+        task already finished answers False and keeps its result. Sync, so
+        it runs in a `finally` under cancellation too. Queue builds live and
+        die by their own references (`let_go_of_every_build` gives this
+        request's back first); this only stops the waiting. Issue #79.
+        """
+        reaped = sum(1 for goal in self._goals.values() if goal.cancel())
+        if reaped:
+            log.info("goals_reaped", request_id=int(self.request_id), count=reaped)
+        else:
+            log.debug("goals_reaped", request_id=int(self.request_id), count=0)
+        return reaped
+
     async def build_paths(self, request: BuildPathsRequest, client: ClientConn | None = None) -> BuildPathsResponse:
         """Execute a BuildPaths request, returning a simple success/failure response."""
         if request.build_mode != BuildMode.NORMAL:
@@ -172,7 +192,11 @@ class GoalEngine:
         finally:
             # The answer of this request is the moment it wants nothing more.
             # `let_go_of_every_build` says what the build queue does with that.
-            await self.let_go_of_every_build()
+            try:
+                await self.let_go_of_every_build()
+            finally:
+                # Whatever state the goals are in, nobody waits for them now.
+                self.reap()
 
     async def _straight_to_the_store(self, request: Any, client: ClientConn | None) -> Any:
         """A check or a repair goes to the local store, and the goal system stands aside.
@@ -207,7 +231,10 @@ class GoalEngine:
         client: ClientConn | None = None,
     ) -> QueryMissingResponse:
         """Execute a read-only QueryMissing request, classifying paths as build/substitute/unknown."""
-        return await QueryMissingPlanGoal(self, request, client).result()
+        try:
+            return await QueryMissingPlanGoal(self, request, client).result()
+        finally:
+            self.reap()
 
     async def get_ensure_derived_path_goal(
         self,
