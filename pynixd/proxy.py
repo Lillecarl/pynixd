@@ -276,17 +276,21 @@ class DaemonProxy:
         **A proxy honours a feature by speaking its shape on both sides.**
         `SUPPORTED_STANDARD_FEATURES` says which shapes this code can write
         at all, and that is only half of the question. The other half is
-        whether the backend reads them: a client that names
-        `realisation-with-path-not-hash` and a backend that does not would
-        need pynixd to translate between the two shapes, and one direction of
-        that translation has no answer on the wire. `DrvOutput` of the old
-        shape carries the hash of the derivation, and the new shape carries
-        the path; going from the path to the hash means reading the
-        derivation and hashing it, for every realisation.
+        whether the backend reads them. This answers what **any** store that
+        a build can go to offers: one backend with the feature is enough for
+        pynixd to name it. Issue #84.
 
-        So this answers what **every** store that a build can go to offers,
-        and pynixd claims nothing that one of them would refuse. Step 4 of
-        issue #14.
+        The union is sound because every hop negotiates apart. The client and
+        pynixd agree one set, and pynixd and each backend agree their own on
+        every pooled connection. A build request carries no realisation
+        shape at all -- a `BasicDerivation` only -- so any store can run any
+        build; the result crosses each hop in the shape that hop agreed to,
+        via `for_the_wire` on the way out and the per-connection codec on
+        the way in. The two requests that do carry one shape alone, op 42
+        and op 43, never reach the scheduler: `register_drv_output` and
+        `query_realisation` of `store/daemon.py` fill the missing shape, or
+        refuse loudly, before the verbatim forward. Nothing is ever sent a
+        shape it never agreed to.
 
         **A substituter is left out.** `no_schedule` marks a store that the
         scheduler never sends a build to, and a binary cache is not a peer of
@@ -294,16 +298,17 @@ class DaemonProxy:
         "nothing" for every configuration that holds one. The loop below that
         collects the feature matrix leaves them out for the same reason.
 
-        A store that has never connected reports an empty set, and that is
-        the conservative answer and not a wrong one: pynixd then names no
-        feature, and both sides keep the shape that every version reads.
+        A store that has never connected contributes nothing, and that is
+        the honest answer and not a veto: it reports an empty set until its
+        first handshake, and an offline builder no longer takes a feature
+        away from builds that would never touch it.
         """
-        honourable = set(wire.SUPPORTED_STANDARD_FEATURES)
+        honourable: set[str] = set()
         for store in self.stores.values():
             if store.no_schedule:
                 continue
-            honourable &= set(store.features)
-        return frozenset(honourable)
+            honourable |= set(store.features)
+        return frozenset(honourable & set(wire.SUPPORTED_STANDARD_FEATURES))
 
     async def handshake(self) -> None:
         """Server-side daemon protocol handshake."""
@@ -348,7 +353,7 @@ class DaemonProxy:
 
             our_features = get_extension_features() | set(honourable)
             # Features the proxy honours itself join here rather than in
-            # `honourable_features`: that answers what every buildable store
+            # `honourable_features`: that answers what any buildable store
             # reads, and op 49 never reaches one -- it writes session roots
             # the way op 11 does. An old backend must not unname it, because
             # the gate has no fallback: a client that misses the name

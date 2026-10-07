@@ -121,15 +121,18 @@ and not before: a peer that reads the name then sends the new shape, and a
 codec that cannot read it drops the connection. Issue #14.
 
 **This says what the codecs can do, and not what a proxy may claim.** pynixd
-speaks to a backend as well as to a client, and it honours a feature only
-when the backend reads the same shape. `DaemonProxy.honourable_features`
-narrows this set to what every store that a build can go to offers, and the
-handshake with the client uses that narrower answer.
+speaks to a backend as well as to a client, and it honours a feature when
+any store that a build can go to reads the same shape.
+`DaemonProxy.honourable_features` unions this set with the features of
+those stores, and the handshake with the client uses that wider answer.
+Issue #84.
 
 `realisation-with-path-not-hash` covers `DrvOutput`, `UnkeyedRealisation`,
-`BuildResult.builtOutputs`, `QueryRealisation` and `RegisterDrvOutput`. Each
-one carries both shapes as two fields, and `needs_features` and
-`unless_features` pick one.
+`BuildResult.builtOutputs`, `QueryRealisation` and `RegisterDrvOutput`.
+`BuildResult` and `RegisterDrvOutput` carry both shapes as two fields, and
+`needs_features` and `unless_features` pick one. `QueryRealisationRequest`
+carries one shape alone, so the store boundary fills the missing half
+before the forward.
 """
 
 

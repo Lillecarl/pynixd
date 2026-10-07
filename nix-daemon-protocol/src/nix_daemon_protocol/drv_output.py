@@ -9,8 +9,7 @@ derivation **path** and an output name when it is on. The hash form does not
 exist in that shape at all: a `DrvOutput` there names the derivation that made
 the output, and not a hash of it.
 
-`KeyedDrvOutput` in `keyed_drv_output.py` holds the other shape.
-`SUPPORTED_STANDARD_FEATURES` is empty, so nothing writes it yet. Issue #14.
+`KeyedDrvOutput` in `keyed_drv_output.py` holds the other shape. Issue #14.
 """
 
 from __future__ import annotations

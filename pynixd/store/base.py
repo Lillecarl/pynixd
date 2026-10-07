@@ -85,8 +85,8 @@ class Store(ABC):
         cache -- advertises nothing, and that is the honest answer rather
         than a missing attribute.
 
-        `DaemonProxy.honourable_features` intersects these and would answer
-        "nothing" for a store with an empty set. That store is kept out by
+        `DaemonProxy.honourable_features` unions these: one store with a
+        feature is enough for pynixd to name it. That store is kept out by
         `no_schedule`, not by the absence of this property.
         """
         return frozenset()
