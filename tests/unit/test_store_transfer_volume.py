@@ -245,5 +245,7 @@ def test_transfers_section_carries_per_store_volume() -> None:
         "bytes_out": 0,
         "paths_in": 0,
         "paths_out": 0,
+        "wire_bytes_in": 0,
+        "wire_bytes_out": 0,
     }
     assert sections["transfers"]["bytes_received"] >= 0

@@ -28,6 +28,7 @@ from .protocol import get_extension_features
 from .serde.context import ReadContext, WriteContext
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
     from types import TracebackType
 
@@ -190,6 +191,12 @@ class Connection:
         used it last. `apply_options` reads this field, and it sends nothing
         when the set does not change. Issue Lillecarl/nanopynix#192.
         """
+        self.on_close: Callable[[Connection], None] | None = None
+        """Report-once hook the pool sets to collect this connection's totals.
+
+        Fires after the transport closes, so the final flush is counted.
+        `None` outside a pool.
+        """
 
     async def __aenter__(self) -> Connection:
         """Enter async context; no setup required."""
@@ -220,6 +227,11 @@ class Connection:
         self.connected = False
         with contextlib.suppress(Exception):
             await self.w.close()
+        # The hook disarms itself: removal paths overlap (a retired
+        # connection can meet the sweep too), and each must report once.
+        if self.on_close is not None:
+            report, self.on_close = self.on_close, None
+            report(self)
 
     async def apply_options(self, options: SetOptionsRequest | None) -> None:
         """Give this connection the option set of a client, when it needs it.

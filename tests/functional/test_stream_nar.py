@@ -66,6 +66,8 @@ async def test_stream_nar() -> None:
         # plumbing records a real transfer; the scheduler pins the
         # in/out semantics in the unit suite.
         before = metrics.store_transfers(["test-stream-nar"])["test-stream-nar"]
+        src_read_before, src_written_before = src_store.pool.traffic_totals()
+        dst_read_before, _ = dst_store.pool.traffic_totals()
         await stream_paths_store_to_store(
             src_store,
             dst_store,
@@ -76,6 +78,13 @@ async def test_stream_nar() -> None:
         after = metrics.store_transfers(["test-stream-nar"])["test-stream-nar"]
         assert after["bytes_out"] - before["bytes_out"] > 0
         assert after["paths_out"] - before["paths_out"] >= 1
+
+        # The wire totals move on both ends: the source wrote the NAR,
+        # the destination read it.
+        _, src_written_after = src_store.pool.traffic_totals()
+        dst_read_after, _ = dst_store.pool.traffic_totals()
+        assert src_written_after - src_written_before > 0
+        assert dst_read_after - dst_read_before > 0
 
         # Verify it now exists in dst
         is_valid_dst_after = await dst_store.execute(

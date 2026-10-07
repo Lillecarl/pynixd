@@ -82,8 +82,16 @@ def _transfers_section(ctx: PynixdContext) -> dict[str, Any]:
         "paths_received": metrics.nar_paths_received_total(),
         "bytes_served": metrics.nar_bytes_served_total(),
         "paths_served": metrics.nar_paths_served_total(),
-        "stores": metrics.store_transfers(str(store_id) for store_id in ctx.stores),
+        "stores": _store_transfers(ctx),
     }
+
+
+def _store_transfers(ctx: PynixdContext) -> dict[str, Any]:
+    """Per-store movement: NAR sums beside wire bytes, both directions."""
+    store_ids = [str(store_id) for store_id in ctx.stores]
+    nar = metrics.store_transfers(store_ids)
+    wire = metrics.store_wire_bytes(store_ids)
+    return {store_id: nar[store_id] | wire[store_id] for store_id in store_ids}
 
 
 def _totals_section() -> dict[str, Any]:

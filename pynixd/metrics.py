@@ -32,7 +32,7 @@ from prometheus_client import (
     Histogram,
     generate_latest,
 )
-from prometheus_client.core import GaugeMetricFamily
+from prometheus_client.core import CounterMetricFamily, GaugeMetricFamily
 
 from nix_daemon_protocol.store_dir import real_store_dir
 
@@ -597,6 +597,61 @@ STORE_POOLS = StorePoolCollector()
 REGISTRY.register(STORE_POOLS)
 
 
+class StoreTrafficCollector:
+    """Wire bytes per store, read when a scrape asks for it.
+
+    A collector and not a counter, for the same reason as
+    `StorePoolCollector`: nothing here updates a series per operation.
+    The readers and writers count their own transport bytes with one
+    int-add per transport read and flush, each pool folds its retired
+    connections into two accumulators, and this sums live plus retired
+    per `store_id` when asked. Directions match the NAR volume series:
+    "in" is read from the peer, "out" is written to it.
+
+    The third layer is the sticky below: the highest total reported per
+    store, kept across pool replacement. A builder that re-registers is
+    a new store object with a new pool whose counters start at zero;
+    without this its lifetime numbers would reset on every reconnect,
+    and no removal hook has to exist for that. Only stores with a live
+    pool are emitted, so a store that is gone reads absent rather than
+    frozen. The keys are store ids ever seen, which stays bounded like
+    every other label in this file.
+    """
+
+    def __init__(self) -> None:
+        self._pools: WeakSet[ConnectionPool] = WeakSet()
+        self._sticky: dict[str, list[int]] = {}
+
+    def register(self, pool: ConnectionPool) -> None:
+        self._pools.add(pool)
+
+    def collect(self):
+        """Yield read and written wire bytes for every live pool's store."""
+        # Summed per `store_id`, and not one sample per pool: the comment
+        # on `StorePoolCollector.collect` says why duplicates are fatal.
+        totals: dict[str, list[int]] = {}
+        for pool in self._pools:
+            read, written = pool.traffic_totals()
+            was = totals.get(pool.store_id, [0, 0])
+            totals[pool.store_id] = [was[0] + read, was[1] + written]
+        family = CounterMetricFamily(
+            "pynixd_store_wire_bytes",
+            "Wire bytes moved with backend stores, all traffic on the connection",
+            labels=["store_id", "direction"],
+        )
+        for store_id, (read, written) in totals.items():
+            was = self._sticky.get(store_id, [0, 0])
+            held = [max(was[0], read), max(was[1], written)]
+            self._sticky[store_id] = held
+            family.add_metric([store_id, "in"], held[0])
+            family.add_metric([store_id, "out"], held[1])
+        yield family
+
+
+STORE_TRAFFIC = StoreTrafficCollector()
+REGISTRY.register(STORE_TRAFFIC)
+
+
 class StoreSpaceCollector:
     """How much room the store has, read when a scrape asks for it.
 
@@ -774,6 +829,20 @@ def sessions_accepted_by_transport() -> dict[str, int]:
         transport: int(_sample("pynixd_daemon_sessions_accepted_total", {"transport": transport}))
         for transport in ("ssh", "unix", "reverse")
     }
+
+
+def store_wire_bytes(store_ids: Iterable[str]) -> dict[str, dict[str, int]]:
+    """Per-store wire bytes by direction, for the stores named.
+
+    A store with no traffic reads zeros, like every other reader here.
+    """
+    wired = {}
+    for store_id in store_ids:
+        wired[store_id] = {
+            "wire_bytes_in": int(_sample("pynixd_store_wire_bytes_total", {"store_id": store_id, "direction": "in"})),
+            "wire_bytes_out": int(_sample("pynixd_store_wire_bytes_total", {"store_id": store_id, "direction": "out"})),
+        }
+    return wired
 
 
 def store_transfers(store_ids: Iterable[str]) -> dict[str, dict[str, int]]:

@@ -73,6 +73,10 @@ class MockConnection:
         class DummyRW:
             def __init__(self, rw_id: str):
                 self.identifier = rw_id
+                # The transport counters of `NixReader`/`NixWriter`, which
+                # the pool sums. A mock moves no bytes, so both stay zero.
+                self.bytes_read = 0
+                self.bytes_written = 0
 
             def framed(self):
                 return self

@@ -85,6 +85,34 @@ class ConnectionPool:
         # The collector holds this weakly and reads the three counts above on
         # each scrape, so nothing here updates a gauge per acquire.
         metrics.STORE_POOLS.register(self)
+        metrics.STORE_TRAFFIC.register(self)
+        self.wire_bytes_read = 0
+        self.wire_bytes_written = 0
+        """Wire bytes of connections this pool has retired.
+
+        Live connections carry their own totals on their readers and
+        writers; `traffic_totals` adds both. A store that goes away takes
+        its pool -- and these numbers -- with it; the traffic collector
+        keeps the highest total per store across that.
+        """
+
+    def _note_conn_closed(self, conn: Connection) -> None:
+        """Fold one dead connection's wire totals into the pool's."""
+        self.wire_bytes_read += conn.r.bytes_read
+        self.wire_bytes_written += conn.w.bytes_written
+
+    def traffic_totals(self) -> tuple[int, int]:
+        """(bytes read, bytes written) over every connection this pool held.
+
+        Retired connections read from the accumulators above, live ones
+        from their readers and writers.
+        """
+        read = self.wire_bytes_read
+        written = self.wire_bytes_written
+        for conn in self.all_conns:
+            read += conn.r.bytes_read
+            written += conn.w.bytes_written
+        return read, written
 
     @property
     def in_flight(self) -> int:
@@ -226,6 +254,7 @@ class ConnectionPool:
             return candidate
 
         conn = await self.factory()
+        conn.on_close = self._note_conn_closed
         self.all_conns.append(conn)
         if self.on_connection_created:
             self.on_connection_created(conn)
@@ -265,6 +294,7 @@ class ConnectionPool:
                 nesting_level=in_use,
             )
             conn = await self.factory()
+            conn.on_close = self._note_conn_closed
             self.all_conns.append(conn)
 
             # Increment nesting count in a NEW dict to ensure task isolation
