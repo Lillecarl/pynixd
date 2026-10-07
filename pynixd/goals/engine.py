@@ -125,6 +125,8 @@ class GoalEngine:
         # scheduling pass assign a build that this request no longer wants.
         # Issue Lillecarl/nanopynix#286.
         await scheduler.queue.forget_request(self.request_id)
+        # The request answered: finished builds nobody else holds can go.
+        await scheduler.queue.prune()
 
     async def subscribe_build(self, build_id: BuildId, client: ClientConn) -> bool:
         """Subscribe *client* to real-time log output for the given *build_id*."""

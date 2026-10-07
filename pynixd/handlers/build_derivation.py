@@ -86,3 +86,6 @@ class BuildDerivationHandler(Handler):
         finally:
             if subscribed and ctx.proxy.client is not None:
                 await ctx.proxy.scheduler.queue.unsubscribe(build_id, ctx.proxy.client)
+            # The request answered and this client left the stream: a finished
+            # build nobody else streams can go, log buffer and all.
+            await ctx.proxy.scheduler.queue.prune()

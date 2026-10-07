@@ -898,6 +898,31 @@ class BuildQueue:
         metrics.QUEUE_SIZE.labels(status="done").inc()
         metrics.BUILDS_COMPLETED.labels(status="failure").inc()
 
+    async def prune(self) -> None:
+        """Drop finished builds nobody waits for and nobody streams.
+
+        `prune_request` above drops one request's builds and has no caller
+        left; standalone `BuildDerivation` carries no request id at all. So
+        every completed build stayed queued with its whole log, and the
+        growth benchmark watched memory climb ~50 MiB per chatty build.
+        This sweeps them instead: done, no requesting ids, no subscribers.
+        A deduped client still subscribed keeps its build; its own finish
+        prunes it. Called after a request lets go, never mid-build.
+        """
+        async with self.lock:
+            doomed = {
+                id(build)
+                for build in self._queue
+                if build.is_done and not build.scheduler_request_ids and not build.subscribers
+            }
+            if not doomed:
+                return
+            self._queue[:] = [build for build in self._queue if id(build) not in doomed]
+            for build_id, build in list(self._by_id.items()):
+                if id(build) in doomed:
+                    del self._by_id[build_id]
+        log.debug("builds_pruned", count=len(doomed))
+
     async def prune_request(self, request_id: RequestId) -> None:
         """Remove completed builds from the queue if no other request references them.
 
