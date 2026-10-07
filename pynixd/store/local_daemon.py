@@ -11,6 +11,7 @@ import json
 import os
 import shlex
 import signal
+import sys
 import time
 from collections import deque
 from pathlib import Path
@@ -26,6 +27,7 @@ from ..connection import Connection
 from ..monitor import DummyResourceMonitor, create_monitor
 from ..store_path import StorePath
 from ..trust import TrustPolicy
+from ..unix_socket import _SUN_PATH_MAX, open_unix_connection
 from ..wire import UnixNixReader, UnixNixWriter
 from .daemon import DaemonStore
 
@@ -60,26 +62,22 @@ once, and not after the whole budget.
 _DAEMON_POLL_INTERVAL = 0.05
 """Seconds between two checks. It is the granularity, and not the budget."""
 
-_SUN_PATH_MAX = 107
-"""Bytes of a Unix socket path, without the terminating NUL.
-
-`sockaddr_un.sun_path` is 108 bytes on Linux and 104 on darwin, and the
-shorter of the two is the safe bound for a store that a darwin client may
-reach. This is 107 because Linux is where the managed daemon runs, and the
-error below names the number it measured.
-
-**Nix binds a longer path and pynixd cannot connect to it.** Nix forks a
-helper that `chdir`s into the directory and binds the base name
-(`bindConnectProcHelper` in `src/libutil/unix/unix-domain-socket.cc`), so a
-store under a long path gets a working socket. Python has no such helper, and
-`socket.connect()` with the absolute path answers `OSError: AF_UNIX path too
-long`. Measured: a 129 byte path binds through `chdir` and refuses an
-absolute `connect`.
-
-So the failure had no visible cause. The socket file existed, `_probe_socket`
-could not reach it, and pynixd waited the whole budget and then reported
-`(the daemon wrote nothing)` -- which was true of the daemon and said nothing
-about the fault. Issue #44."""
+# `_SUN_PATH_MAX` lives in `..unix_socket`, which owns the length policy:
+# the guard below refuses what no connect can reach, and
+# `open_unix_connection` reroutes the rest on Linux. `fixtures.py` and the
+# length tests import the constant from here, so the name stays.
+#
+# **Nix binds a longer path and pynixd connects to it through
+# `/proc/self/fd`.** Nix forks a helper that `chdir`s into the directory
+# and binds the base name (`bindConnectProcHelper` in
+# `src/libutil/unix/unix-domain-socket.cc`), so a store under a long path
+# gets a working socket. Python has no such helper, and `socket.connect()`
+# with the absolute path answers `OSError: AF_UNIX path too long`.
+# Measured: a 129 byte path binds through `chdir` and refuses an absolute
+# `connect`. Before the reroute, the socket file existed, `_probe_socket`
+# could not reach it, and pynixd waited the whole budget and then reported
+# `(the daemon wrote nothing)` -- which was true of the daemon and said
+# nothing about the fault. Issue #44.
 
 
 def feature_matrix_from_nix_config(config: dict[str, Any]) -> dict[str, set[str]]:
@@ -98,15 +96,20 @@ def _refuse_a_socket_path_python_cannot_reach(socket_path: Path) -> None:
     """Fail now, with the number, rather than after the start-up budget.
 
     Checked before the spawn and for the system daemon as well: the limit is
-    a property of the path, and both cases connect to one.
+    a property of the path, and both cases connect to one. On Linux a long
+    path whose base name fits is reachable through `/proc/self/fd`
+    (`open_unix_connection` does that), so only the rest is refused here.
     """
     measured = len(os.fsencode(str(socket_path)))
-    if measured > _SUN_PATH_MAX:
-        raise RuntimeError(
-            f"The socket path is {measured} bytes and a Unix socket takes {_SUN_PATH_MAX}: "
-            f"{socket_path}. Nix binds such a path with a helper that chdirs, so the socket "
-            "may exist and still be unreachable from here. Put the store somewhere shorter.",
-        )
+    if measured <= _SUN_PATH_MAX:
+        return
+    if sys.platform == "linux" and len(os.fsencode(socket_path.name)) <= _SUN_PATH_MAX:
+        return
+    raise RuntimeError(
+        f"The socket path is {measured} bytes and a Unix socket takes {_SUN_PATH_MAX}: "
+        f"{socket_path}. Nix binds such a path with a helper that chdirs, so the socket "
+        "may exist and still be unreachable from here. Put the store somewhere shorter.",
+    )
 
 
 def _sandbox_fallback_arguments(layout: StoreLayout) -> list[str]:
@@ -445,7 +448,7 @@ class LocalStore(DaemonStore):
         closes. Returns True only if a real Nix daemon responded.
         """
         try:
-            r, w = await asyncio.open_unix_connection(str(self.socket_path))
+            r, w = await open_unix_connection(self.socket_path)
         except (ConnectionRefusedError, ConnectionResetError, FileNotFoundError, OSError):
             return False
 
@@ -474,7 +477,7 @@ class LocalStore(DaemonStore):
             socket_path=str(self.socket_path),
             conn_id=conn_id,
         )
-        r, w = await asyncio.open_unix_connection(str(self.socket_path))
+        r, w = await open_unix_connection(self.socket_path)
         conn = Connection(
             UnixNixReader(r, identifier=conn_id),
             UnixNixWriter(w, identifier=conn_id),

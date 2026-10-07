@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -11,6 +10,7 @@ from nix_daemon_protocol.store_dir import on_disk
 from ..connection import Connection
 from ..drv_parser import parse_drv
 from ..store_path import StorePath
+from ..unix_socket import open_unix_connection
 from ..wire import UnixNixReader, UnixNixWriter
 from .daemon import DaemonStore
 
@@ -37,7 +37,7 @@ class ExternalUnixStore(DaemonStore):
     async def create_conn(self) -> Connection:
         """Create a connection by connecting to the external Unix socket."""
         conn_id = f"{self.store_id}-{self.conn_counter}"
-        r, w = await asyncio.open_unix_connection(str(self.socket_path))
+        r, w = await open_unix_connection(self.socket_path)
         conn = Connection(
             UnixNixReader(r, identifier=conn_id),
             UnixNixWriter(w, identifier=conn_id),
