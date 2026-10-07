@@ -53,9 +53,22 @@ if TYPE_CHECKING:
 
     from .health import HealthReport
     from .store import LocalStore
+    from .substitution_queue import SubstitutionQueue
     from .wire import NixWriter
 
 log = structlog.get_logger(__name__)
+
+
+def _rewrite_narinfo_url(raw: str, path_hash: str) -> str:
+    """Point an upstream `.narinfo` at this cache's own `/nar` endpoint.
+
+    Every line passes through untouched except `URL:`, which becomes the
+    path-hash filename `handle_nar` resolves and redirects. The hashes
+    and signatures stay the upstream's, so a client verifies the same
+    bytes it would have fetched there. Issue #85.
+    """
+    rewritten = [f"URL: nar/{path_hash}.nar" if line.startswith("URL: ") else line for line in raw.splitlines()]
+    return "\n".join(rewritten) + "\n"
 
 
 class PynixdHttpServer:
@@ -78,6 +91,9 @@ class PynixdHttpServer:
         priority: int = 30,
         upload_dir: str | Path | None = None,
         health_check: Callable[[], HealthReport] | None = None,
+        substitution_queue: SubstitutionQueue | None = None,
+        upstream_race: bool = True,
+        prefer_local_nar: bool = True,
     ) -> None:
         """Initialize the HTTP server and register route handlers.
 
@@ -94,9 +110,17 @@ class PynixdHttpServer:
             health_check: Returns the server's own verdict for ``/healthz``.
                 ``None`` leaves the endpoint answering 200 unconditionally,
                 which is what a cache started without a Server does.
+            substitution_queue: Races the HTTP substituters on a local
+                cache miss. ``None`` keeps every miss a 404. Issue #85.
+            upstream_race: Whether a local miss may ask the substituters.
+            prefer_local_nar: Serve a locally held NAR instead of
+                redirecting to the upstream that also holds it.
         """
         self._health_check = health_check
         self.store = local_store
+        self.substitution_queue = substitution_queue
+        self.upstream_race = upstream_race
+        self.prefer_local_nar = prefer_local_nar
         self.enable_cache = enable_cache
         self.enable_metrics = enable_metrics
         self.metrics_no_auth = metrics_no_auth
@@ -247,16 +271,42 @@ class PynixdHttpServer:
         # Resolve hash → full path
         path = await self.resolve_path(hash_part)
         if path is None:
-            return web.Response(status=HTTPStatus.NOT_FOUND, text="not found\n")
+            return await self.handle_upstream_narinfo(hash_part)
 
         # Get path info
         vinfo = await self.get_path_info(path)
         if vinfo is None:
-            return web.Response(status=HTTPStatus.NOT_FOUND, text="not found\n")
+            return await self.handle_upstream_narinfo(hash_part)
 
         narinfo = vinfo.to_narinfo()
         return web.Response(
             text=narinfo,
+            content_type="text/x-nix-narinfo",
+        )
+
+    async def handle_upstream_narinfo(self, hash_part: str) -> web.Response:
+        """Answer a local `.narinfo` miss from the fastest upstream.
+
+        The winner's text goes out with only the URL line rewritten to
+        this cache, so the client fetches the NAR here and the redirect
+        decision stays with `handle_nar`. The losing requests are not
+        cancelled: they land in the substitution caches and rank the
+        later redirect by priority. Issue #85.
+        """
+        if not self.upstream_race or self.substitution_queue is None:
+            return web.Response(status=HTTPStatus.NOT_FOUND, text="not found\n")
+
+        winner = await self.substitution_queue.race_http_narinfo(hash_part)
+        if winner is None:
+            return web.Response(status=HTTPStatus.NOT_FOUND, text="not found\n")
+
+        log.info(
+            "http_cache_narinfo_upstream_hit",
+            hash=hash_part,
+            store_id=winner.store.store_id,
+        )
+        return web.Response(
+            text=_rewrite_narinfo_url(winner.raw, winner.info.path.hash_part()),
             content_type="text/x-nix-narinfo",
         )
 
@@ -276,12 +326,17 @@ class PynixdHttpServer:
 
         path = await self.resolve_path(hash_part)
         if path is None:
-            return web.Response(status=HTTPStatus.NOT_FOUND, text="not found\n")
+            return await self.handle_upstream_nar(hash_part)
 
         # Get path info for NAR size (needed for Content-Length and streaming)
         vinfo = await self.get_path_info(path)
         if vinfo is None:
-            return web.Response(status=HTTPStatus.NOT_FOUND, text="not found\n")
+            return await self.handle_upstream_nar(hash_part)
+
+        if not self.prefer_local_nar:
+            redirect = await self.redirect_to_upstream(hash_part)
+            if redirect is not None:
+                return redirect
 
         response = web.StreamResponse(
             status=HTTPStatus.OK,
@@ -320,6 +375,30 @@ class PynixdHttpServer:
 
         await response.write_eof()
         return response
+
+    async def handle_upstream_nar(self, hash_part: str) -> web.Response:
+        """Redirect a NAR the local store does not hold.
+
+        The target is the highest-priority upstream that answered for the
+        hash, not the fastest: the race already happened for the
+        `.narinfo`, so this ranks its results instead of re-racing.
+        A 307 keeps the GET a GET at the upstream. Issue #85.
+        """
+        redirect = await self.redirect_to_upstream(hash_part)
+        if redirect is not None:
+            return redirect
+        return web.Response(status=HTTPStatus.NOT_FOUND, text="not found\n")
+
+    async def redirect_to_upstream(self, hash_part: str) -> web.Response | None:
+        """Highest-priority upstream URL for one NAR hash, if any answered."""
+        if not self.upstream_race or self.substitution_queue is None:
+            return None
+        url = await self.substitution_queue.upstream_nar_redirect(hash_part)
+        if url is None:
+            return None
+        log.info("http_cache_nar_redirect", hash=hash_part, url=url)
+        metrics.HTTP_CACHE_UPSTREAM.labels(result="redirect").inc()
+        return web.HTTPTemporaryRedirect(location=url)
 
     async def handle_put_nar(self, request: web.Request) -> web.Response:
         """Receive NAR data and save it to a temporary file."""

@@ -436,6 +436,12 @@ BINARY_CACHE_NARINFO = Counter(
     ["store_id", "result"],  # hit, miss, error
 )
 
+HTTP_CACHE_UPSTREAM = Counter(
+    "pynixd_http_cache_upstream_total",
+    "Local HTTP cache misses answered from the upstream race",
+    ["result"],  # redirect
+)
+
 # --- Garbage collection ---
 #
 # Same shape as nixkube's GC series, so one dashboard reads both.

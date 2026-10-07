@@ -205,6 +205,7 @@ async def test_substitution_import_counts_in_for_its_store(monkeypatch: pytest.M
                     substitution_cache_maxsize=8,
                     substitution_positive_ttl=60,
                     substitution_negative_ttl=60,
+                    http_upstream_negative_ttl=60,
                 )
             ),
         )

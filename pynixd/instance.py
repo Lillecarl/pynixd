@@ -686,6 +686,7 @@ class Server:
             )
 
         if s.http_port is not None or s.https_port is not None:
+            scheduler = self.ctx.scheduler
             cache = _optional.http_server.PynixdHttpServer(
                 local_store,
                 enable_cache=s.http_enable_cache,
@@ -697,6 +698,9 @@ class Server:
                 priority=s.http_priority,
                 upload_dir=s.http_upload_dir,
                 health_check=self.health,
+                substitution_queue=scheduler.substitution_queue if scheduler is not None else None,
+                upstream_race=s.http_upstream_race,
+                prefer_local_nar=s.http_prefer_local_nar,
             )
             if s.http_port is not None:
                 runner, port = await cache.start(

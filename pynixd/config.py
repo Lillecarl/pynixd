@@ -599,6 +599,28 @@ class PynixdSettings(BaseSettings):
     http_pass: str | None = None
     http_htpasswd: Path | None = None
     http_priority: int = 30
+    http_upstream_race: bool = True
+    """Answer HTTP cache misses from a race of the HTTP substituters.
+
+    Nix asks each substituter in turn for every path. pynixd asks all of
+    its HTTP substituters at once instead: the `.narinfo` goes out from
+    the first store that answers, and a NAR the local store does not hold
+    redirects to the highest-priority store that answered. Issue #85.
+    """
+    http_prefer_local_nar: bool = True
+    """Serve a locally held NAR over HTTP instead of redirecting upstream.
+
+    `True` spends local disk and bandwidth so the bytes always come from
+    here. `False` redirects even on a local hit, for an operator whose
+    upstreams sit behind a faster pipe than this machine. Issue #85.
+    """
+    http_upstream_negative_ttl: float = 60.0
+    """How long a total upstream miss stays a miss for one `.narinfo` hash.
+
+    A repeated miss would otherwise re-race every substituter on each
+    request. Brief on purpose: an upstream that just fetched the path
+    should become visible within about this long. Issue #85.
+    """
 
     # How long the event loop may go without running a callback before
     # `/healthz` reports unhealthy. Everything this process serves is answered

@@ -6,8 +6,9 @@ import asyncio
 import contextlib
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import urljoin
 
 import anyio
 import structlog
@@ -89,6 +90,34 @@ class SubstitutionImportResult:
     error: str = ""
 
 
+@dataclass(frozen=True)
+class UpstreamNarinfo:
+    """One upstream's `.narinfo` answer, raw text and winner attached.
+
+    The HTTP cache serves the winner's text with only the URL line
+    rewritten, so the race keeps the bytes the parse would throw away.
+    Issue #85.
+    """
+
+    raw: str
+    store: Store
+    info: HTTPNarInfo
+
+
+@dataclass
+class _UpstreamNarinfoRace:
+    """Settles once: first positive wins, stragglers keep recording.
+
+    A waiter returns on the first answer without cancelling the rest, so
+    a later NAR redirect still ranks every store that answered. Issue #85.
+    """
+
+    remaining: int
+    event: anyio.Event = field(default_factory=anyio.Event)
+    winner: UpstreamNarinfo | None = None
+    lock: anyio.Lock = field(default_factory=anyio.Lock)
+
+
 class SubstitutionHealthLog:
     """Fixed-size per-store substitution query health log."""
 
@@ -128,6 +157,15 @@ class SubstitutionQueue:
         self.health: dict[StoreId, SubstitutionHealthLog] = {}
         self._probe_tasks: set[asyncio.Task[None]] = set()
         self._active_imports: dict[StorePath, asyncio.Task[SubstitutionImportResult]] = {}
+        self._http_races: dict[str, _UpstreamNarinfoRace] = {}
+        self._http_hash_paths = cast(
+            "TTLCache[str, StorePath, float]",
+            TTLCache(maxsize=settings.substitution_cache_maxsize, ttl=settings.substitution_positive_ttl),
+        )
+        self._http_hash_negative = cast(
+            "TTLCache[str, None, float]",
+            TTLCache(maxsize=settings.substitution_cache_maxsize, ttl=settings.http_upstream_negative_ttl),
+        )
 
     async def close(self) -> None:
         for task in self._probe_tasks:
@@ -224,6 +262,143 @@ class SubstitutionQueue:
             for store_id, store in sorted(self.ctx.stores.items(), key=lambda item: str(item[0]))
             if store_id != LOCAL_STORE_ID and store.no_schedule
         )
+
+    def http_substituter_stores(self) -> list[Store]:
+        """HTTP substituters, the only ones a narinfo race can ask.
+
+        A daemon substituter answers the wire protocol, not `.narinfo`
+        over HTTP, so the race leaves it out. Issue #85.
+        """
+        return [store for store in self.substituter_stores() if is_http_binary_cache(store)]
+
+    async def race_http_narinfo(self, hash_part: str) -> UpstreamNarinfo | None:
+        """Answer one `.narinfo` hash from the fastest HTTP substituter.
+
+        Every HTTP substituter is asked at once. The first store with the
+        path wins the answer; the rest keep running into the caches, so a
+        later NAR redirect still ranks the whole field by priority. A hash
+        no store has lands in a brief negative cache. Issue #85.
+        """
+        if hash_part in self._http_hash_negative:
+            return None
+
+        stores = self.http_substituter_stores()
+        if not stores:
+            return None
+
+        cached = await self._cached_http_narinfo(hash_part, stores)
+        if cached is not None:
+            return cached
+
+        race = self._http_races.get(hash_part)
+        if race is None:
+            race = _UpstreamNarinfoRace(remaining=len(stores))
+            self._http_races[hash_part] = race
+            for store in stores:
+                self._track_probe_task(asyncio.create_task(self._probe_http_narinfo(hash_part, store, race)))
+
+        await race.event.wait()
+        self._http_races.pop(hash_part, None)
+        if race.winner is None:
+            self._http_hash_negative[hash_part] = None
+        return race.winner
+
+    async def upstream_nar_redirect(self, hash_part: str) -> str | None:
+        """Highest-priority upstream URL for one NAR hash, if any answered.
+
+        The hash is a store-path hash from a `.narinfo` this cache served,
+        rewritten or local. Stale stores are queried first so the redirect
+        ranks answers and not whoever answered fastest. Issue #85.
+        """
+        path = self._http_hash_paths.get(hash_part)
+        if path is None:
+            winner = await self.race_http_narinfo(hash_part)
+            if winner is None:
+                return None
+            path = winner.info.path
+
+        stores = self.http_substituter_stores()
+        stale = [
+            store
+            for store in stores
+            if not self._has_cached_result(path, store.store_id) and self.should_wait_for(store.store_id)
+        ]
+        if stale:
+            await self._query_stores_for_selection(path, stale)
+
+        positive = self.positive.get(path, {})
+        ranked = sorted(
+            (store for store in stores if positive.get(store.store_id) is not None),
+            key=lambda store: store.priority,
+        )
+        for store in ranked:
+            if not is_http_binary_cache(store):
+                continue
+            narinfo = await store.get_narinfo(path)
+            if narinfo is not None:
+                return urljoin(store.url, narinfo.url)
+        return None
+
+    async def _cached_http_narinfo(self, hash_part: str, stores: list[Store]) -> UpstreamNarinfo | None:
+        path = self._http_hash_paths.get(hash_part)
+        if path is None:
+            return None
+        positive = self.positive.get(path, {})
+        ranked = sorted(
+            (store for store in stores if positive.get(store.store_id) is not None),
+            key=lambda store: store.priority,
+        )
+        for store in ranked:
+            if not is_http_binary_cache(store):
+                continue
+            try:
+                fetched = await store.fetch_narinfo(hash_part)
+            except Exception:
+                log.debug("http_cache_narinfo_refetch_failed", store_id=store.store_id, exc_info=True)
+                continue
+            if fetched is None:
+                continue
+            raw, info = fetched
+            return UpstreamNarinfo(raw=raw, store=store, info=info)
+        return None
+
+    async def _probe_http_narinfo(self, hash_part: str, store: Store, race: _UpstreamNarinfoRace) -> None:
+        if not is_http_binary_cache(store):
+            return
+        started = time.monotonic()
+        try:
+            with anyio.fail_after(self.ctx.settings.substitution_query_timeout):
+                fetched = await store.fetch_narinfo(hash_part)
+        except TimeoutError:
+            metrics.SUBSTITUTER_QUERIES.labels(store_id=store.store_id, result="timeout").inc()
+            log.warning("substitution_query_timeout", store_id=store.store_id, path=hash_part)
+            self.health_for(store.store_id).record(query_succeeded=False)
+        except Exception:
+            metrics.SUBSTITUTER_QUERIES.labels(store_id=store.store_id, result="error").inc()
+            log.warning("substitution_query_failed", store_id=store.store_id, path=hash_part, exc_info=True)
+            self.health_for(store.store_id).record(query_succeeded=False)
+        else:
+            metrics.SUBSTITUTER_QUERY_DURATION.labels(store_id=store.store_id).observe(time.monotonic() - started)
+            if fetched is None:
+                metrics.SUBSTITUTER_QUERIES.labels(store_id=store.store_id, result="miss").inc()
+            else:
+                raw, info = fetched
+                metrics.SUBSTITUTER_QUERIES.labels(store_id=store.store_id, result="hit").inc()
+                self._http_hash_paths[hash_part] = info.path
+                path_info = ValidPathInfo(path=StorePath(path=str(info.path)), info=info.valid_path_info.info)
+                self.record_query_result(
+                    info.path,
+                    SubstitutionQueryResult(store_id=store.store_id, path_info=path_info, query_succeeded=True),
+                )
+                async with race.lock:
+                    if race.winner is None:
+                        race.winner = UpstreamNarinfo(raw=raw, store=store, info=info)
+                        race.event.set()
+        finally:
+            async with race.lock:
+                race.remaining -= 1
+                if race.remaining <= 0:
+                    race.event.set()
 
     async def _query_store(self, path: StorePath, store: Store) -> SubstitutionQueryResult:
         # `store_id` is a label, and it comes from the configuration, so the

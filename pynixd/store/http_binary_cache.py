@@ -228,10 +228,28 @@ class HTTPBinaryCacheStore(Store):
     ) -> HTTPNarInfo | None:
         """Fetch .narinfo by hash prefix, optionally verifying the expected path."""
 
+        fetched = await self.fetch_narinfo(hash_part)
+        if fetched is None:
+            return None
+        _, info = fetched
+        if expected_path is not None and info.path != expected_path:
+            return None
+        return info
+
+    async def fetch_narinfo(self, hash_part: str) -> tuple[str, HTTPNarInfo] | None:
+        """Fetch one `.narinfo` by hash, raw text and parsed answer together.
+
+        The upstream race serves the winner's text with only the URL line
+        rewritten, so it needs the bytes the parse would throw away, and
+        the path the bytes name. One request serves both. Issue #85.
+        """
         raw = await self._get_narinfo_raw(hash_part)
         if raw is None:
             return None
-        return _parse_narinfo(raw, expected_path=expected_path)
+        info = _parse_narinfo(raw, expected_path=None)
+        if info is None:
+            return None
+        return raw, info
 
     async def stream_nar(self, narinfo: HTTPNarInfo) -> AsyncIterator[bytes]:
         """Stream a decompressed NAR from the cache as an async byte iterator."""
