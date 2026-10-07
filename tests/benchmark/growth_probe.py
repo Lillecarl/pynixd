@@ -23,8 +23,11 @@ MEASURED = 5
 LOG_LINES = 50_000
 BLOB_BYTES = 1_048_576
 SETTLE_SECONDS = 2.0
-WALL_CAP = 300.0
-CPU_CAP = 240.0
+WALL_CAP = 120.0
+CPU_CAP = 120.0
+"""Absolute backstops for one build. Clean builds take ~20 s; the growth
+rule above only sees change between iterations, so a constant-cost blowup
+(flat but 10x too slow) needs a cap to fail on. Six times headroom."""
 
 REL_TOL = {
     "wall": 0.25,
@@ -112,21 +115,28 @@ def _wire_totals(state: dict) -> tuple[int, int]:
 
 
 def _one_build(socket: str, nixpkgs: str, expression: str, iteration: int) -> tuple[str, int]:
-    """Build once as tester. Returns the output path and the log line count."""
+    """Build once as tester. Returns the output path and the log line count.
+
+    `--print-build-logs`: `nix build` prints builder output only then, and
+    only the marker lines are counted, not nix's own chatter.
+    """
     inner = (
         f"NIX_PATH=nixpkgs={nixpkgs} NIX_REMOTE=unix://{socket} "
         f"GROWTH_ITER={iteration:03d} "
-        f"nix build --impure --file {expression} --no-link --print-out-paths"
+        f"nix build --impure --print-build-logs --file {expression} --no-link --print-out-paths"
     )
-    proc = subprocess.run(
-        ["su", "tester", "-c", inner],
-        capture_output=True,
-        text=True,
-        timeout=WALL_CAP,
-    )
+    try:
+        proc = subprocess.run(
+            ["su", "tester", "-c", inner],
+            capture_output=True,
+            text=True,
+            timeout=WALL_CAP,
+        )
+    except subprocess.TimeoutExpired:
+        raise AssertionError(f"build {iteration} exceeded cap {WALL_CAP:.0f}s")
     if proc.returncode != 0:
         raise AssertionError(f"build {iteration} failed rc={proc.returncode}:\n{proc.stderr[-2000:]}")
-    lines = proc.stderr.count("\n")
+    lines = sum(1 for line in proc.stderr.splitlines() if "growth log line " in line)
     return proc.stdout.strip().split()[-1], lines
 
 
