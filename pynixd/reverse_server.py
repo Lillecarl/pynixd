@@ -148,6 +148,34 @@ async def start_reverse_acceptor(
             store = ReverseStore(spec, conn)
 
             try:
+                await store.start()
+            except Exception:
+                log.warning("reverse_store_start_failed", store_id=store_id_val, exc_info=True)
+                conn.abort()
+                return
+
+            if systems:
+                reason = await store.prove_serves(sorted(systems)[0], settings.registration_probe_timeout)
+                if reason is not None:
+                    log.warning(
+                        "reverse_builder_probe_failed",
+                        store_id=store_id_val,
+                        reason=reason,
+                    )
+                    try:
+                        await store.close()
+                    except Exception:
+                        log.warning("reverse_probe_close_failed", store_id=store_id_val, exc_info=True)
+                    conn.abort()
+                    return
+            else:
+                log.info(
+                    "reverse_builder_probe_skipped",
+                    store_id=store_id_val,
+                    detail="no systems reported, nothing to prove",
+                )
+
+            try:
                 await server.add_store(store, dynamic=True)
             except Exception:
                 log.exception("reverse_add_store_failed", store_id=store_id_val)

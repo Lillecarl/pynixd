@@ -55,6 +55,7 @@ def _builder_settings(
     acceptor_port: int,
     builder_priv: Path,
     store_id: str,
+    nix_bin: str = "nix",
 ) -> tuple[PynixdSettings, LocalSocketStore]:
     builder_path = STORE_PREFIX / store_id
     rmtree_robust(builder_path)
@@ -71,6 +72,7 @@ def _builder_settings(
             acceptor_port=acceptor_port,
             store_id=store_id,
             systems=["x86_64-linux"],
+            nix_bin=nix_bin,
             server_host_key_paths=[builder_priv],
             reconnect_min_delay=0.1,
             reconnect_max_delay=1.0,
@@ -279,4 +281,43 @@ async def test_unbuildable_without_a_builder_fails_fast(tmp_path: Path) -> None:
             assert rc != 0
             assert time.monotonic() - started < 90.0
         finally:
+            rmtree_robust(STORE_PREFIX / "delegation-controller")
+
+
+async def test_builder_with_no_serve_path_registers_nothing(tmp_path: Path) -> None:
+    """A builder that cannot serve never joins the scheduler. Issue #80."""
+    builder_store_id = "unserving-builder"
+    builder_priv, builder_pub = _keypair(tmp_path, "builder")
+    ctrl_settings, ctrl_local = _controller_without_local_builds(tmp_path, builder_pub)
+
+    async with Server(
+        stores={StoreId("local"): ctrl_local},
+        settings=ctrl_settings,
+    ) as controller:
+        if controller.reverse_acceptor is None:
+            pytest.fail("Reverse acceptor did not start")
+        acceptor_port = controller.reverse_acceptor.get_port()
+
+        builder_settings, builder_local = _builder_settings(
+            tmp_path,
+            acceptor_port,
+            builder_priv,
+            builder_store_id,
+            nix_bin="/nonexistent/pynixd-probe",
+        )
+        builder = Server(
+            stores={StoreId("local"): builder_local},
+            settings=builder_settings,
+        )
+        await builder.start()
+
+        try:
+            # The builder redials about every second; every attempt must
+            # refuse at the probe, so three seconds of dials prove refusal.
+            await anyio.sleep(3.0)
+            if StoreId(builder_store_id) in controller.stores:
+                pytest.fail("Builder with no serve path registered")
+        finally:
+            await builder.close()
+            rmtree_robust(STORE_PREFIX / builder_store_id)
             rmtree_robust(STORE_PREFIX / "delegation-controller")

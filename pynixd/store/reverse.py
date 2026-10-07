@@ -11,12 +11,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import anyio
 import structlog
 
 from .. import wire
 from ..connection import Connection
 from ..wire import SSHNixReader, SSHNixWriter
-from .daemon import ProbeState
+from .daemon import PROBE_SYSTEM_SCRIPT, ProbeState
 from .ssh import SSHStore
 
 if TYPE_CHECKING:
@@ -74,6 +75,35 @@ class ReverseStore(SSHStore):
         )
         await conn.connect()
         return conn
+
+    async def prove_serves(self, system: str, timeout: float) -> str | None:
+        """One echo build through this store; the refusal reason, or None.
+
+        Registration calls this before the scheduler may dispatch here. Any
+        failure reads as unproven: refusal, transport error, or timeout. The
+        timeout matters most: a wedged serve path answers the probe never,
+        and an unbounded probe wedges the registration instead. Issue #80.
+        """
+        try:
+            with anyio.fail_after(timeout):
+                _, ok, reason = await self._send_probe(
+                    f"probe-system-{system}",
+                    system,
+                    "",
+                    ["-c", PROBE_SYSTEM_SCRIPT.format(system=system)],
+                )
+        except TimeoutError:
+            return f"registration probe timed out after {timeout} seconds"
+        except Exception as exc:
+            log.warning(
+                "reverse_probe_error",
+                store_id=self.store_id,
+                system=system,
+                error=str(exc),
+                exc_info=True,
+            )
+            return f"registration probe failed: {exc}"
+        return None if ok else reason
 
     async def probe(self) -> None:
         """Mark as probed immediately — metadata comes from the registration handshake."""

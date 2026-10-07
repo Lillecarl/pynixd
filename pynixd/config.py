@@ -335,6 +335,14 @@ class ReverseAcceptorSettings(BaseModel):
     public keys, several per file; a missing file fails the acceptor
     at startup, never silently. Issue #75.
     """
+    registration_probe_timeout: float = 120.0
+    """How long a registering builder's proof-of-life build may take.
+
+    An echo build takes seconds. The bound only fires on a wedged serve
+    path: SSH answers, the daemon never does. Past it the registration is
+    refused instead of queueing client builds behind a builder that never
+    answers. Issue #80.
+    """
 
 
 class ReverseInitiatorSettings(BaseModel):
