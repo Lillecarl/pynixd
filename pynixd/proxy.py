@@ -490,6 +490,16 @@ class DaemonProxy:
         for store in self.stores.values():
             if store.store_id == LOCAL_STORE_ID:
                 continue  # already tried above
+            if request.name not in store.features:
+                # Decided from the handshake cache, in the established idiom,
+                # not from a send-and-refuse: a store that never advertised
+                # the op is skipped before a packet names it. Issue #82.
+                log.debug(
+                    "extension_op_not_advertised",
+                    op=request.name,
+                    store_id=store.store_id,
+                )
+                continue
             try:
                 # We don't forward client logs to remote stores for simple queries
                 # unless they are builds.

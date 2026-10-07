@@ -30,7 +30,16 @@ wedging `pynixd state` behind it. Issue #81."""
 
 
 async def _query_one(store: Store, wants: list[str], timeout: float = FEDERATED_STORE_TIMEOUT) -> dict[str, Any]:
-    """One store's own sections, or why it has none to give."""
+    """One store's own sections, or why it has none to give.
+
+    Support is decided from the handshake cache before anything is sent,
+    in the codebase's established idiom (`"Name" in store.features`):
+    a store that never advertised the op is marked, not probed. The
+    refusal catch stays as belt-and-braces for a peer that changed
+    under us. Issue #82.
+    """
+    if PynixdStateRequest.name not in store.features:
+        return {"error": "state op not advertised by this store"}
     try:
         with anyio.fail_after(timeout):
             resp = await store.execute(

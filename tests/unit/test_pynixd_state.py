@@ -96,7 +96,7 @@ async def test_query_one_marks_a_hanging_store_unreachable() -> None:
         await anyio.sleep(60.0)
         raise AssertionError("unreachable")
 
-    store = SimpleNamespace(execute=hang)
+    store = SimpleNamespace(execute=hang, features={"PynixdState"})
     started = time.monotonic()
     answer = await _query_one(cast(Any, store), [], timeout=0.1)
     assert time.monotonic() - started < 10.0
@@ -108,7 +108,7 @@ async def test_query_one_marks_a_stock_daemon_unimplemented() -> None:
     async def refuse(request: Any) -> Any:
         raise OpNotImplementedError("nope")
 
-    store = SimpleNamespace(execute=refuse)
+    store = SimpleNamespace(execute=refuse, features={"PynixdState"})
     answer = await _query_one(cast(Any, store), [])
     assert answer == {"error": "state op not implemented by this store"}
 
@@ -186,17 +186,35 @@ async def test_federated_merge_marks_failures() -> None:
     async def refuse(request: Any) -> Any:
         raise OpNotImplementedError("stock daemon")
 
+    def advertised(execute: Any) -> SimpleNamespace:
+        return SimpleNamespace(execute=execute, features={"PynixdState"})
+
+    def silent(execute: Any) -> SimpleNamespace:
+        calls: list[Any] = []
+
+        async def tracked(request: Any) -> Any:
+            calls.append(request)
+            return await execute(request)
+
+        store = SimpleNamespace(execute=tracked, features=set())
+        store.calls = calls
+        return store
+
     ctx = _ctx()
+    quiet = silent(answer)
     proxy = FakeProxy(
         await _body([], False),
         ctx,
         {
             LOCAL_STORE_ID: SimpleNamespace(),
-            StoreId("good"): SimpleNamespace(execute=answer),
-            StoreId("old"): SimpleNamespace(execute=refuse),
+            StoreId("good"): advertised(answer),
+            StoreId("old"): advertised(refuse),
+            StoreId("quiet"): quiet,
         },
     )
     merged = await _federated_sections(cast(Any, FakeContext(proxy=proxy, role=Role.ADMIN)), ["queue"])
     assert merged["good"] == {"queue": {"pending": 3}}
     assert merged["old"] == {"error": "state op not implemented by this store"}
+    assert merged["quiet"] == {"error": "state op not advertised by this store"}
+    assert quiet.calls == []
     assert LOCAL_STORE_ID not in merged and "local" not in merged
