@@ -17,6 +17,7 @@ import uvloop
 from .cli.base import load_settings, setup_logging
 from .cli.gc import register as register_gc
 from .cli.roots import register as register_roots
+from .cli.state import register as register_state
 from .instance import Server
 from .systemd import notify
 
@@ -71,6 +72,7 @@ def main() -> None:
 
     register_gc(root_sub)
     register_roots(root_sub)
+    register_state(root_sub)
 
     args = parser.parse_args()
     args.func(args)

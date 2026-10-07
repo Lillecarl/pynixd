@@ -654,3 +654,59 @@ REGISTRY.register(AppstarterCollector())
 def get_metrics_response() -> tuple[bytes, str]:
     """Generate a Prometheus-formatted metrics response."""
     return generate_latest(REGISTRY), CONTENT_TYPE_LATEST
+
+
+# --- Public readers ---
+#
+# Cumulative counters exist only here: no other structure remembers lifetime
+# totals, so these functions are the one way to read them in-process (the
+# `pynixd state` collector uses them). Point-in-time state (queue depth,
+# sessions, store health) reads its own sources instead: it costs no
+# recording, cannot drift, and stays answered when `metrics_enabled` is
+# false. These readers follow that switch -- a deployment that records
+# nothing reports zeros here.
+
+
+def _sample(name: str, labels: dict[str, str] | None = None) -> float:
+    """One sample from the default registry, or 0 when never recorded."""
+    value = REGISTRY.get_sample_value(name, labels or {})
+    return value if value is not None else 0.0
+
+
+def nar_bytes_received_total() -> int:
+    """NAR bytes taken from clients, both multi-path and single-path loops."""
+    return int(
+        _sample("pynixd_nar_forward_bytes_total") + _sample("pynixd_nar_add_bytes_total"),
+    )
+
+
+def nar_paths_received_total() -> int:
+    """Store paths taken from clients, both multi-path and single-path loops."""
+    return int(
+        _sample("pynixd_nar_forward_paths_total") + _sample("pynixd_nar_add_paths_total"),
+    )
+
+
+def nar_bytes_served_total() -> int:
+    """NAR bytes served to clients from `NarFromPath`."""
+    return int(_sample("pynixd_nar_serve_bytes_total"))
+
+
+def nar_paths_served_total() -> int:
+    """Store paths served to clients from `NarFromPath`."""
+    return int(_sample("pynixd_nar_serve_paths_total"))
+
+
+def builds_completed_by_status() -> dict[str, int]:
+    """Finished builds by outcome. Keys come from the metric's labels."""
+    return {
+        status: int(_sample("pynixd_builds_completed_total", {"status": status})) for status in ("success", "failure")
+    }
+
+
+def sessions_accepted_by_transport() -> dict[str, int]:
+    """Accepted client sessions by transport. Keys come from the metric's labels."""
+    return {
+        transport: int(_sample("pynixd_daemon_sessions_accepted_total", {"transport": transport}))
+        for transport in ("ssh", "unix", "reverse")
+    }

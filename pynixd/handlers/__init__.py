@@ -1,4 +1,11 @@
-"""Handler package — importing all modules registers them in HANDLER_REGISTRY."""
+"""Handler package — importing all modules registers them in HANDLER_REGISTRY.
+
+Private op allocation (Nix owns 1-50 and 1000+; keep out of both):
+101 collect_garbage, 103 query_path_infos, 104 query_closure,
+105 query_closure_with_info, 106 query_derivation_output_map_batch,
+107 sign_path_info, 108 probe_systems, 109 probe_features, 110 roots_report,
+111 state. Next free: 100, 102, 112+.
+"""
 
 from . import (
     add_build_log,  # noqa: F401
@@ -16,6 +23,7 @@ from . import (
     optimise_store,  # noqa: F401
     pynixd_collect_garbage,  # noqa: F401
     pynixd_roots_report,  # noqa: F401
+    pynixd_state,  # noqa: F401
     set_options,  # noqa: F401
     sign_path_info,  # noqa: F401
     verify_store,  # noqa: F401

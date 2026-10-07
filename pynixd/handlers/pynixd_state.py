@@ -1,0 +1,92 @@
+"""Handler for PynixdState (op 111)."""
+
+from __future__ import annotations
+
+import json
+from typing import TYPE_CHECKING, Any, ClassVar
+
+import anyio
+import structlog
+
+from nix_daemon_protocol.ids import LOCAL_STORE_ID
+
+from .. import state as state_collector
+from ..daemon_extensions.pynixd_state import PynixdStateRequest, PynixdStateResponse
+from ..exceptions import OpNotImplementedError
+from ..serde.auth import Role
+from ..serde.context import ReadContext
+from ._base import Handler
+
+if TYPE_CHECKING:
+    from ..serde.context import RequestContext
+    from ..store import Store
+
+log = structlog.get_logger(__name__)
+
+FEDERATED_STORE_TIMEOUT: float = 30.0
+"""How long one store's answer may take. State reads are cheap; past this
+the store is wedged or gone, and it is marked unreachable instead of
+wedging `pynixd state` behind it. Issue #81."""
+
+
+async def _query_one(store: Store, wants: list[str], timeout: float = FEDERATED_STORE_TIMEOUT) -> dict[str, Any]:
+    """One store's own sections, or why it has none to give."""
+    try:
+        with anyio.fail_after(timeout):
+            resp = await store.execute(
+                PynixdStateRequest(version=1, wants=wants, federated=False),
+            )
+    except OpNotImplementedError:
+        return {"error": "state op not implemented by this store"}
+    except TimeoutError:
+        return {"error": f"no answer in {timeout} seconds"}
+    except Exception as exc:
+        log.warning("state_federated_store_failed", error=str(exc), exc_info=True)
+        return {"error": f"{type(exc).__name__}: {exc}"}
+    try:
+        return json.loads(resp.payload)
+    except (ValueError, AttributeError) as exc:
+        return {"error": f"unreadable answer: {exc}"}
+
+
+async def _federated_sections(ctx: RequestContext, wants: list[str]) -> dict[str, Any]:
+    """Every non-local store's answer, keyed by store id.
+
+    One level only: the queries go out with `federated` false, so a store
+    answers itself and no topology can loop. A task group bounds the whole
+    fan-out by the slowest store, not the sum of them.
+    """
+    merged: dict[str, Any] = {}
+
+    async def query(store_id: object, store: Store) -> None:
+        merged[str(store_id)] = await _query_one(store, wants)
+
+    async with anyio.create_task_group() as tg:
+        for store_id, store in ctx.proxy.stores.items():
+            if store_id == LOCAL_STORE_ID:
+                continue
+            tg.start_soon(query, store_id, store)
+    return merged
+
+
+class PynixdStateHandler(Handler):
+    """Server handler for PynixdState — admin-only."""
+
+    op: ClassVar[int] = 111
+
+    async def handle(self, ctx: RequestContext) -> object | None:
+        """Decode PynixdState request, verify admin auth, collect sections."""
+        req = await PynixdStateRequest.from_reader(
+            ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version, features=ctx.proxy.standard_features),
+        )
+
+        if ctx.role < Role.ADMIN:
+            await ctx.proxy.send_error(
+                "Operation 'PynixdState' requires administrative privileges.",
+            )
+            return None
+
+        payload = state_collector.collect(ctx.proxy.ctx, req.wants)
+        if req.federated:
+            payload["federated"] = await _federated_sections(ctx, req.wants)
+        return PynixdStateResponse(version=1, payload=json.dumps(payload))

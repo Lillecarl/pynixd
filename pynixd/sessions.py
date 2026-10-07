@@ -48,6 +48,13 @@ class ClientSessions:
     def __len__(self) -> int:
         return len(self._sessions)
 
+    def by_transport(self) -> dict[str, int]:
+        """Live sessions by transport. The state collector reads this."""
+        counts: dict[str, int] = {}
+        for proxy, _task in list(self._sessions):
+            counts[proxy.transport] = counts.get(proxy.transport, 0) + 1
+        return counts
+
     def track(self, proxy: DaemonProxy, task: asyncio.Task[Any] | None) -> None:
         """Remember *proxy* running as *task*. *task* is `None` when the
         session runs outside a task, and then shutdown answers it but
