@@ -269,7 +269,7 @@ class QueuedBuild:
         """Serialize and store a log entry. Returns the raw bytes."""
         before = self._log_writer.tell()
         await msg.to_writer(WriteContext(writer=self._log_writer, version=wire.PROTOCOL_VERSION))
-        return self._log_writer.get_bytes()[before:]
+        return self._log_writer.get_bytes_since(before)
 
     async def _send_raw_safe(self, sub: ClientConn, raw: bytes) -> ClientConn | None:
         """Send raw bytes to a subscriber, removing it on failure.

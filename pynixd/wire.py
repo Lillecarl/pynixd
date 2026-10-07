@@ -405,6 +405,16 @@ class BytesWriter(NixWriter):
     def get_bytes(self) -> bytes:
         return bytes(self._buf)
 
+    def get_bytes_since(self, offset: int) -> bytes:
+        """The bytes written since *offset*, copying only those.
+
+        `get_bytes()[offset:]` copies the whole buffer on every call,
+        which wedged the event loop for 31 s on a gigabyte build log:
+        one synchronous copy per log message, never yielding. This
+        copies the delta alone.
+        """
+        return bytes(self._buf[offset:])
+
     def tell(self) -> int:
         return len(self._buf)
 
