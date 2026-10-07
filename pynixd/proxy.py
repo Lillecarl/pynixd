@@ -479,6 +479,9 @@ class DaemonProxy:
         if isinstance(request, QueryMissingRequest):
             return await self.goal_engine.query_missing(request, client=self.client)
 
+        if isinstance(request, QueryValidPathsRequest):
+            self._force_substitute_on_destination(request)
+
         local_resp: WireResponse | None = None
         try:
             local_resp = await self.local_store.execute(request, client=self.client)
@@ -557,6 +560,27 @@ class DaemonProxy:
     def store_for_output_path(self, path: str) -> DaemonStore | None:
         """Look up the DaemonStore that produced a given output path."""
         return self.ctx.store_for_output_path(path)
+
+    def _force_substitute_on_destination(self, request: QueryValidPathsRequest) -> None:
+        """Rewrite substitute to 1 when the deployment forces it. Issue #54.
+
+        The request is the decoded per-connection object, so rewriting it
+        reaches every store the operation then touches, in the serialized
+        form each one reads. Internal callers never pass through here: the
+        scheduler and the transfer helper call `store.execute` directly with
+        `substitute=0`, and that stays. `None` is an old client whose
+        protocol predates the flag, and forcing covers it too: the upstream
+        reads the field exactly when its version carries it.
+        """
+        if request.substitute:
+            return
+        if not self.ctx.settings.force_substitute_on_destination:
+            return
+        request.substitute = 1
+        log.debug(
+            "force_substitute_on_destination",
+            paths=len(request.paths),
+        )
 
     async def dispatch(self, op_num: int) -> WireResponse | None:
         """Route an operation to its request type's handle method."""

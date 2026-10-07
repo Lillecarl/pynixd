@@ -739,6 +739,26 @@ class PynixdSettings(BaseSettings):
     substitution_health_min_success_ratio: float = 0.50
     substitution_query_timeout: float = 2.0
     substitution_import_timeout: float = 300.0
+    force_substitute_on_destination: bool = False
+    """Answer QueryValidPaths as if the client had set substitute=1.
+
+    NIX-DEVIATION (#27): `daemon.cc:370` reads the substitute flag of op 31
+    and runs `substitutePaths` before `queryValidPaths`, and `copyPaths` at
+    `store-api.cc:1030` passes the client's `--substitute-on-destination`
+    there. pynixd instead rewrites the flag to 1 on every client op 31 that
+    did not set it, so each backend tries its own substituters for the
+    missing paths before the client sends them. The difference is worth its
+    cost where the destination sits next to a cache and the client does not:
+    the flag is easy to leave out of a plain `nix copy` or a CI step, and
+    then the whole closure crosses the slow link. It costs where the
+    destination's substituter is slow or metered, because the bytes come
+    from there instead of the client, so it stays off unless the operator
+    takes that trade. To reverse it, measure the bytes on the client link
+    against the bytes on the substituter link with the flag on and off; a
+    parity run with it on reports the extra valid paths, which is the
+    intended difference. Off keeps the gates byte-identical, so no
+    `EXEMPTIONS` entry covers this. Issue #54.
+    """
 
     # Resource Monitoring
     psi_cpu_threshold: float = 15.0  # % pressure (some)

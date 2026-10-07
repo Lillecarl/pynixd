@@ -303,6 +303,16 @@ class LocalDBStore(LocalStore):
 
     async def query_valid_paths(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """QueryValidPaths — fast-path via SQLite."""
+        if request.substitute:
+            # The daemon substitutes before it queries: `daemon.cc:377` runs
+            # `substitutePaths` ahead of `queryValidPaths`, so a missing path
+            # its substituters hold comes back valid. SQLite holds no
+            # substituter, so answering from it would call such a path
+            # invalid. Yield to the wire instead, where the daemon does the
+            # fetching. This also carries the flag the deployment forces
+            # (`force_substitute_on_destination`): without it, forcing would
+            # answer from the mirror and substitute nothing. Issue #54.
+            return None  # fall through
 
         import json
 
