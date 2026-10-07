@@ -77,6 +77,14 @@ class NixReader:
 
     def __init__(self, identifier: str = "unknown") -> None:
         self.identifier = identifier
+        self.bytes_read = 0
+        """Transport bytes taken off the wire through this reader.
+
+        Counted where the transport is read, so readahead counts once
+        at fill and never again when served from the buffer. One
+        int-add per transport read: thousands of times rarer than the
+        protocol reads it serves, and off every per-chunk path.
+        """
 
     async def readexactly(self, n: int) -> bytes:
         raise NotImplementedError
@@ -161,13 +169,18 @@ class SSHNixReader(NixReader):
             # A read at least as large as the read-ahead goes straight through.
             # Buffering it would copy the payload to no purpose.
             if need >= self._READAHEAD:
-                return head + await self.reader.readexactly(need)
+                data = await self.reader.readexactly(need)
+                # Only `need` is new: `head` came out of the buffer, where it
+                # was counted when the transport filled it.
+                self.bytes_read += need
+                return head + data
 
             parts = [head]
             while need > 0:
                 chunk = await self.reader.read(self._READAHEAD)
                 if not chunk:
                     raise EOFError("SSH connection closed")
+                self.bytes_read += len(chunk)
                 if len(chunk) >= need:
                     parts.append(chunk[:need])
                     self._buf = chunk
@@ -231,13 +244,18 @@ class UnixNixReader(NixReader):
         # A read at least as large as the read-ahead goes straight through.
         # Buffering it would copy the payload to no purpose.
         if need >= self._READAHEAD:
-            return head + await self.reader.readexactly(need)
+            data = await self.reader.readexactly(need)
+            # Only `need` is new: `head` came out of the buffer, where it
+            # was counted when the transport filled it.
+            self.bytes_read += need
+            return head + data
 
         parts = [head]
         while need > 0:
             chunk = await self.reader.read(self._READAHEAD)
             if not chunk:
                 raise asyncio.IncompleteReadError(b"".join(parts), n)
+            self.bytes_read += len(chunk)
             if len(chunk) >= need:
                 parts.append(chunk[:need])
                 self._buf = chunk
@@ -287,6 +305,13 @@ class NixWriter:
     def __init__(self, identifier: str = "unknown") -> None:
         self.identifier = identifier
         self._pending = bytearray()
+        self.bytes_written = 0
+        """Transport bytes handed to the wire through this writer.
+
+        Counted in `_write_to_transport`, so one coalesced flush costs
+        one int-add, and framed bytes count too: a `FramedWriter` writes
+        into its underlying writer's buffer.
+        """
 
     def write(self, data: bytes) -> None:
         self._pending += data
@@ -413,6 +438,7 @@ class SSHNixWriter(NixWriter):
         self.writer = writer
 
     def _write_to_transport(self, data: bytes) -> None:
+        self.bytes_written += len(data)
         self.writer.write(data)
 
     async def _drain_transport(self) -> None:
@@ -436,6 +462,7 @@ class UnixNixWriter(NixWriter):
         self.writer = writer
 
     def _write_to_transport(self, data: bytes) -> None:
+        self.bytes_written += len(data)
         self.writer.write(data)
 
     async def _drain_transport(self) -> None:
