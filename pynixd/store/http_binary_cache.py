@@ -184,12 +184,27 @@ class HTTPBinaryCacheStore(Store):
     async def query_valid_paths(
         self, request: QueryValidPathsRequest, client: Any = None, suppress_last: bool = False
     ) -> QueryValidPathsResponse:
-        """QueryValidPaths — check each path individually via .narinfo."""
+        """QueryValidPaths — check each path via .narinfo, concurrently.
 
+        One HTTPS round trip per path, so a serial loop pays the full
+        latency of every miss: a thousand-path closure at 50 ms a lookup is
+        nearly a minute of waiting. The semaphore in `_get_narinfo_raw`
+        bounds the flight, so fanning out here takes every slot the operator
+        allowed instead of one. Issue #54: asking substituters whether a NAR
+        exists is the read-only half pynixd keeps; the importing stays with
+        the daemon.
+        """
         valid: set[StorePath] = set()
-        for path in sorted(request.paths, key=str):
+        lock = anyio.Lock()
+
+        async def check(path: StorePath) -> None:
             if await self.get_narinfo(StorePath(str(path))) is not None:
-                valid.add(path)
+                async with lock:
+                    valid.add(path)
+
+        async with anyio.create_task_group() as tg:
+            for path in request.paths:
+                tg.start_soon(check, path)
         return QueryValidPathsResponse(paths=valid)
 
     async def nar_from_path(self, request: Any, client: Any = None, suppress_last: bool = False) -> NarFromPathResponse:
