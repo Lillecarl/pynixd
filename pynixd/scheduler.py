@@ -664,6 +664,8 @@ class Scheduler:
                 self.local_store,
                 store,
                 missing_paths,
+                peer_store_id=store.store_id,
+                direction="out",
             )
 
     async def _execute(
@@ -843,4 +845,10 @@ class Scheduler:
             store_id=store.store_id,
             count=len(paths),
         )
-        await stream_paths_store_to_store(store, self.local_store, paths)
+        await stream_paths_store_to_store(
+            store,
+            self.local_store,
+            paths,
+            peer_store_id=store.store_id,
+            direction="in",
+        )

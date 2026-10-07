@@ -17,10 +17,10 @@ from __future__ import annotations
 import json
 import os
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Literal, NamedTuple
 from weakref import WeakSet
 
 import structlog
@@ -298,6 +298,70 @@ NAR_SERVE_DURATION = Histogram(
     "Time one NarFromPath response took to stream",
     buckets=(0.1, 0.5, 1, 5, 15, 60, 300, 600, 1800),
 )
+
+# --- Store-to-store NAR volume ---
+#
+# The client edge above meters wire bytes per chunk behind
+# `metrics_enabled`. These two series answer a different question: how
+# much data each backend store moved, and in which direction. They
+# answer it from the NAR sizes of the infos the transfer already
+# walks: one `.inc()` per path, never per chunk, recorded
+# unconditionally like `SUBSTITUTED_BYTES`. A direction that surprises
+# is the point, so in and out stay separate: "in" is into the local
+# store from the peer, "out" is out of it to the peer.
+
+STORE_TRANSFER_NAR_BYTES = Counter(
+    "pynixd_store_transfer_nar_bytes_total",
+    "NAR bytes moved store to store, summed from path infos (not wire bytes)",
+    ["store_id", "direction"],  # direction: in, out — relative to the local store
+)
+
+STORE_TRANSFER_PATHS = Counter(
+    "pynixd_store_transfer_paths_total",
+    "Store paths moved store to store",
+    ["store_id", "direction"],
+)
+
+
+_STORE_TRANSFER_SERIES: dict[tuple[str, str], tuple[Counter, Counter]] = {}
+"""Resolved children per (store id, direction), after `OpSeries`.
+
+`.labels()` takes a lock and a lookup per call, so a transfer resolves
+each pair once and holds the children. Stores come from the
+configuration plus registered builders, and directions are two, so the
+dict stays small.
+"""
+
+
+def _store_transfer_series(store_id: str, direction: str) -> tuple[Counter, Counter]:
+    """The byte and path children for one (store, direction) pair."""
+    key = (store_id, direction)
+    hit = _STORE_TRANSFER_SERIES.get(key)
+    if hit is None:
+        hit = (
+            STORE_TRANSFER_NAR_BYTES.labels(store_id=store_id, direction=direction),
+            STORE_TRANSFER_PATHS.labels(store_id=store_id, direction=direction),
+        )
+        _STORE_TRANSFER_SERIES[key] = hit
+    return hit
+
+
+def record_store_transfer(
+    store_id: str,
+    direction: Literal["in", "out"],
+    nar_bytes: int,
+    paths: int = 1,
+) -> None:
+    """Count one store-to-store movement, unconditionally.
+
+    Callers pass the NAR sizes of the infos they already hold; nothing
+    here touches a byte loop, so recording stays off the hot path. The
+    existing global meters keep their `metrics_enabled` switch.
+    """
+    byte_child, path_child = _store_transfer_series(store_id, direction)
+    byte_child.inc(nar_bytes)
+    path_child.inc(paths)
+
 
 # --- Connection pools ---
 
@@ -710,3 +774,23 @@ def sessions_accepted_by_transport() -> dict[str, int]:
         transport: int(_sample("pynixd_daemon_sessions_accepted_total", {"transport": transport}))
         for transport in ("ssh", "unix", "reverse")
     }
+
+
+def store_transfers(store_ids: Iterable[str]) -> dict[str, dict[str, int]]:
+    """Per-store NAR movement by direction, for the stores named.
+
+    A store with no traffic reads zeros, like every other reader here.
+    """
+    transfers = {}
+    for store_id in store_ids:
+        transfers[store_id] = {
+            "bytes_in": int(
+                _sample("pynixd_store_transfer_nar_bytes_total", {"store_id": store_id, "direction": "in"})
+            ),
+            "bytes_out": int(
+                _sample("pynixd_store_transfer_nar_bytes_total", {"store_id": store_id, "direction": "out"})
+            ),
+            "paths_in": int(_sample("pynixd_store_transfer_paths_total", {"store_id": store_id, "direction": "in"})),
+            "paths_out": int(_sample("pynixd_store_transfer_paths_total", {"store_id": store_id, "direction": "out"})),
+        }
+    return transfers

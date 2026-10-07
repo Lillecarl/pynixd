@@ -292,6 +292,7 @@ class SubstitutionQueue:
         else:
             metrics.SUBSTITUTIONS.labels(result="ok").inc()
             metrics.SUBSTITUTED_BYTES.inc(candidate.path_info.info.nar_size)
+            metrics.record_store_transfer(candidate.store.store_id, "in", candidate.path_info.info.nar_size)
             return SubstitutionImportResult(substituted=True, path=path, candidate=candidate)
         finally:
             # The whole attempt, the query for a candidate included. That

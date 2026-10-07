@@ -32,7 +32,7 @@ def collect(ctx: PynixdContext, wants: list[str] | None = None) -> dict[str, Any
     if "sessions" in wanted:
         sections["sessions"] = _sessions_section(ctx)
     if "transfers" in wanted:
-        sections["transfers"] = _transfers_section()
+        sections["transfers"] = _transfers_section(ctx)
     if "totals" in wanted:
         sections["totals"] = _totals_section()
     return sections
@@ -71,13 +71,18 @@ def _sessions_section(ctx: PynixdContext) -> dict[str, Any]:
     return ctx.sessions.by_transport()
 
 
-def _transfers_section() -> dict[str, Any]:
-    """NAR movement totals. Follows `metrics_enabled`: zeros when off."""
+def _transfers_section(ctx: PynixdContext) -> dict[str, Any]:
+    """NAR movement totals. Follows `metrics_enabled`: zeros when off.
+
+    The per-store map does not: its sums are one `.inc()` per path from
+    infos the transfer already walks, recorded unconditionally.
+    """
     return {
         "bytes_received": metrics.nar_bytes_received_total(),
         "paths_received": metrics.nar_paths_received_total(),
         "bytes_served": metrics.nar_bytes_served_total(),
         "paths_served": metrics.nar_paths_served_total(),
+        "stores": metrics.store_transfers(str(store_id) for store_id in ctx.stores),
     }
 
 

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import structlog
 
+from pynixd import metrics
 from pynixd.serde import IsValidPathRequest
 from pynixd.store import LocalSocketStore
 from pynixd.store.transfer import stream_paths_store_to_store
@@ -60,8 +61,21 @@ async def test_stream_nar() -> None:
         is_valid_src = await src_store.execute(IsValidPathRequest(path=StorePath(path=str(store_path))))
         assert is_valid_src.valid, f"Path {store_path} not valid in system store"
 
-        # Use stream_paths_store_to_store which handles the NAR piping
-        await stream_paths_store_to_store(src_store, dst_store, [store_path])
+        # Use stream_paths_store_to_store which handles the NAR piping.
+        # No local store is a party here, so the labels only prove the
+        # plumbing records a real transfer; the scheduler pins the
+        # in/out semantics in the unit suite.
+        before = metrics.store_transfers(["test-stream-nar"])["test-stream-nar"]
+        await stream_paths_store_to_store(
+            src_store,
+            dst_store,
+            [store_path],
+            peer_store_id="test-stream-nar",
+            direction="out",
+        )
+        after = metrics.store_transfers(["test-stream-nar"])["test-stream-nar"]
+        assert after["bytes_out"] - before["bytes_out"] > 0
+        assert after["paths_out"] - before["paths_out"] >= 1
 
         # Verify it now exists in dst
         is_valid_dst_after = await dst_store.execute(

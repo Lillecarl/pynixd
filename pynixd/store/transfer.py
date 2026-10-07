@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, Literal
 
 import anyio
 import structlog
@@ -10,7 +10,7 @@ import structlog
 from nix_daemon_protocol.add_multiple_to_store import AddMultipleToStoreRequest, AddMultipleToStoreResponse
 from nix_daemon_protocol.nar_from_path import NarFromPathRequest
 
-from .. import wire
+from .. import metrics, wire
 from ..daemon_extensions.query_closure_with_info import QueryClosureWithInfoRequest
 from ..exceptions import BackendError
 from ..serde.context import ReadContext, WriteContext
@@ -37,15 +37,28 @@ async def stream_paths_store_to_store(
     dst: DaemonStore,
     paths: Iterable[StorePath],
     cancel_event: anyio.Event | None = None,
+    *,
+    peer_store_id: str | None = None,
+    direction: Literal["in", "out"] | None = None,
 ) -> None:
     """Copy paths from src store to dst via streaming, querying closure first.
 
     Bypasses the normal handle() path, so we update dst knowledge manually.
     Only transfers paths that dst doesn't already have.
+
+    `peer_store_id` names the non-local side of this transfer and
+    `direction` says which way it flows relative to the local store
+    ("in" is into it, "out" is out of it), so the movement is counted
+    per store. Both come together or neither does: the function cannot
+    tell which side is local on its own. The count sums the NAR sizes
+    of the infos already walked, after the already-valid filter, so
+    only moved bytes count and no byte loop is touched.
     """
     paths_set = set(paths)
     if not paths_set:
         return
+    if (peer_store_id is None) != (direction is None):
+        raise RuntimeError("peer_store_id and direction come together or not at all")
     log.debug("stream_paths_start", src=src.store_id, dst=dst.store_id, count=len(paths_set))
 
     # Fast-path for MockStore (used in tests)
@@ -113,6 +126,14 @@ async def stream_paths_store_to_store(
         async with dst.transfer_conn() as dst_conn:
             log.debug("stream_paths_acquired_dst", src=src.store_id, dst=dst.store_id, conn_id=dst_conn.id)
             await _stream_paths_over_conns(src_conn, dst_conn, to_transfer, cancel_event)
+
+    if peer_store_id is not None and direction is not None:
+        metrics.record_store_transfer(
+            peer_store_id,
+            direction,
+            sum(info.info.nar_size for info in to_transfer),
+            len(to_transfer),
+        )
 
     # 4. Update destination store's knowledge.
     dst.add_path_infos(to_transfer)
