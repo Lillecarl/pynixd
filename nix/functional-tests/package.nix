@@ -59,6 +59,8 @@
   gnutar,
   xz,
   util-linux,
+  mercurial,
+  sqlite,
 }:
 let
   scripts = lib.fileset.toSource {
@@ -125,6 +127,13 @@ let
     # test ran on a machine that had OpenSSH and skipped on a machine that did
     # not. Issue #290.
     openssh
+    # `fetchMercurial.sh` skips without `hg`, and `referrers.sh` without
+    # `sqlite3`. Same shape as above: the tool must come from this closure
+    # or the machine's installation decides. `help.sh` also gates on `man`,
+    # but it skips unconditionally two lines later ("we don't know whether
+    # we built the manpages"), so no package unskips it.
+    mercurial
+    sqlite
   ];
 in
 writeShellApplication {
