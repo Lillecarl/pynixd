@@ -898,22 +898,42 @@ class BuildQueue:
         metrics.QUEUE_SIZE.labels(status="done").inc()
         metrics.BUILDS_COMPLETED.labels(status="failure").inc()
 
+    async def release_build(self, build_id: BuildId, request_id: RequestId) -> None:
+        """Give back one request's reference on a build.
+
+        Discards the id from both reference sets; the liveness count goes
+        through `let_go`, which may cancel. A later `prune` drops the build
+        once done, unstreamed, and unreferenced. Discarding an id never
+        held is a no-op, so deduped sharers keep theirs.
+        """
+        async with self.lock:
+            build = self._by_id.get(build_id)
+            if build is None:
+                return
+            build.goal_request_ids.discard(request_id)
+            build.scheduler_request_ids.discard(request_id)
+
     async def prune(self) -> None:
         """Drop finished builds nobody waits for and nobody streams.
 
-        `prune_request` above drops one request's builds and has no caller
+        `prune_request` below drops one request's builds and has no caller
         left; standalone `BuildDerivation` carries no request id at all. So
         every completed build stayed queued with its whole log, and the
         growth benchmark watched memory climb ~50 MiB per chatty build.
-        This sweeps them instead: done, no requesting ids, no subscribers.
-        A deduped client still subscribed keeps its build; its own finish
-        prunes it. Called after a request lets go, never mid-build.
+        This sweeps them instead: done, no requesting ids of either kind,
+        no subscribers. A deduped client still subscribed keeps its build;
+        its own finish prunes it. Called after a request lets go, never
+        mid-build. Also drops the dedup entry, guarded so a newer build
+        that reused the derivation path keeps its own.
         """
         async with self.lock:
             doomed = {
                 id(build)
                 for build in self._queue
-                if build.is_done and not build.scheduler_request_ids and not build.subscribers
+                if build.is_done
+                and not build.scheduler_request_ids
+                and not build.goal_request_ids
+                and not build.subscribers
             }
             if not doomed:
                 return
@@ -921,6 +941,8 @@ class BuildQueue:
             for build_id, build in list(self._by_id.items()):
                 if id(build) in doomed:
                     del self._by_id[build_id]
+                    if self._by_path.get(str(build.request.drv_path)) is build:
+                        del self._by_path[str(build.request.drv_path)]
         log.debug("builds_pruned", count=len(doomed))
 
     async def prune_request(self, request_id: RequestId) -> None:
@@ -928,41 +950,14 @@ class BuildQueue:
 
         Called after a SchedulerBuildRequest resolves. Builds that are still
         referenced by other requests are kept; only the request id is removed
-        from their set.
+        from their set. Delegates the sweep to `prune`, then drops the
+        request record itself.
         """
         async with self.lock:
-            to_remove: list[QueuedBuild] = []
             for build in self._queue:
-                if request_id in build.scheduler_request_ids:
-                    build.scheduler_request_ids.discard(request_id)
-                    if not build.scheduler_request_ids and build.is_done:
-                        to_remove.append(build)
-
-            # One pass, not one `list.remove` per build. `remove` scans from
-            # the front and is O(len(queue)), so pruning k builds out of n
-            # cost O(n*k) -- and a deploy that queues thousands of builds
-            # prunes them in batches, which is exactly the shape that makes
-            # the two grow together.
-            #
-            # Slice assignment rather than rebinding: the `queue` property
-            # hands out this same list, so a caller holding it must keep
-            # seeing the live one.
-            if to_remove:
-                doomed = {id(build) for build in to_remove}
-                self._queue[:] = [build for build in self._queue if id(build) not in doomed]
-
-            for build in to_remove:
-                self._by_id.pop(build.build_id, None)
-                drv_path_str = str(build.request.drv_path)
-                if drv_path_str in self._by_path:
-                    del self._by_path[drv_path_str]
-                log.debug(
-                    "build_pruned",
-                    build_id=build.build_id,
-                    drv_path=drv_path_str,
-                )
-
-            # Also remove the request itself
+                build.scheduler_request_ids.discard(request_id)
+        await self.prune()
+        async with self.lock:
             self._requests.pop(request_id, None)
 
     def count(self, status: str) -> int:

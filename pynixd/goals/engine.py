@@ -120,6 +120,7 @@ class GoalEngine:
             return
         for build_id in held:
             await scheduler.queue.let_go(build_id)
+            await scheduler.queue.release_build(build_id, self.request_id)
         # After the loop, and not before it. `nobody_wants` reads this set, so
         # forgetting the request while it still held a build would let a
         # scheduling pass assign a build that this request no longer wants.
