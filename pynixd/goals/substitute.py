@@ -64,7 +64,7 @@ class SubstitutePathGoal(ExecutionGoal[SubstituteAttempt]):
 
         candidate = await scheduler.substitution_queue.get_substituter(self.path)
         if candidate is None:
-            log.debug("substitute_path_miss", path=str(self.path))
+            log.info("substitute_path_miss", path=str(self.path))
             return SubstituteAttempt(
                 found=False,
                 result=goal_failure(
@@ -78,7 +78,7 @@ class SubstitutePathGoal(ExecutionGoal[SubstituteAttempt]):
             if reference == self.path:
                 continue
             reference_goals.append(await self.engine.get_substitute_path_goal(reference, self.substituter_ids))
-        log.debug(
+        log.info(
             "substitute_path_hit",
             path=str(self.path),
             store_id=candidate.store.store_id,
@@ -98,7 +98,7 @@ class SubstitutePathGoal(ExecutionGoal[SubstituteAttempt]):
             if not _result_succeeded(reference_result.result):
                 return SubstituteAttempt(found=True, result=reference_result.result)
 
-        log.debug("substitute_path_import_start", path=str(self.path), store_id=candidate.store.store_id)
+        log.info("substitute_path_import_start", path=str(self.path), store_id=candidate.store.store_id)
         import_result = await scheduler.substitution_queue.substitute(self.path)
         if not import_result.substituted:
             return SubstituteAttempt(
@@ -110,7 +110,7 @@ class SubstitutePathGoal(ExecutionGoal[SubstituteAttempt]):
             )
 
         result = goal_success()
-        log.debug("substitute_path_import_done", path=str(self.path), store_id=candidate.store.store_id)
+        log.info("substitute_path_import_done", path=str(self.path), store_id=candidate.store.store_id)
         result.produced_paths.add(self.path)
         result.resolved_outputs["out"] = self.path
         return SubstituteAttempt(found=True, result=result)
