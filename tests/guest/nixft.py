@@ -20,11 +20,7 @@ nobody wants from the clock rather than from the tests."""
 async def test(vms: Machines) -> None:
     [vm] = vms.values()
     nixft = vms.settings["nixft"]
-    command = (
-        "mkdir -p /work-nixft && "
-        f"NIXFT_WORK=/work-nixft {nixft} all "
-        "> /artifacts/nixft.log 2>&1"
-    )
+    command = f"mkdir -p /work-nixft && NIXFT_WORK=/work-nixft {nixft} all > /artifacts/nixft.log 2>&1"
     rc, _ = await vm.execute(command, timeout=TIMEOUT, label="nixft all")
     tail = (await vm.succeed("tail -n 30 /artifacts/nixft.log")).strip()
     print(f"[test] nixft all: exit {rc}\n[test]   {tail}")

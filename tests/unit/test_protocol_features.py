@@ -126,9 +126,9 @@ def test_a_client_of_the_master_branch_negotiates_the_build_trace() -> None:
     off. Issue #14.
 
     **This is what the codecs can do, and not what a proxy will claim.**
-    `DaemonProxy.honourable_features` narrows it again to what every store
-    that a build can go to offers, because pynixd honours a feature only when
-    the backend reads the same shape.
+    `DaemonProxy.honourable_features` widens it again to what any store
+    that a build can go to offers, because every hop negotiates apart and
+    a build request carries no realisation shape. Issue #84.
     """
     negotiated = wire.negotiate_features(FEATURES_OF_NIX_LATEST, ndp.SUPPORTED_STANDARD_FEATURES)
 
@@ -156,20 +156,40 @@ def test_a_backend_that_offers_the_feature_lets_pynixd_claim_it() -> None:
     assert _honourable({"local": _Store(no_schedule=False, features={FEATURE})}) == frozenset({FEATURE})
 
 
-def test_one_backend_that_does_not_offer_it_takes_it_away() -> None:
-    """pynixd honours a feature by speaking its shape to the backend as well.
+def test_one_backend_without_it_leaves_the_claim() -> None:
+    """One store with the feature is enough to name it.
 
-    A client on the new shape and a backend on the old one would need pynixd
-    to translate, and one direction of that has no answer on the wire: the
-    old `DrvOutput` carries the hash of the derivation and the new one carries
-    the path. Issue #14, step 4.
+    Every hop negotiates apart -- the client with pynixd, pynixd with each
+    backend -- and a build request carries no realisation shape, so the old
+    backend never meets the new one: results cross each hop in the shape
+    that hop agreed to. An older builder, or one that is simply offline,
+    no longer vetoes the feature for builds that would never touch it.
+    Issue #84.
     """
     stores = {
         "new": _Store(no_schedule=False, features={FEATURE}),
         "old": _Store(no_schedule=False, features=set()),
     }
 
-    assert _honourable(stores) == frozenset()
+    assert _honourable(stores) == frozenset({FEATURE})
+
+
+def test_only_supported_standard_features_are_claimed() -> None:
+    """The union is over every feature name a store reports, and the claim is not.
+
+    Extension names (`QueryDerivationOutputMapBatch`) and scheduling data
+    (`feature_matrix:*`) ride in the same set, and neither is a shape the
+    codecs can write. The handshake still intersects with
+    `SUPPORTED_STANDARD_FEATURES` last.
+    """
+    stores = {
+        "local": _Store(
+            no_schedule=False,
+            features={FEATURE, "QueryDerivationOutputMapBatch", "feature_matrix:x86_64-linux"},
+        ),
+    }
+
+    assert _honourable(stores) == frozenset({FEATURE})
 
 
 def test_a_substituter_takes_nothing_away() -> None:
@@ -187,10 +207,18 @@ def test_a_substituter_takes_nothing_away() -> None:
     assert _honourable(stores) == frozenset({FEATURE})
 
 
-def test_a_store_that_never_connected_is_read_as_offering_nothing() -> None:
-    """The conservative answer, and not a wrong one.
+def test_a_store_that_never_connected_contributes_nothing() -> None:
+    """No veto from a store that has not said anything yet.
 
-    `DaemonStore._features` is empty until the first handshake. pynixd then
-    names no feature, and both sides keep the shape that every version reads.
+    `DaemonStore._features` is empty until the first handshake. Under the
+    union that contributes nothing, and pynixd still names the feature when
+    another store offers it. With no store offering it, both sides keep the
+    shape that every version reads.
     """
     assert _honourable({"local": _Store(no_schedule=False, features=set())}) == frozenset()
+    assert _honourable(
+        {
+            "local": _Store(no_schedule=False, features=set()),
+            "new": _Store(no_schedule=False, features={FEATURE}),
+        }
+    ) == frozenset({FEATURE})
