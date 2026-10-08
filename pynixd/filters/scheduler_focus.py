@@ -44,6 +44,8 @@ KEEP_EVENTS = frozenset(
         "reverse_builder_registration",
         "reverse_store_added",
         "reverse_builder_disconnected",
+        "http_cache_narinfo_upstream_hit",
+        "http_cache_nar_redirect",
     },
 )
 
