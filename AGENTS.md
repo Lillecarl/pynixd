@@ -271,7 +271,7 @@ Every instruction in this file is a default. The user's explicit direction overr
 
 ## 8. Async Task & Lifecycle Rules
 
-- **Structured Concurrency**: For short-lived, bounded concurrent operations (e.g., fanning out requests, concurrent streams within a single handler, or parallel passes like GC), ALWAYS prefer `asyncio.TaskGroup` over `asyncio.gather` or manual `create_task` management.
+- **Structured Concurrency**: For short-lived, bounded concurrent operations (e.g., fanning out requests, concurrent streams within a single handler, or parallel passes like GC), ALWAYS use `anyio.create_task_group` — never `asyncio.gather` or manual `create_task` management. `asyncio.TaskGroup` is better than `gather` but still the fallback: it is banned by TID251 (`ruff.toml`), and only where anyio is unavailable does it apply.
 - **Task Tracking**: Long-lived daemon components (Servers, Pools, Monitors) should continue using explicit `start()`/`close()` lifecycle methods. All background tasks created via `asyncio.create_task` in these components MUST be tracked (e.g., in a list or as a class attribute) and properly cleaned up during the component's `close()` or `stop()` method.
 - **Graceful Shutdown**: When awaiting a cancelled background task during shutdown, ALWAYS use `with contextlib.suppress(Exception, asyncio.CancelledError):`. This ensures that if a task failed with an unhandled exception during its lifetime, that exception does not crash the shutdown sequence.
 - **Orphaned Tasks**: Avoid orphaned tasks. If a `TaskGroup` cannot be used, ensure helper tasks use a `try...finally` block to guarantee they are cancelled and awaited if the primary operation fails.
