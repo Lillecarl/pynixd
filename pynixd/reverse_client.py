@@ -18,6 +18,7 @@ import structlog
 
 from . import wire
 from .config import ReverseInitiatorSettings, ScheduleMode
+from .hangup import ssh_hangup
 from .proxy import DaemonProxy
 from .serde.auth import Role
 from .wire import SSHNixReader, SSHNixWriter
@@ -180,6 +181,7 @@ class ReverseInitiator:
                 role=Role.ADMIN,
                 username="reverse-initiator",
                 schedule_mode=ScheduleMode.proxy,
+                hangup=ssh_hangup(process),
             )
             await proxy.run()
         except Exception:

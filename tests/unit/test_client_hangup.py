@@ -1,8 +1,10 @@
 """A client that hangs up takes its operation and its builds with it. Issue #91.
 
-`daemon.cc:1016` of Nix watches the client socket with `MonitorFdHup` for
-the whole session, and a `POLLHUP` interrupts whatever operation runs. A
-half-close is not a hangup there: `POLLHUP` needs both directions shut.
+`daemon.cc:1016` of Nix watches the client with `MonitorFdHup` for the
+whole session, and a hangup interrupts whatever operation runs. On a Unix
+socket a half-close is not a hangup: `POLLHUP` needs both directions shut.
+Over SSH, Nix reads a pipe behind sshd, and the end of the input is the
+hangup.
 
 pynixd watched nothing. A client killed during a build left its request
 running, and the request kept its reference on the build queue. Issue #87
@@ -16,9 +18,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import socket
+import sys
 from typing import TYPE_CHECKING, Any
 
 import anyio
+import asyncssh
 import pytest
 
 from nix_daemon_protocol.ids import StoreId
@@ -27,6 +31,7 @@ from pynixd.connection import Connection
 from pynixd.context import PynixdContext
 from pynixd.goals import engine as engine_module
 from pynixd.goals.engine import GoalEngine
+from pynixd.hangup import wait_for_socket_hangup
 from pynixd.proxy import DaemonProxy
 from pynixd.scheduler import Scheduler
 from pynixd.serde import (
@@ -38,14 +43,16 @@ from pynixd.serde import (
     StorePath as SerdeStorePath,
 )
 from pynixd.serde.auth import Role
+from pynixd.ssh_server import start_ssh_server
 from pynixd.store_path import StorePath
-from pynixd.unix_server import wait_for_hangup
-from pynixd.wire import UnixNixReader, UnixNixWriter
+from pynixd.wire import SSHNixReader, SSHNixWriter, UnixNixReader, UnixNixWriter
 from tests.conftest import serde_path
 from tests.functional.mock_store import MockStore
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+    from pynixd.build_queue import BuildQueue, QueuedBuild
 
 _DRV = StorePath("/nix/store/00000000000000000000000000000001-hung-test.drv")
 
@@ -58,6 +65,30 @@ def _context() -> PynixdContext:
     ctx = PynixdContext(settings=PynixdSettings(), _stores=dict(stores))
     ctx.scheduler = Scheduler(ctx)
     return ctx
+
+
+def _queue_that_never_builds(ctx: PynixdContext) -> BuildQueue:
+    for store in ctx.stores.values():
+        assert isinstance(store, MockStore)
+        store.block_build(_DRV)
+    assert ctx.scheduler is not None
+    return ctx.scheduler.queue
+
+
+def _build_request() -> BuildDerivationRequest:
+    return BuildDerivationRequest(
+        drv_path=serde_path(_DRV),
+        derivation=BasicDerivation(platform="x86_64-linux", builder=""),
+        build_mode=BuildMode.NORMAL,
+    )
+
+
+async def _the_subscribed_build(queue: BuildQueue) -> QueuedBuild:
+    with anyio.fail_after(5):
+        while not any(b.subscribers for b in queue.by_id.values()):
+            await anyio.sleep(0.01)
+    (build,) = queue.by_id.values()
+    return build
 
 
 async def test_a_cancelled_request_lets_go_of_its_builds(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -81,11 +112,7 @@ async def test_a_cancelled_request_lets_go_of_its_builds(monkeypatch: pytest.Mon
 
         async def result(self) -> None:
             build_id, future = await queue.enqueue(
-                BuildDerivationRequest(
-                    drv_path=serde_path(_DRV),
-                    derivation=BasicDerivation(platform="x86_64-linux", builder=""),
-                    build_mode=BuildMode.NORMAL,
-                ),
+                _build_request(),
                 from_goal_path=True,
                 goal_request_id=self.engine.request_id,
             )
@@ -157,7 +184,7 @@ class _Session:
             role=Role.ADMIN,
             schedule_mode=ScheduleMode.scheduler,
             transport="unix",
-            hangup=lambda: wait_for_hangup(self.server_sock.fileno()),
+            hangup=lambda: wait_for_socket_hangup(self.server_sock.fileno()),
         )
         session = asyncio.create_task(proxy.run())
         cr, cw = await asyncio.open_unix_connection(sock=self.client_sock)
@@ -195,25 +222,10 @@ async def test_a_hangup_cancels_the_build_only_that_client_wanted() -> None:
     """
     with _socketpair() as (server_sock, client_sock):
         s = _Session(server_sock, client_sock)
-        assert s.ctx.scheduler is not None
-        queue = s.ctx.scheduler.queue
-        for store in s.ctx.stores.values():
-            assert isinstance(store, MockStore)
-            store.block_build(_DRV)
+        queue = _queue_that_never_builds(s.ctx)
         session, conn = await s.connect()
-        op = asyncio.create_task(
-            conn.call(
-                BuildDerivationRequest(
-                    drv_path=serde_path(_DRV),
-                    derivation=BasicDerivation(platform="x86_64-linux", builder=""),
-                    build_mode=BuildMode.NORMAL,
-                )
-            )
-        )
-        with anyio.fail_after(5):
-            while not any(b.subscribers for b in queue.by_id.values()):
-                await anyio.sleep(0.01)
-        (build,) = queue.by_id.values()
+        op = asyncio.create_task(conn.call(_build_request()))
+        build = await _the_subscribed_build(queue)
 
         await conn.close()
         await asyncio.wait_for(session, 5)
@@ -225,6 +237,7 @@ async def test_a_hangup_cancels_the_build_only_that_client_wanted() -> None:
             await op
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="kqueue's EV_EOF fires on a half-close too, as in Nix")
 async def test_a_half_close_is_not_a_hangup(monkeypatch: pytest.MonkeyPatch) -> None:
     """`shutdown(SHUT_WR)` raises no `POLLHUP`, so Nix keeps the operation."""
     with _socketpair() as (server_sock, client_sock):
@@ -244,3 +257,51 @@ async def test_a_half_close_is_not_a_hangup(monkeypatch: pytest.MonkeyPatch) -> 
         with contextlib.suppress(BaseException):
             await op
         await conn.close()
+
+
+@pytest.mark.parametrize("hang_up", ["eof", "disconnect"])
+async def test_an_ssh_client_that_goes_cancels_its_build(hang_up: str) -> None:
+    """Over SSH, the end of the channel's input is the hangup.
+
+    `eof`: the client's ssh closes the channel input, which is what a client
+    process that dies does to its ssh child. `disconnect`: the connection
+    drops, and asyncssh reports the channel close.
+    """
+    ctx = _context()
+    queue = _queue_that_never_builds(ctx)
+    server = await start_ssh_server(ctx, port=0, admin_users={"tester"}, schedule_mode=ScheduleMode.scheduler)
+    try:
+        async with asyncssh.connect(
+            "127.0.0.1",
+            server.get_port(),
+            username="tester",
+            password="unused",
+            known_hosts=None,
+            client_keys=None,
+            agent_path=None,
+        ) as ssh:
+            process = await ssh.create_process("nix-daemon --stdio", encoding=None)
+            conn = Connection(
+                SSHNixReader(process.stdout, identifier="test"),
+                SSHNixWriter(process.stdin, identifier="test"),
+                "test",
+            )
+            await conn.connect()
+            op = asyncio.create_task(conn.call(_build_request()))
+            build = await _the_subscribed_build(queue)
+
+            if hang_up == "eof":
+                process.stdin.write_eof()
+            else:
+                ssh.abort()
+
+            with anyio.fail_after(5):
+                while not build.is_done or len(ctx.sessions) > 0:
+                    await anyio.sleep(0.01)
+            assert not build.subscribers
+            op.cancel()
+            with contextlib.suppress(BaseException):
+                await op
+    finally:
+        server.close()
+        await server.wait_closed()

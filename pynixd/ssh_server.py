@@ -16,6 +16,7 @@ import structlog
 from . import wire
 from .config import ScheduleMode
 from .constants import SSH_ENCRYPTION_ALGS
+from .hangup import ssh_hangup
 from .proxy import DaemonProxy
 from .serde.auth import Role
 from .sftp_server import PSIMonitorSFTPServer
@@ -109,6 +110,7 @@ async def start_ssh_server(
                 username=username,
                 schedule_mode=schedule_mode or ScheduleMode.auto,
                 transport="ssh",
+                hangup=ssh_hangup(process),
             )
             await proxy.run()
         except Exception:
