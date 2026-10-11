@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, ClassVar
 
+import anyio
 import structlog
 
 from ..goals.resolution import _nix_drv_name, unparse_basic_derivation
@@ -84,8 +85,11 @@ class BuildDerivationHandler(Handler):
                 update={"result": response.result.for_the_wire(ctx.proxy.standard_features)},
             )
         finally:
-            if subscribed and ctx.proxy.client is not None:
-                await ctx.proxy.scheduler.queue.unsubscribe(build_id, ctx.proxy.client)
-            # The request answered and this client left the stream: a finished
-            # build nobody else streams can go, log buffer and all.
-            await ctx.proxy.scheduler.queue.prune()
+            # Shielded: a hung-up client cancels this, and the last
+            # unsubscribe is what ends a build nobody else wants. Issue #91.
+            with anyio.CancelScope(shield=True):
+                if subscribed and ctx.proxy.client is not None:
+                    await ctx.proxy.scheduler.queue.unsubscribe(build_id, ctx.proxy.client)
+                # The request answered and this client left the stream: a finished
+                # build nobody else streams can go, log buffer and all.
+                await ctx.proxy.scheduler.queue.prune()

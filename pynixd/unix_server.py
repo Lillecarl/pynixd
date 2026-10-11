@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import select
 import socket
 from typing import TYPE_CHECKING
 
@@ -50,6 +51,29 @@ def inherited_listener(socket_path: Path) -> socket.socket | None:
     return None
 
 
+async def wait_for_hangup(fd: int) -> None:
+    """Return when the peer of the socket *fd* has closed it.
+
+    The same question as `MonitorFdHup` at `monitor-fd.hh:105`: a poll for
+    no events reports `POLLHUP` alone, and a Unix socket raises it only when
+    both directions are shut. Data and a half-close wake nothing. A second
+    epoll set asks it beside the transport's own registration, and the set's
+    descriptor turns readable at the hangup.
+    """
+    if not hasattr(select, "epoll"):
+        # darwin: `monitor-fd.hh:64` needs a kqueue port of this. Issue #91.
+        await anyio.sleep_forever()
+    ep = select.epoll()
+    try:
+        ep.register(fd, 0)
+        while True:
+            await anyio.wait_readable(ep.fileno())
+            if any(ev & (select.EPOLLHUP | select.EPOLLERR) for _fd, ev in ep.poll(0)):
+                return
+    finally:
+        ep.close()
+
+
 async def start_unix_server(
     ctx: PynixdContext,
     socket_path: Path,
@@ -81,6 +105,7 @@ async def start_unix_server(
             writer.close()
             return
         log.info("unix_client_connected", pid=peer.pid, user=user, role=role.name)
+        fd: int = writer.get_extra_info("socket").fileno()
         try:
             proxy = DaemonProxy(
                 UnixNixReader(reader, identifier="client"),
@@ -90,6 +115,7 @@ async def start_unix_server(
                 username=user or "<unknown>",
                 schedule_mode=schedule_mode or ScheduleMode.auto,
                 transport="unix",
+                hangup=lambda: wait_for_hangup(fd),
             )
             await proxy.run()
         except Exception:

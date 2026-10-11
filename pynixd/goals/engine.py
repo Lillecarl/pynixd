@@ -195,11 +195,15 @@ class GoalEngine:
         finally:
             # The answer of this request is the moment it wants nothing more.
             # `let_go_of_every_build` says what the build queue does with that.
-            try:
-                await self.let_go_of_every_build()
-            finally:
-                # Whatever state the goals are in, nobody waits for them now.
-                self.reap()
+            # Shielded: a hung-up client cancels this request, and
+            # `anyio.Lock` raises at once inside a cancelled scope, which
+            # leaves the reference held. Issue #91.
+            with anyio.CancelScope(shield=True):
+                try:
+                    await self.let_go_of_every_build()
+                finally:
+                    # Whatever state the goals are in, nobody waits for them now.
+                    self.reap()
 
     async def _straight_to_the_store(self, request: Any, client: ClientConn | None) -> Any:
         """A check or a repair goes to the local store, and the goal system stands aside.

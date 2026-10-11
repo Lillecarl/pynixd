@@ -8,9 +8,11 @@ and dispatches them to request type handle() classmethods.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from typing import TYPE_CHECKING, Any, cast
 
+import anyio
 import structlog
 
 from nix_daemon_protocol.exceptions import DaemonProtocolError
@@ -45,7 +47,7 @@ from .store_layout import StoreLayout
 from .temp_roots import TempRoots
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Awaitable, Callable, Mapping
 
     from nix_daemon_protocol.wire_ops import WireRequest
 
@@ -121,8 +123,11 @@ class DaemonProxy:
         username: str = "unknown",
         schedule_mode: ScheduleMode = ScheduleMode.auto,
         transport: str = "unknown",
+        hangup: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self.r = client_r
+        self._hangup = hangup
+        """Returns when the client hangs up. `None` watches nothing."""
         self.w = client_w
         self.client = ClientConn(w=self.w)
         self.ctx = ctx
@@ -220,9 +225,17 @@ class DaemonProxy:
         # and shutdown must answer it. Issue #64.
         self.ctx.sessions.track(self, asyncio.current_task())
         try:
-            await self.handshake()
-            self._open_sync_reader()
-            await self.op_loop()
+            with anyio.CancelScope() as scope:
+                watcher = None if self._hangup is None else asyncio.create_task(self._cancel_on_hangup(scope))
+                try:
+                    await self.handshake()
+                    self._open_sync_reader()
+                    await self.op_loop()
+                finally:
+                    if watcher is not None:
+                        watcher.cancel()
+                        with contextlib.suppress(Exception, asyncio.CancelledError):
+                            await watcher
         except (EOFError, BrokenPipeError, ConnectionError, OSError) + ssh_connection_lost():
             log.debug("client_disconnected")
         except Exception:
@@ -255,6 +268,20 @@ class DaemonProxy:
                     breakdown=breakdown,
                     encode_breakdown=encode,
                 )
+
+    async def _cancel_on_hangup(self, scope: anyio.CancelScope) -> None:
+        """End the session when the client hangs up, as `MonitorFdHup` does.
+
+        `daemon.cc:1016` interrupts whatever operation runs. A request that
+        waits for a build then gives its reference back, and the queue ends a
+        build that nobody else wants. Not a task group: that wraps the
+        session's own `EOFError` in an `ExceptionGroup`. Issue #91.
+        """
+        if self._hangup is None:
+            return
+        await self._hangup()
+        log.info("client_hung_up")
+        scope.cancel()
 
     def _note_encode_time(self, op_num: int, started: float) -> None:
         """Record the time to encode and write the response above `dispatch`.

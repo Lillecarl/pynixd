@@ -1,0 +1,246 @@
+"""A client that hangs up takes its operation and its builds with it. Issue #91.
+
+`daemon.cc:1016` of Nix watches the client socket with `MonitorFdHup` for
+the whole session, and a `POLLHUP` interrupts whatever operation runs. A
+half-close is not a hangup there: `POLLHUP` needs both directions shut.
+
+pynixd watched nothing. A client killed during a build left its request
+running, and the request kept its reference on the build queue. Issue #87
+measured a build that held its derivation for hours after its client died,
+and every later request deduplicated onto it. On dynhetz 17 of 20 sessions
+belonged to clients that were gone (issue #89).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import socket
+from typing import TYPE_CHECKING, Any
+
+import anyio
+import pytest
+
+from nix_daemon_protocol.ids import StoreId
+from pynixd.config import PynixdSettings, ScheduleMode
+from pynixd.connection import Connection
+from pynixd.context import PynixdContext
+from pynixd.goals import engine as engine_module
+from pynixd.goals.engine import GoalEngine
+from pynixd.proxy import DaemonProxy
+from pynixd.scheduler import Scheduler
+from pynixd.serde import (
+    BasicDerivation,
+    BuildDerivationRequest,
+    BuildMode,
+    BuildPathsWithResultsRequest,
+    IsValidPathRequest,
+    StorePath as SerdeStorePath,
+)
+from pynixd.serde.auth import Role
+from pynixd.store_path import StorePath
+from pynixd.unix_server import wait_for_hangup
+from pynixd.wire import UnixNixReader, UnixNixWriter
+from tests.conftest import serde_path
+from tests.functional.mock_store import MockStore
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+_DRV = StorePath("/nix/store/00000000000000000000000000000001-hung-test.drv")
+
+
+def _context() -> PynixdContext:
+    stores = {
+        StoreId("local"): MockStore("local", feature_matrix={"x86_64-linux": set()}),
+        StoreId("remote"): MockStore("remote", feature_matrix={"x86_64-linux": set()}),
+    }
+    ctx = PynixdContext(settings=PynixdSettings(), _stores=dict(stores))
+    ctx.scheduler = Scheduler(ctx)
+    return ctx
+
+
+async def test_a_cancelled_request_lets_go_of_its_builds(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The request's teardown runs to the end under an anyio cancellation.
+
+    `anyio.Lock.acquire` checks for cancellation before it takes even a free
+    lock, so an unshielded `let_go_of_every_build` stops at its first
+    `let_go` and the build keeps a holder that no request owns.
+    """
+    ctx = _context()
+    scheduler = ctx.scheduler
+    assert scheduler is not None
+    queue = scheduler.queue
+    held = anyio.Event()
+    taken: dict[str, Any] = {}
+
+    class HoldingGoal:
+        def __init__(self, engine: GoalEngine, request: object, client: object) -> None:
+            del request, client
+            self.engine = engine
+
+        async def result(self) -> None:
+            build_id, future = await queue.enqueue(
+                BuildDerivationRequest(
+                    drv_path=serde_path(_DRV),
+                    derivation=BasicDerivation(platform="x86_64-linux", builder=""),
+                    build_mode=BuildMode.NORMAL,
+                ),
+                from_goal_path=True,
+                goal_request_id=self.engine.request_id,
+            )
+            self.engine.note_a_held_build(build_id)
+            taken.update(build=queue.by_id[build_id], future=future)
+            held.set()
+            await anyio.sleep_forever()
+
+    monkeypatch.setattr(engine_module, "BuildPathsWithResultsGoal", HoldingGoal)
+    engine = GoalEngine(ctx)
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(
+            engine.build_paths_with_results,
+            BuildPathsWithResultsRequest(derived_paths=[], build_mode=BuildMode.NORMAL),
+        )
+        await held.wait()
+        tg.cancel_scope.cancel()
+
+    build = taken["build"]
+    assert build.goal_holders == 0
+    assert taken["future"].done()
+    assert "no goal waits for it" in taken["future"].result().result.error_msg
+    assert engine.request_id not in queue._given_up
+
+
+@contextlib.contextmanager
+def _socketpair() -> Iterator[tuple[socket.socket, socket.socket]]:
+    server, client = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        yield server, client
+    finally:
+        server.close()
+        client.close()
+
+
+class _Session:
+    """A `DaemonProxy` on one end of a socket pair, and a client on the other."""
+
+    def __init__(self, server_sock: socket.socket, client_sock: socket.socket) -> None:
+        self.server_sock = server_sock
+        self.client_sock = client_sock
+        self.ctx = _context()
+        self.entered = anyio.Event()
+        self.release = anyio.Event()
+        self.cancelled = False
+
+    def patch_dispatch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        async def blocking_dispatch(proxy: DaemonProxy, op_num: int) -> None:
+            del proxy, op_num
+            await self.blocking_dispatch()
+
+        monkeypatch.setattr(DaemonProxy, "dispatch", blocking_dispatch)
+
+    async def blocking_dispatch(self) -> None:
+        self.entered.set()
+        try:
+            await self.release.wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+
+    async def connect(self) -> tuple[asyncio.Task[None], Connection]:
+        r, w = await asyncio.open_unix_connection(sock=self.server_sock)
+        proxy = DaemonProxy(
+            UnixNixReader(r, identifier="client"),
+            UnixNixWriter(w, identifier="client"),
+            ctx=self.ctx,
+            role=Role.ADMIN,
+            schedule_mode=ScheduleMode.scheduler,
+            transport="unix",
+            hangup=lambda: wait_for_hangup(self.server_sock.fileno()),
+        )
+        session = asyncio.create_task(proxy.run())
+        cr, cw = await asyncio.open_unix_connection(sock=self.client_sock)
+        conn = Connection(UnixNixReader(cr, identifier="test"), UnixNixWriter(cw, identifier="test"), "test")
+        await conn.connect()
+        return session, conn
+
+    async def start(self) -> tuple[asyncio.Task[None], Connection, asyncio.Task[Any]]:
+        session, conn = await self.connect()
+        op = asyncio.create_task(conn.call(IsValidPathRequest(path=SerdeStorePath(path=str(_DRV)))))
+        await asyncio.wait_for(self.entered.wait(), 5)
+        return session, conn, op
+
+
+async def test_a_hangup_cancels_the_operation_and_ends_the_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    with _socketpair() as (server_sock, client_sock):
+        s = _Session(server_sock, client_sock)
+        s.patch_dispatch(monkeypatch)
+        session, conn, op = await s.start()
+
+        await conn.close()
+        await asyncio.wait_for(session, 5)
+
+        assert s.cancelled
+        assert len(s.ctx.sessions) == 0
+        with contextlib.suppress(Exception):
+            await op
+
+
+async def test_a_hangup_cancels_the_build_only_that_client_wanted() -> None:
+    """The real `BuildDerivation` handler gives its subscription back.
+
+    The build is pending and nobody else subscribes, so the last unsubscribe
+    cancels it. Without the watcher the session waits for the build forever.
+    """
+    with _socketpair() as (server_sock, client_sock):
+        s = _Session(server_sock, client_sock)
+        assert s.ctx.scheduler is not None
+        queue = s.ctx.scheduler.queue
+        for store in s.ctx.stores.values():
+            assert isinstance(store, MockStore)
+            store.block_build(_DRV)
+        session, conn = await s.connect()
+        op = asyncio.create_task(
+            conn.call(
+                BuildDerivationRequest(
+                    drv_path=serde_path(_DRV),
+                    derivation=BasicDerivation(platform="x86_64-linux", builder=""),
+                    build_mode=BuildMode.NORMAL,
+                )
+            )
+        )
+        with anyio.fail_after(5):
+            while not any(b.subscribers for b in queue.by_id.values()):
+                await anyio.sleep(0.01)
+        (build,) = queue.by_id.values()
+
+        await conn.close()
+        await asyncio.wait_for(session, 5)
+
+        assert build.is_done
+        assert not build.subscribers
+        assert len(s.ctx.sessions) == 0
+        with contextlib.suppress(Exception):
+            await op
+
+
+async def test_a_half_close_is_not_a_hangup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`shutdown(SHUT_WR)` raises no `POLLHUP`, so Nix keeps the operation."""
+    with _socketpair() as (server_sock, client_sock):
+        s = _Session(server_sock, client_sock)
+        s.patch_dispatch(monkeypatch)
+        session, conn, op = await s.start()
+
+        client_sock.shutdown(socket.SHUT_WR)
+        await anyio.sleep(0.5)
+        assert not s.cancelled
+        assert not session.done()
+
+        s.release.set()
+        await asyncio.wait_for(session, 5)
+        assert not s.cancelled
+        op.cancel()
+        with contextlib.suppress(BaseException):
+            await op
+        await conn.close()
