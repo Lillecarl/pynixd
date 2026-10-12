@@ -486,7 +486,20 @@ class BuildQueue:
         # before `Scheduler.trigger`, which is what lets `_assign_to_stores`
         # read a fact rather than win a race. Issue Lillecarl/nanopynix#286.
         self._given_up: set[RequestId] = set()
+        # `max-jobs` of each live goal request, `None` for no limit. A build's
+        # own `options` are its first client's, and a deduplicated request
+        # brings a limit of its own. `Scheduler._local_slot_is_full` reads
+        # this. Issue #89.
+        self._max_jobs: dict[RequestId, int | None] = {}
         self.lock: anyio.Lock = anyio.Lock()
+
+    def max_jobs_of(self, request_id: RequestId) -> int | None:
+        """`max-jobs` of a live goal request, or `None` when it named none."""
+        return self._max_jobs.get(request_id)
+
+    def live_wanters(self, build: QueuedBuild) -> set[RequestId]:
+        """The goal requests that still want *build*."""
+        return build.goal_request_ids - self._given_up
 
     @property
     def queue(self) -> Sequence[QueuedBuild]:
@@ -555,6 +568,8 @@ class BuildQueue:
         drv_path = str(request.drv_path)
 
         async with self.lock:
+            if goal_request_id is not None:
+                self._max_jobs[goal_request_id] = None if options is None else int(options.max_build_jobs)
             # Check for duplicate — dedup with queued or in-progress builds
             existing = self._by_path.get(drv_path)
             if existing is not None and not existing.is_done:
@@ -860,6 +875,7 @@ class BuildQueue:
         """
         async with self.lock:
             self._given_up.discard(request_id)
+            self._max_jobs.pop(request_id, None)
 
     def _cancel_locked(self, build: QueuedBuild, error_msg: str, *, log_reason: str | None = None) -> None:
         """Cancel a queued build while ``self.lock`` is held.

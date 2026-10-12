@@ -73,6 +73,7 @@ class FakeBuild:
         self.build_id = "build-1"
         self.is_building = False
         self.assigned_store_id: StoreId | None = None
+        self.goal_request_ids: set[RequestId] = set()
 
 
 def _running_build(store_id: StoreId) -> FakeBuild:
@@ -91,7 +92,7 @@ def _is_full(
     running: dict[StoreId, int],
     this_pass: dict[StoreId, int],
 ) -> bool:
-    scheduler: Any = type("S", (), {"local_store": FakeStore(LOCAL_STORE_ID)})()
+    scheduler: Any = type("S", (), {"local_store": FakeStore(LOCAL_STORE_ID), "queue": BuildQueue()})()
     return Scheduler._local_slot_is_full(  # noqa: SLF001 -- the limit is the unit under test
         scheduler,
         cast("QueuedBuild", FakeBuild(options)),
@@ -166,6 +167,83 @@ def test_the_count_that_reaches_the_limit_is_the_count_of_builds() -> None:
     assert override_in_flight == {LOCAL_STORE_ID: 9, _BUILDER: 9}
     assert _is_full(_options(1), running_builds, {}) is True
     assert _is_full(_options(2), running_builds, {}) is False
+
+
+# ── Each client counts its own builds. Issue #89 ──────────────────────────
+
+
+class _NeverDone:
+    def done(self) -> bool:
+        return False
+
+
+class _SlotScheduler:
+    _request_has_a_local_slot = Scheduler._request_has_a_local_slot
+
+    def __init__(self, queue: BuildQueue) -> None:
+        self.queue = queue
+        self.local_store = FakeStore(LOCAL_STORE_ID)
+
+
+async def _local_build(queue: BuildQueue, name: str, request: RequestId, jobs: int, *, running: bool) -> QueuedBuild:
+    build_id, _ = await queue.enqueue(
+        _request(name), from_goal_path=True, goal_request_id=request, options=_options(jobs)
+    )
+    build = queue.by_id[build_id]
+    if running:
+        build.assigned_store_id = LOCAL_STORE_ID
+        build.build_task = cast("Any", _NeverDone())
+    return build
+
+
+def _waits(queue: BuildQueue, build: QueuedBuild) -> bool:
+    return Scheduler._local_slot_is_full(  # noqa: SLF001 -- the limit is the unit under test
+        cast("Any", _SlotScheduler(queue)),
+        build,
+        {LOCAL_STORE_ID: sum(1 for b in queue.by_id.values() if b.is_building)},
+        {},
+    )
+
+
+@pytest.mark.anyio
+async def test_another_clients_builds_take_none_of_my_slots() -> None:
+    """**#89.** Nix counts the builds of one connection: `Worker::waitForBuildSlot`
+    at `worker.cc:261` reads the worker's own `getNrLocalBuilds()`, and each
+    client has a worker of its own.
+
+    Two test builds of other clients held both local slots for 58 hours on
+    dynhetz, and an `ekn render` with `-j2` that had nothing running waited
+    behind them the whole time.
+    """
+    queue = BuildQueue()
+    await _local_build(queue, "1", RequestId(1), 2, running=True)
+    await _local_build(queue, "2", RequestId(2), 2, running=True)
+    mine = await _local_build(queue, "3", RequestId(3), 2, running=False)
+
+    assert _waits(queue, mine) is False
+
+
+@pytest.mark.anyio
+async def test_my_own_running_build_still_fills_my_one_slot() -> None:
+    """The control for the test above: the limit still holds for its owner."""
+    queue = BuildQueue()
+    await _local_build(queue, "1", RequestId(1), 1, running=True)
+    second = await _local_build(queue, "2", RequestId(1), 1, running=False)
+
+    assert _waits(queue, second) is True
+
+
+@pytest.mark.anyio
+async def test_a_shared_build_starts_when_any_client_wanting_it_has_a_slot() -> None:
+    """Two Nix workers would both try it, and the one with a slot starts it."""
+    queue = BuildQueue()
+    await _local_build(queue, "1", RequestId(1), 1, running=True)
+    shared = await _local_build(queue, "2", RequestId(1), 1, running=False)
+    assert _waits(queue, shared) is True
+
+    await queue.enqueue(_request("2"), from_goal_path=True, goal_request_id=RequestId(2), options=_options(2))
+
+    assert _waits(queue, shared) is False
 
 
 # ── A build that no live request wants takes no slot. Issue Lillecarl/nanopynix#286 ─────

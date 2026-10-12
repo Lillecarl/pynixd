@@ -456,7 +456,22 @@ class Scheduler:
         build was running to end and trigger the next pass. The `ca` suite
         went from about a minute to more than ten. `_filter_schedulable`
         answers the build count beside it.
+
+        **Each request counts its own builds.** `getNrLocalBuilds()` is the
+        count of one worker, and Nix runs a worker per connection, so the
+        builds of another client take none of this client's slots. A build
+        that several requests want starts when any of them has a slot, as the
+        first of two Nix workers would. Counting every local build against
+        the first client's limit held an `ekn render` with `-j2` behind two
+        hung test builds of other clients for 58 hours. Issue #89.
+
+        A session runs one request at a time, so the goal request is the
+        connection here. A build with no goal request -- a standalone
+        `BuildDerivation` -- keeps the shared count below.
         """
+        wanters = self.queue.live_wanters(build)
+        if wanters:
+            return not any(self._request_has_a_local_slot(request_id) for request_id in wanters)
         options = build.options
         if options is None:
             return False
@@ -472,6 +487,27 @@ class Scheduler:
             max_build_jobs=slots,
         )
         return True
+
+    def _request_has_a_local_slot(self, request_id: RequestId) -> bool:
+        """Whether *request_id* runs fewer local builds than its `max-jobs`.
+
+        Counted from the queue on each call, not from the pass: a build that
+        this pass assigned already has its task, so it counts as building.
+        A walk of the queue per check is cheap at the queue sizes pynixd sees.
+        """
+        jobs = self.queue.max_jobs_of(request_id)
+        if jobs is None:
+            return True
+        local_id = self.local_store.store_id
+        running = sum(
+            1
+            for b in self.queue.by_id.values()
+            if b.is_building and b.assigned_store_id == local_id and request_id in b.goal_request_ids
+        )
+        if running < max(1, jobs):
+            return True
+        log.debug("request_waits_for_a_local_slot", request_id=int(request_id), running=running, max_build_jobs=jobs)
+        return False
 
     def _has_compatible_store(
         self,
