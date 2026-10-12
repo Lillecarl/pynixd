@@ -22,6 +22,7 @@ from .state_models import (
     Benchmark,
     BuildRow,
     ClientRow,
+    PoolRow,
     QueueCounts,
     StateReport,
     StoreRow,
@@ -38,6 +39,7 @@ if TYPE_CHECKING:
     from .build_queue import QueuedBuild
     from .context import PynixdContext
     from .scheduler import Scheduler
+    from .store.pool import ConnectionPool
 
 KNOWN_SECTIONS: tuple[str, ...] = (
     "queue",
@@ -153,10 +155,7 @@ def upstream_in_flight(ctx: PynixdContext) -> list[UpstreamRow]:
     now = time.monotonic()
     rows: list[UpstreamRow] = []
     for store_id, store in ctx.stores.items():
-        pool = getattr(store, "pool", None)
-        if pool is None:
-            continue
-        for conn in pool.waiting_on_upstream():
+        for conn in (conn for pool in _pools_of(store) for conn in pool.waiting_on_upstream()):
             op = conn.current_op
             if op is None:
                 continue
@@ -172,10 +171,28 @@ def upstream_in_flight(ctx: PynixdContext) -> list[UpstreamRow]:
     return sorted(rows, key=lambda row: -row.silent_s)
 
 
+def _pools_of(store: object) -> tuple[ConnectionPool, ...]:
+    """A daemon store's build and transfer pools; an HTTP cache has none."""
+    return getattr(store, "pools", ())
+
+
 def _stores_section(ctx: PynixdContext) -> dict[str, StoreRow]:
-    """Configured stores by id: health and the systems each one serves."""
+    """Configured stores by id: health, the systems each one serves, and its pools."""
+    now = time.monotonic()
     return {
-        str(store_id): StoreRow(healthy=bool(store.is_healthy), systems=sorted((store.feature_matrix or {}).keys()))
+        str(store_id): StoreRow(
+            healthy=bool(store.is_healthy),
+            systems=sorted((store.feature_matrix or {}).keys()),
+            pools={
+                pool.lane: PoolRow(
+                    slots=pool.max_connections,
+                    in_use=pool.active_connections,
+                    waiting=len(pool.slot_waiters),
+                    longest_wait_s=round(max([0.0, *(now - since for since in pool.slot_waiters)]), 1),
+                )
+                for pool in _pools_of(store)
+            },
+        )
         for store_id, store in ctx.stores.items()
     }
 

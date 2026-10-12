@@ -12,6 +12,7 @@ ran first.
 from __future__ import annotations
 
 import gc
+import time
 from typing import TYPE_CHECKING, cast
 
 import pytest
@@ -134,6 +135,9 @@ class FakePool:
         self.active_connections = in_flight
         self.idle_conns = [object()] * idle
         self.all_conns = [object()] * total
+        self.lane = "build"
+        self.max_connections = 6
+        self.slot_waiters: list[float] = []
 
     def waiting_on_upstream(self) -> list[object]:
         return []
@@ -159,6 +163,17 @@ class TestThePoolCollector:
         assert series["pynixd_store_pool_in_flight_connections"] == 2
         assert series["pynixd_store_pool_idle_connections"] == 3
         assert series["pynixd_store_pool_connections"] == 5
+
+    def test_a_lane_reports_its_slots_and_who_waits_for_one(self) -> None:
+        """Issue #97: a read waiting behind full slots shows, by lane."""
+        pool = FakePool("test-pool-lane", in_flight=6, idle=0, total=6)
+        pool.slot_waiters = [time.monotonic() - 30]
+        metrics.STORE_POOLS.register(cast("ConnectionPool", pool))
+        labels = {"store_id": "test-pool-lane", "lane": "build"}
+
+        assert _value("pynixd_store_pool_slots", labels) == 6
+        assert _value("pynixd_store_pool_slot_waiters", labels) == 1
+        assert (_value("pynixd_store_pool_slot_wait_seconds_max", labels) or 0) >= 30
 
     def test_a_pool_that_goes_away_stops_reporting(self) -> None:
         """The collector holds pools weakly. A store that is removed must not

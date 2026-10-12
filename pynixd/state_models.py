@@ -74,9 +74,20 @@ class UpstreamRow(_Model):
     silent_s: float
 
 
+class PoolRow(_Model):
+    """One connection pool of a store: `build` or `transfer`. Issue #97."""
+
+    slots: int
+    in_use: int = 0
+    waiting: int = 0
+    """Operations waiting for a free slot now."""
+    longest_wait_s: float = 0.0
+
+
 class StoreRow(_Model):
     healthy: bool
     systems: list[str] = []
+    pools: dict[str, PoolRow] = {}
 
 
 class StoreTransfer(_Model):

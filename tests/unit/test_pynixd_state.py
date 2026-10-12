@@ -185,7 +185,7 @@ async def test_handler_collects_local_sections() -> None:
     assert resp is not None
     payload = json.loads(cast(Any, resp).payload)
     assert payload["queue"]["pending"] == 1
-    assert payload["stores"]["builder-a"] == {"healthy": False, "systems": []}
+    assert payload["stores"]["builder-a"] == {"healthy": False, "systems": [], "pools": {}}
     assert "federated" not in payload
 
 

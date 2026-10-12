@@ -206,6 +206,20 @@ class DaemonStore(Store):
     somebody else imposes. A subclass whose transport has its own ceiling
     lowers this; `SSHSubprocessStore` does. Issue #43."""
 
+    TRANSFER_CONNECTIONS: int | None = None
+    """How many of `MAX_CONNECTIONS` the transfer pool takes; the build pool
+    takes the rest. `None` is a quarter, at least 2.
+
+    Two pools, because a build holds its connection for the whole build: on
+    an SSH builder with 8 slots, 8 running builds held every read to it until
+    `read_timeout`. Issue #97."""
+
+    def _pool_sizes(self) -> tuple[int, int]:
+        """`(build, transfer)` slots."""
+        transfer = self.TRANSFER_CONNECTIONS or max(2, self.MAX_CONNECTIONS // 4)
+        transfer = min(transfer, self.MAX_CONNECTIONS - 1)
+        return self.MAX_CONNECTIONS - transfer, transfer
+
     def __init__(self, spec: StoreSpecBase) -> None:
         """Initialize daemon store with pool, probing state, circuit breaker, and reconnect loop."""
         super().__init__(spec)
@@ -241,15 +255,20 @@ class DaemonStore(Store):
             self._probe = fm is None
 
         self.gate = ResourceGate()
-        self.pool = ConnectionPool(
-            store_id=self.store_id,
-            factory=self._create_conn_with_counter,
-            gate=self.gate,
-            idle_ttl=self.idle_ttl,
-            max_lifetime=self.max_lifetime,
-            max_connections=self.MAX_CONNECTIONS,
-            on_connection_created=self._on_connection_created,
-            on_pool_empty=self._on_pool_empty,
+        build_slots, transfer_slots = self._pool_sizes()
+        self.build_pool, self.transfer_pool = (
+            ConnectionPool(
+                store_id=self.store_id,
+                factory=self._create_conn_with_counter,
+                gate=self.gate,
+                idle_ttl=self.idle_ttl,
+                max_lifetime=self.max_lifetime,
+                max_connections=slots,
+                on_connection_created=self._on_connection_created,
+                on_pool_empty=self._on_a_pool_empty,
+                lane=lane,
+            )
+            for lane, slots in (("build", build_slots), ("transfer", transfer_slots))
         )
 
         self.monitor: ResourceMonitor | None = None
@@ -344,26 +363,35 @@ class DaemonStore(Store):
     # ── Connection pool ─────────────────────────────────────────────
 
     @property
+    def pools(self) -> tuple[ConnectionPool, ConnectionPool]:
+        return self.build_pool, self.transfer_pool
+
+    @property
     def in_flight(self) -> int:
         """Number of currently active connections."""
-        return self.pool.active_connections
+        return sum(pool.active_connections for pool in self.pools)
 
     @property
     def pool_stats(self) -> str:
         """Human-readable pool statistics string."""
-        return self.pool.stats
+        return " ".join(f"{pool.lane}: {pool.stats}" for pool in self.pools)
 
     def build_conn(self, options: SetOptionsRequest | None = None) -> AbstractAsyncContextManager[Connection]:
         """Acquire a connection for build operations."""
-        return self.pool.acquire("build", options)
+        return self.build_pool.acquire("build", options)
 
     def transfer_conn(self, options: SetOptionsRequest | None = None) -> AbstractAsyncContextManager[Connection]:
         """Acquire a connection for transfer operations."""
-        return self.pool.acquire("transfer", options)
+        return self.transfer_pool.acquire("transfer", options)
 
     async def retire_idle_connections(self) -> int:
         """Close each pooled connection that nobody uses, and release its roots."""
-        return await self.pool.retire_idle()
+        return sum([await pool.retire_idle() for pool in self.pools])
+
+    async def _on_a_pool_empty(self) -> None:
+        """`_on_pool_empty`, once both pools are empty: they share one transport."""
+        if all(not (pool.active_connections or pool.idle_conns or pool.all_conns) for pool in self.pools):
+            await self._on_pool_empty()
 
     async def add_text_to_store(self, name: str, text: str, references: AbstractSet[str]) -> str:
         """Put a text file in the store of the daemon, and answer the path it took.
@@ -441,7 +469,8 @@ class DaemonStore(Store):
             self._reconnect_task = None
 
     async def _do_reconnect(self) -> None:
-        await self.pool.close()
+        for pool in self.pools:
+            await pool.close()
         self.probe_state = ProbeState.NOT_PROBED
         self._probe_event = anyio.Event()
         await self.probe()
@@ -488,7 +517,8 @@ class DaemonStore(Store):
 
     async def close(self) -> None:
         await self._stop_reconnect_loop()
-        await self.pool.close()
+        for pool in self.pools:
+            await pool.close()
 
     # ── Execution ───────────────────────────────────────────────────
 
@@ -589,7 +619,7 @@ class DaemonStore(Store):
 
         self.probe_state = ProbeState.PROBING
 
-        async with self.pool.acquire("probe"):
+        async with self.transfer_pool.acquire("probe"):
             pass
 
         if self.probe_state == ProbeState.PROBED:

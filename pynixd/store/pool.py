@@ -47,6 +47,7 @@ class ConnectionPool:
         max_connections: int = 64,
         on_connection_created: Callable[[Connection], None] | None = None,
         on_pool_empty: Callable[[], Awaitable[None]] | None = None,
+        lane: str = "transfer",
     ) -> None:
         """Configure pool with connection factory, memory gate, and concurrency limits."""
 
@@ -68,7 +69,12 @@ class ConnectionPool:
         This is a bound on how long that lasts, and not a promise that a root
         goes away at the end of the client that made it. Issue #20.
         """
+        self.lane = lane
+        """Which of a store's pools this is: `build` or `transfer`. Issue #97."""
+        self.max_connections = max_connections
         self._slots = anyio.Semaphore(max_connections)
+        self.slot_waiters: list[float] = []
+        """When each acquire that waits for a slot now began to wait."""
         self.on_connection_created = on_connection_created
         self.on_pool_empty = on_pool_empty
         """Called once the pool holds no connection at all, active or idle.
@@ -332,7 +338,7 @@ class ConnectionPool:
                     await conn.close()
             return
 
-        await self._slots.acquire()
+        await self._take_slot()
         try:
             # Wait for memory safety before allocating a connection.
             await self.gate.wait_mem_clear()
@@ -386,6 +392,15 @@ class ConnectionPool:
                 self.active_connections -= 1
         finally:
             self._slots.release()
+
+    async def _take_slot(self) -> None:
+        since = time.monotonic()
+        self.slot_waiters.append(since)
+        try:
+            await self._slots.acquire()
+        finally:
+            self.slot_waiters.remove(since)
+            metrics.POOL_SLOT_WAIT.labels(store_id=self.store_id, lane=self.lane).inc(time.monotonic() - since)
 
     def build_conn(self) -> AbstractAsyncContextManager[Connection]:
         """Acquire a connection for build operations."""

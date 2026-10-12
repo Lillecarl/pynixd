@@ -68,6 +68,8 @@ class MockConnection:
         # constant, so a pool with a `max_lifetime` retires a mock the way it
         # retires a real one.
         self.opened_at: float = time.monotonic()
+        # `ConnectionPool.get_or_create_conn` reads it when it reuses an idle one.
+        self.applied_options = None
         # `ConnectionPool.waiting_on_upstream` reads it, and a mock call
         # finishes before anything could scrape it.
         self.current_op: tuple[str, float] | None = None

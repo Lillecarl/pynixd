@@ -39,7 +39,9 @@ class TestThePoolTakesIt:
         # `.value` and not `.max_value`: the pool builds `anyio.Semaphore(n)`
         # with no `max_value=`, which leaves that attribute `None`. On a pool
         # nobody has acquired from, `.value` is the bound it was given.
-        assert store.pool._slots.value == SSHSubprocessStore.MAX_CONNECTIONS
+        # The two pools share the bound: sshd counts every session.
+        assert [pool._slots.value for pool in store.pools] == [6, 2]
+        assert sum(pool._slots.value for pool in store.pools) == SSHSubprocessStore.MAX_CONNECTIONS
 
     def test_the_socket_store_hands_the_wide_one(self):
         store = SSHSocketStore(
@@ -51,7 +53,8 @@ class TestThePoolTakesIt:
             ),
         )
 
-        assert store.pool._slots.value == DaemonStore.MAX_CONNECTIONS
+        assert [pool._slots.value for pool in store.pools] == [48, 16]
+        assert sum(pool._slots.value for pool in store.pools) == DaemonStore.MAX_CONNECTIONS
 
 
 class TestTheBoundPerTransport:

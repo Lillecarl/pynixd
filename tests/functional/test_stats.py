@@ -59,7 +59,7 @@ class StatsTestStore(LocalDBStore):
         # without it made the build crash with a `TypeError` that the
         # scheduler reported as "Internal scheduler error", so this test read
         # an empty stats table and blamed the recording. Issue #29.
-        async with self.pool.acquire("build", options):
+        async with self.build_pool.acquire("build", options):
 
             class MockConn:
                 def __init__(self, store):

@@ -47,6 +47,8 @@ def _cell(value: Any) -> str:
         return "-"
     if isinstance(value, dict):
         return ", ".join(f"{k}={_cell(v)}" for k, v in value.items()) or "-"
+    if isinstance(value, BaseModel):
+        return "(" + " ".join(f"{k}={_cell(v)}" for k, v in value) + ")"
     if isinstance(value, list):
         return ", ".join(_cell(v) for v in value) or "-"
     return str(value)

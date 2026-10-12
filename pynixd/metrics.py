@@ -59,6 +59,12 @@ UPSTREAM_READ_TIMEOUTS = Counter(
     ["store_id"],
 )
 
+POOL_SLOT_WAIT = Counter(
+    "pynixd_store_pool_slot_wait_seconds_total",
+    "Time operations spent waiting for a free connection slot, per pool lane (#97)",
+    ["store_id", "lane"],
+)
+
 BUILDS_WAITING = Gauge(
     "pynixd_builds_waiting",
     "Pending builds by what they wait for: local_slot, unwanted or scheduling (#92)",
@@ -643,10 +649,33 @@ class StorePoolCollector:
             "Longest time a waiting operation has heard nothing from the store (#93)",
             labels=["store_id"],
         )
+        slots = GaugeMetricFamily(
+            "pynixd_store_pool_slots",
+            "Connection slots of each pool lane (#97)",
+            labels=["store_id", "lane"],
+        )
+        slot_waiters = GaugeMetricFamily(
+            "pynixd_store_pool_slot_waiters",
+            "Operations waiting for a free slot of a pool lane now (#97)",
+            labels=["store_id", "lane"],
+        )
+        slot_wait_max = GaugeMetricFamily(
+            "pynixd_store_pool_slot_wait_seconds_max",
+            "Longest current wait for a slot of a pool lane (#97)",
+            labels=["store_id", "lane"],
+        )
         counts: dict[str, tuple[int, int, int]] = {}
         quiet: dict[str, tuple[int, float]] = {}
+        lanes: dict[tuple[str, str], tuple[int, int, float]] = {}
         now = time.monotonic()
         for pool in self._pools:
+            size, waiters, longest_wait = lanes.get((pool.store_id, pool.lane), (0, 0, 0.0))
+            lanes[pool.store_id, pool.lane] = (
+                # A removed store's pool may linger here; its size is no extra slot.
+                max(size, pool.max_connections),
+                waiters + len(pool.slot_waiters),
+                max([longest_wait, *(now - since for since in pool.slot_waiters)]),
+            )
             was = counts.get(pool.store_id, (0, 0, 0))
             counts[pool.store_id] = (
                 was[0] + pool.active_connections,
@@ -668,6 +697,13 @@ class StorePoolCollector:
         for store_id, (ops, longest) in quiet.items():
             waiting.add_metric([store_id], ops)
             silence.add_metric([store_id], longest)
+        for (store_id, lane), (size, waiters, longest_wait) in lanes.items():
+            slots.add_metric([store_id, lane], size)
+            slot_waiters.add_metric([store_id, lane], waiters)
+            slot_wait_max.add_metric([store_id, lane], longest_wait)
+        yield slots
+        yield slot_waiters
+        yield slot_wait_max
         yield in_flight
         yield idle
         yield total

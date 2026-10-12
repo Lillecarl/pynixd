@@ -112,8 +112,8 @@ async def test_scheduler_skips_saturated_store():
     # Simulate saturation by manually incrementing active connections
     # A concurrency penalty of 50.0 per connection will push the score below 0.0
     # (Assuming base score is 100 from CPU idle)
-    local_store.pool.active_connections = 3
-    remote1.pool.active_connections = 3
+    local_store.transfer_pool.active_connections = 3
+    remote1.transfer_pool.active_connections = 3
 
     ctx = PynixdContext(
         settings=PynixdSettings(),
@@ -147,7 +147,7 @@ async def test_scheduler_skips_saturated_store():
     assert queued_build.is_pending
 
     # 2. Free a slot on remote1
-    remote1.pool.active_connections = 0
+    remote1.transfer_pool.active_connections = 0
 
     # Pass 2: Now it should be assigned
     await _one_pass(scheduler)
@@ -180,7 +180,7 @@ async def test_scheduler_proactive_transfer():
 
     # Saturate 'busy' store
     # With locality_weight=500 and cpu_idle_weight=100, we need > (500+100)/50 = 12 conns
-    remote_busy.pool.active_connections = 13
+    remote_busy.transfer_pool.active_connections = 13
 
     drv_path = StorePath("/nix/store/00000000000000000000000000000001-test.drv")
 
