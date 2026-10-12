@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, ClassVar
 
@@ -10,6 +12,8 @@ import structlog
 
 from ..serde import (
     BuildDerivationRequest,
+    BuildDerivationResponse,
+    BuildResult,
     BuildResultStatus,
     IsValidPathRequest,
 )
@@ -20,10 +24,75 @@ from .results import GoalResult, goal_failure, result_succeeded
 if TYPE_CHECKING:
     from nix_daemon_protocol.ids import BuildId
 
+    from ..build_queue import QueuedBuild
     from ..connection import ClientConn
+    from ..serde import SetOptionsRequest
     from .engine import GoalEngine
 
 log = structlog.get_logger(__name__)
+
+_RECHECK_S = 60.0
+"""How often a holder that waits on a build not yet started looks again."""
+
+
+def _timeout_of(options: SetOptionsRequest) -> int:
+    """`timeout` reaches the daemon as an override; Nix also reads `build-timeout`."""
+    raw = options.overrides.get("timeout", options.overrides.get("build-timeout", "0"))
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 0
+
+
+def _tighter(mine: int, owner: int) -> int:
+    """My limit, when the owner's does not already end the build first."""
+    return mine if mine and (not owner or mine < owner) else 0
+
+
+def limits_the_owner_leaves(mine: SetOptionsRequest | None, owner: SetOptionsRequest | None) -> tuple[int, int]:
+    """`(max-silent-time, timeout)` in seconds that this holder enforces itself; 0 for none.
+
+    The upstream daemon enforces the owner's limits, so a holder enforces only
+    a limit that is tighter than the owner's.
+    """
+    if mine is None or mine is owner:
+        return 0, 0
+    if owner is None:
+        return int(mine.max_silent_time), _timeout_of(mine)
+    return (
+        _tighter(int(mine.max_silent_time), int(owner.max_silent_time)),
+        _tighter(_timeout_of(mine), _timeout_of(owner)),
+    )
+
+
+def limit_reached(build: QueuedBuild, silent: int, timeout: int, now: float) -> tuple[int | None, float]:
+    """The limit in seconds that has passed, or `None`, and how long to wait before the next look.
+
+    The clock starts when the build starts, as in `Worker::waitForInput`: time
+    in the queue counts against neither limit.
+    """
+    started = build.started_at
+    if started is None:
+        return None, _RECHECK_S
+    deadlines: list[tuple[float, int]] = []
+    if silent:
+        deadlines.append(((build.last_output_at or started) + silent, silent))
+    if timeout:
+        deadlines.append((started + timeout, timeout))
+    deadline, limit = min(deadlines)
+    if now >= deadline:
+        return limit, 0.0
+    return None, deadline - now
+
+
+def _timed_out(seconds: int) -> BuildDerivationResponse:
+    """What Nix answers for a goal it timed out, `goal.cc:23`."""
+    return BuildDerivationResponse(
+        result=BuildResult(
+            status=BuildResultStatus.TIMED_OUT,
+            error_msg=f"timed out after {seconds} seconds",
+        )
+    )
 
 
 @dataclass
@@ -139,7 +208,7 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
             await self._subscribe_active(build_id, client)
 
         try:
-            response = await future
+            response = await self._wait_within_my_limits(build_id, future, options)
         finally:
             async with self._lock:
                 self._finished = True
@@ -193,6 +262,43 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
             # not to run. Issue Lillecarl/nanopynix#286.
             abandoned=not result_succeeded(response.result) and not response.result.error_msg,
         )
+
+    async def _wait_within_my_limits(
+        self,
+        build_id: BuildId,
+        future: asyncio.Future[BuildDerivationResponse],
+        mine: SetOptionsRequest | None,
+    ) -> BuildDerivationResponse:
+        """The build's answer, or Nix's timeout once this client's own limit passes.
+
+        NIX-DEVIATION (#27): two clients of Nix that want one derivation meet
+        at its output lock (`derivation-building-goal.cc:421`), so the second
+        waits while the first builds with its own options. `Worker::waitForInput`
+        at `worker.cc:485` applies `max-silent-time` and `timeout` to the
+        building goal only. pynixd shares one build, so a client that set a
+        limit could wait without end on a build its owner runs without one --
+        the shape of the hang in #89. Each holder that is not the owner
+        enforces its own limits on its wait instead, and lets go when one
+        passes; the build ends only when its last holder lets go. To reverse
+        it, measure a client that a later holder's limit failed wrongly.
+        Issue Lillecarl/nanopynix#192.
+        """
+        scheduler = self.engine.ctx.scheduler
+        build = None if scheduler is None else scheduler.queue.by_id.get(build_id)
+        if build is None:
+            return await future
+        silent, timeout = limits_the_owner_leaves(mine, build.options)
+        if not silent and not timeout:
+            return await future
+        while not future.done():
+            passed, wait = limit_reached(build, silent, timeout, time.monotonic())
+            if passed is not None:
+                log.info("build_holder_timed_out", build_id=int(build_id), after_s=passed)
+                return _timed_out(passed)
+            # `asyncio.wait` and not a cancelled `await`: cancelling an await
+            # of the shared future would cancel it for every holder.
+            await asyncio.wait({future}, timeout=wait)
+        return future.result()
 
     async def _wait_for_local_paths(self, paths: set[StorePath]) -> None:
         if not paths:

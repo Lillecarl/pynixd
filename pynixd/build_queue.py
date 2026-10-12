@@ -130,14 +130,18 @@ class QueuedBuild:
         is not on the stack any more. The queue keeps the set instead.
 
         **A build is shared between the clients that ask for it, and each one
-        has its own options.** The first client to ask decides, and a second
-        client with another set gets the set of the first. Nix builds for one
-        client at a time and has no answer to copy. Issue Lillecarl/nanopynix#192.
+        has its own options.** The first client to ask decides, as the first
+        of two Nix clients holds the output lock and builds with its own set.
+        A later holder enforces its own timeouts on its wait:
+        `BuildDerivationGoal._wait_within_my_limits`. Issue Lillecarl/nanopynix#192.
         """
         self.future = future
         self.expected_duration = expected_duration
         self.enqueued_at = time.monotonic()
         self.started_at: float | None = None
+        self.last_output_at: float | None = None
+        """When the upstream daemon last sent this build anything. A holder
+        that is not the owner reads it for its own `max-silent-time`."""
         self.finished_at: float | None = None
         self.retries = 0
         self.store_failures: dict[StoreId, int] = {}

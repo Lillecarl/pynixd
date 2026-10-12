@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import anyio
 import structlog
@@ -41,8 +41,9 @@ if TYPE_CHECKING:
 
     from nix_daemon_protocol.aliases import StorePathSet
     from nix_daemon_protocol.ids import BuildId, RequestId, StoreId
+    from nix_daemon_protocol.logs import LogMessage
 
-    from .connection import Connection
+    from .connection import ClientConn, Connection
     from .context import PynixdContext
     from .derived_path import DerivedPath
     from .serde import (
@@ -52,6 +53,19 @@ if TYPE_CHECKING:
     )
 
 log = structlog.get_logger(__name__)
+
+
+class _OutputClock:
+    """The log sink of a running build: it notes when each message arrives."""
+
+    options = None
+
+    def __init__(self, build: QueuedBuild) -> None:
+        self._build = build
+
+    async def send(self, msg: LogMessage) -> None:
+        del msg
+        self._build.last_output_at = time.monotonic()
 
 
 def build_decision_seeds(drv_path: str, input_srcs: Iterable[str]) -> set[str]:
@@ -751,15 +765,17 @@ class Scheduler:
     ) -> BuildDerivationResponse:
         """Call the backend daemon and return the response.
 
-        Sends the request via conn.call() without a client. Stderr is
-        buffered in the response, then fanned out to the build's subscribers.
+        Stderr is buffered in the response, then fanned out to the build's
+        subscribers. `_OutputClock` only notes when each message arrives:
+        a fan-out from inside the read would let a client that stops reading
+        stall the upstream build.
         """
         log.debug("build_executing", build_id=build.build_id, store_id=store.store_id)
-        build.started_at = time.monotonic()
+        build.started_at = build.last_output_at = time.monotonic()
         if build.wait_time is not None:
             metrics.QUEUE_WAIT_DURATION.observe(build.wait_time)
 
-        resp = await conn.call(build.request, options=build.options)
+        resp = await conn.call(build.request, client=cast("ClientConn", _OutputClock(build)), options=build.options)
         if resp.logs.messages:
             # The count, so a run can tell one fan-out of many messages from
             # many fan-outs of one message.

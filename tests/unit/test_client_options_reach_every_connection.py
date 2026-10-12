@@ -207,6 +207,8 @@ class FakeScheduler:
         self.options: SetOptionsRequest | None = None
         self.future: asyncio.Future[BuildDerivationResponse] | None = None
         self.started = anyio.Event()
+        # No queued build, so a holder waits on the future alone.
+        self.queue = SimpleNamespace(by_id={})
 
     async def build_derivation(
         self,
