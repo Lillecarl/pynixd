@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import asyncssh
 import structlog
 
 from nix_daemon_protocol.ids import StoreId
@@ -14,6 +13,7 @@ from pynixd.daemon_extensions.query_path_infos import QueryPathInfosRequest
 from pynixd.serde import QueryAllValidPathsRequest
 from pynixd.store import LocalSocketStore, SSHSubprocessStore
 from pynixd.store_path import StorePath
+from tests._conftest.ssh_keys import SESSION_SSH_KEYS
 from tests.conftest import (
     NIX_BIN,
     STORE_PREFIX,
@@ -35,7 +35,7 @@ async def test_extension_delegation(tmp_path: Path) -> None:
     """
 
     # 0. Setup SSH keys and stores
-    key = asyncssh.generate_private_key("ssh-rsa")
+    key = str(SESSION_SSH_KEYS / "id_user")
 
     store_b_path = STORE_PREFIX / "extension-delegation-store-b"
     rmtree_robust(store_b_path)

@@ -581,6 +581,18 @@ class PynixdSettings(BaseSettings):
     ssh_host: str = "127.0.0.1"
     ssh_port: int | None = 2234
     ssh_host_key: Path | None = None
+    ssh_user_keys: list[Path] = Field(default_factory=list)
+    """`authorized_keys` files whose keys the SSH listener admits as untrusted users.
+
+    Read at each authentication, so an edit applies to the next connection.
+    No key in either list admits nobody. Issue #94.
+    """
+    ssh_admin_keys: list[Path] = Field(default_factory=list)
+    """`authorized_keys` files whose keys the SSH listener admits as trusted.
+
+    What Nix's `trusted-users` grants, tied to the key and never to the
+    username a client sends.
+    """
 
     unix_path: Path | None = Path("/run/pynixd/pynixd.sock")
 
@@ -690,6 +702,13 @@ class PynixdSettings(BaseSettings):
     reverse_initiator: ReverseInitiatorSettings = Field(default_factory=ReverseInitiatorSettings)
 
     admin_users: set[str] = Field(default_factory=set)
+    """Deprecated: list the key in `ssh_admin_keys` instead.
+
+    A session whose key is in `ssh_user_keys` and whose username is here is
+    trusted. Every key that logs in under one name shares the grant, which
+    is the problem `ssh_admin_keys` solves (nixkube#73). Kept so a config
+    that sets it keeps starting: an unknown key fails the whole settings.
+    """
 
     gc_enabled: bool = True
     gc_interval: float = 3600.0

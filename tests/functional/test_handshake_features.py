@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import asyncssh
 import structlog
 
 if TYPE_CHECKING:
@@ -14,6 +13,7 @@ from nix_daemon_protocol.ids import StoreId
 from pynixd import Server
 from pynixd.config import SSHSubprocessStoreSpec
 from pynixd.store import LocalSocketStore, SSHSubprocessStore
+from tests._conftest.ssh_keys import SESSION_SSH_KEYS
 from tests.conftest import (
     NIX_BIN,
     STORE_PREFIX,
@@ -28,7 +28,7 @@ async def test_handshake_feature_announcement(tmp_path: Path) -> None:
     """Test that pynixd announces its feature matrix in the handshake and the client skips probing."""
 
     # 0. Setup SSH keys and stores
-    key = asyncssh.generate_private_key("ssh-rsa")
+    key = str(SESSION_SSH_KEYS / "id_user")
 
     # Store B has a specific feature matrix
     fm_b = {"x86_64-linux": {"kvm", "big-parallel"}, "aarch64-linux": set()}

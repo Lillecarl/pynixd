@@ -22,6 +22,7 @@ from tests._conftest.constants import (
 )
 from tests._conftest.helpers import rmtree_robust
 from tests._conftest.nix_config import for_test_store
+from tests._conftest.ssh_keys import SESSION_SSH_KEYS, install_session_keys
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -66,24 +67,25 @@ def pytest_configure(config):
     asyncio_plugin = config.pluginmanager.get_plugin("asyncio")
     if asyncio_plugin is not None:
         config.pluginmanager.unregister(asyncio_plugin)
+    install_session_keys()
 
 
 # ── URI helpers ───────────────────────────────────────────────────
 
 
 def server_uri(server: Server) -> str:
-    """Return the URI of the server."""
-    return server.uri()
+    """Return the URI of the server, with the untrusted session key."""
+    return f"{server.uri()}?ssh-key={SESSION_SSH_KEYS / 'id_user'}"
 
 
 def ssh_admin_uri(server: Server) -> str:
-    """Return an SSH URI for admin-user on the given server."""
-    return f"ssh-ng://admin-user@127.0.0.1:{server.port}"
+    """Return an SSH URI for admin-user on the given server, with the trusted key."""
+    return f"ssh-ng://admin-user@127.0.0.1:{server.port}?ssh-key={SESSION_SSH_KEYS / 'id_admin'}"
 
 
 def ssh_user_uri(server: Server) -> str:
-    """Return an SSH URI for regular-user on the given server."""
-    return f"ssh-ng://regular-user@127.0.0.1:{server.port}"
+    """Return an SSH URI for regular-user on the given server, with an untrusted key."""
+    return f"ssh-ng://regular-user@127.0.0.1:{server.port}?ssh-key={SESSION_SSH_KEYS / 'id_user'}"
 
 
 def unix_session_uri(server: Server) -> str:
@@ -196,6 +198,5 @@ async def pynixd_server(
         http_upload_dir=upload_dir,
         http_user="testuser",
         http_pass="testpass",
-        admin_users={"admin-user"},
     ) as server:
         yield server

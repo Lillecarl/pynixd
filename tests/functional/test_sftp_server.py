@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING
 import asyncssh
 from asyncssh.constants import FX_NO_SUCH_FILE, FX_PERMISSION_DENIED
 
+from tests._conftest.ssh_keys import SESSION_SSH_KEYS
+
 if TYPE_CHECKING:
     from pynixd import Server
 
@@ -34,6 +36,8 @@ async def _sftp_client(server: Server) -> _SFTPSession:
         server.port,
         known_hosts=None,
         username="test",
+        client_keys=[str(SESSION_SSH_KEYS / "id_user")],
+        agent_path=None,
     )
     sftp = await conn.start_sftp_client()
     return _SFTPSession(conn, sftp)

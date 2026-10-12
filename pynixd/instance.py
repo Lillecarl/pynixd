@@ -660,8 +660,10 @@ class Server:
                 host=s.ssh_host,
                 port=s.ssh_port,
                 host_key_path=s.ssh_host_key,
-                admin_users=s.admin_users,
                 schedule_mode=s.schedule_mode,
+                user_keys=s.ssh_user_keys,
+                admin_keys=s.ssh_admin_keys,
+                admin_users=s.admin_users,
             )
 
         # **The `enabled` check belongs here as well as in the function.**

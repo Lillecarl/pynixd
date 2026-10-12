@@ -46,11 +46,13 @@ from pynixd.serde.auth import Role
 from pynixd.ssh_server import start_ssh_server
 from pynixd.store_path import StorePath
 from pynixd.wire import SSHNixReader, SSHNixWriter, UnixNixReader, UnixNixWriter
+from tests._conftest.ssh_keys import make_ssh_test_keys
 from tests.conftest import serde_path
 from tests.functional.mock_store import MockStore
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+    from pathlib import Path
 
     from pynixd.build_queue import BuildQueue, QueuedBuild
 
@@ -260,7 +262,7 @@ async def test_a_half_close_is_not_a_hangup(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 @pytest.mark.parametrize("hang_up", ["eof", "disconnect"])
-async def test_an_ssh_client_that_goes_cancels_its_build(hang_up: str) -> None:
+async def test_an_ssh_client_that_goes_cancels_its_build(hang_up: str, tmp_path: Path) -> None:
     """Over SSH, the end of the channel's input is the hangup.
 
     `eof`: the client's ssh closes the channel input, which is what a client
@@ -269,15 +271,15 @@ async def test_an_ssh_client_that_goes_cancels_its_build(hang_up: str) -> None:
     """
     ctx = _context()
     queue = _queue_that_never_builds(ctx)
-    server = await start_ssh_server(ctx, port=0, admin_users={"tester"}, schedule_mode=ScheduleMode.scheduler)
+    keys = make_ssh_test_keys(tmp_path)
+    server = await start_ssh_server(ctx, port=0, schedule_mode=ScheduleMode.scheduler, admin_keys=[keys.admin_keys])
     try:
         async with asyncssh.connect(
             "127.0.0.1",
             server.get_port(),
             username="tester",
-            password="unused",
             known_hosts=None,
-            client_keys=None,
+            client_keys=[str(keys.admin)],
             agent_path=None,
         ) as ssh:
             process = await ssh.create_process("nix-daemon --stdio", encoding=None)
