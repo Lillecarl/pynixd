@@ -13,7 +13,7 @@ let
     pythonBuilder = pkgs.python3Packages.buildPythonPackage;
   };
 
-  agent = pkgs.pkgsStatic.callPackage ./nix/agent.nix { };
+  agent = pkgs.pkgsCross.musl64.callPackage ./nix/agent.nix { };
 
   package = pkgs.python3Packages.callPackage ./nix/pynixd.nix {
     pythonBuilder = pkgs.python3Packages.buildPythonApplication;

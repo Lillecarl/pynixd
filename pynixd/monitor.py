@@ -145,7 +145,7 @@ SAMPLED_FILES: tuple[str, ...] = (
     "/proc/loadavg",
     "/sys/fs/cgroup/cpu.stat",
 )
-"""What one sample reads. `agent/pynixd-agent.c` sends the same list."""
+"""What one sample reads. `FILES` in `agent/src/main.rs` is the same list."""
 
 
 def health_from_files(

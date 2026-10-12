@@ -1,6 +1,6 @@
 """`pynixd-agent` on a builder: host samples over one SSH channel. Issue #98.
 
-pynixd uploads the static binary (`agent/pynixd-agent.c`) to the builder and
+pynixd uploads the static binary (`agent/src/main.rs`) to the builder and
 runs it. The agent sleeps in `poll()` and writes one frame per interval, or
 at once when a PSI trigger at a high mark fires, so a fall in the build
 limit does not wait for the next poll. It parses nothing; pynixd parses the
