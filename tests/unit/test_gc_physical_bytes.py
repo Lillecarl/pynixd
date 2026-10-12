@@ -46,7 +46,9 @@ async def test_hardlink_counts_once_across_top_paths(tmp_path: Path) -> None:
 
     assert total is not None
     assert single is not None
-    assert total == single
+    # The second top path adds its own directory inode and nothing more. A
+    # directory takes a block on ext4 (CI) and none on tmpfs (the guests).
+    assert total == single + os.stat(second).st_blocks * 512
 
 
 @pytest.mark.anyio
