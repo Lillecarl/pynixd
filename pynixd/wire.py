@@ -480,8 +480,12 @@ class SSHNixWriter(NixWriter):
         return self.writer.channel.get_write_buffer_size() > 0
 
     async def close(self) -> None:
-        await self.drain()
-        self.writer.close()
+        # The close is synchronous and runs even when the drain fails or is
+        # cancelled. A transport left open keeps the daemon's work running.
+        try:
+            await self.drain()
+        finally:
+            self.writer.close()
 
 
 class UnixNixWriter(NixWriter):
@@ -504,8 +508,11 @@ class UnixNixWriter(NixWriter):
         return self.writer.transport.get_write_buffer_size() > 0
 
     async def close(self) -> None:
-        await self.drain()
-        self.writer.close()
+        # As `SSHNixWriter.close`: the transport closes whatever the drain does.
+        try:
+            await self.drain()
+        finally:
+            self.writer.close()
         await self.writer.wait_closed()
 
 

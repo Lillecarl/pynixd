@@ -228,13 +228,16 @@ class Connection:
     async def close(self) -> None:
         """Close the connection and release the underlying transport."""
         self.connected = False
-        with contextlib.suppress(Exception):
-            await self.w.close()
-        # The hook disarms itself: removal paths overlap (a retired
-        # connection can meet the sweep too), and each must report once.
-        if self.on_close is not None:
-            report, self.on_close = self.on_close, None
-            report(self)
+        try:
+            with contextlib.suppress(Exception):
+                await self.w.close()
+        finally:
+            # The hook disarms itself: removal paths overlap (a retired
+            # connection can meet the sweep too), and each must report once.
+            # A cancelled close still reports.
+            if self.on_close is not None:
+                report, self.on_close = self.on_close, None
+                report(self)
 
     async def apply_options(self, options: SetOptionsRequest | None) -> None:
         """Give this connection the option set of a client, when it needs it.
