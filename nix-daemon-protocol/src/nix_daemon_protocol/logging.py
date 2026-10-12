@@ -111,7 +111,9 @@ class _DeserializationScope:
     ) -> bool:
         if self._token is not None:
             _DECODE_DEPTH.reset(self._token)
-        if exc is not None:
+        # A cancel or an interrupt stops a read that may be fine, so only an
+        # `Exception` is a failure of the bytes.
+        if isinstance(exc, Exception):
             log_deserialization_failure(self._ctx, self._model_type, exc)
         return False
 

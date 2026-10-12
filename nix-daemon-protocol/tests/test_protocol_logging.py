@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from enum import IntEnum
+from typing import Any, cast
 
+import anyio
 import pytest
 
 from nix_daemon_protocol import PROTOCOL_VERSION
@@ -77,3 +79,25 @@ async def test_nested_deserialization_failure_is_logged_once() -> None:
             },
         ),
     ]
+
+
+class _Stalled:
+    """A reader that waits for ever, as a daemon does while it builds."""
+
+    identifier = "stalled"
+
+    async def read_uint64(self) -> int:
+        await anyio.sleep_forever()
+        raise AssertionError("unreachable")
+
+
+async def test_a_cancelled_read_is_not_a_deserialization_failure() -> None:
+    """A client hangup cancels a read of a build's answer. pynixd#91."""
+    logger = _RecordingLogger()
+
+    with anyio.move_on_after(0.01):
+        await _Envelope.from_reader(
+            ReadContext(reader=cast("Any", _Stalled()), version=PROTOCOL_VERSION, logger=logger),
+        )
+
+    assert logger.events == []
