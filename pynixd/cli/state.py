@@ -3,24 +3,17 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import anyio
 import structlog
 
-from nix_daemon_protocol.ids import StoreId
-
-from ..config import LocalSocketStoreSpec
 from ..daemon_extensions.pynixd_state import PynixdStateRequest
 from ..state import KNOWN_SECTIONS
-from ..store import LocalStore as LocalSocketStore
-from .base import load_settings, setup_logging
+from .base import add_socket_argument, load_settings, open_pynixd, setup_logging
 
 if TYPE_CHECKING:
     import argparse
-
-DEFAULT_SOCKET = Path("/run/pynixd/pynixd.sock")
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:
@@ -38,6 +31,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         action="store_true",
         help="Ask each configured store for its own state too",
     )
+    add_socket_argument(parser)
     parser.set_defaults(func=state_main)
 
 
@@ -51,18 +45,7 @@ async def _state_main(args: argparse.Namespace) -> None:
     setup_logging(settings)
     log = structlog.get_logger(__name__)
 
-    socket_path = settings.unix_path or DEFAULT_SOCKET
-
-    store = LocalSocketStore(
-        LocalSocketStoreSpec(
-            store_id=StoreId("cli"),
-            socket_path=socket_path,
-            probe=False,
-            monitor=False,
-        ),
-    )
-
-    await store.start(sync_paths=False)
+    store = await open_pynixd(settings, args.socket, PynixdStateRequest.name)
 
     try:
         resp = await store.execute(

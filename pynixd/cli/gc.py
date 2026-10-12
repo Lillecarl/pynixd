@@ -2,24 +2,17 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import anyio
 import structlog
 
-from nix_daemon_protocol.ids import StoreId
-
-from ..config import LocalSocketStoreSpec
 from ..daemon_extensions.pynixd_collect_garbage import PynixdCollectGarbageRequest
 from ..serde.protocol import PynixdGCAction
-from ..store import LocalStore as LocalSocketStore
-from .base import load_settings, setup_logging
+from .base import add_socket_argument, load_settings, open_pynixd, setup_logging
 
 if TYPE_CHECKING:
     import argparse
-
-DEFAULT_SOCKET = Path("/run/pynixd/pynixd.sock")
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:
@@ -46,6 +39,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         action="store_true",
         help="List every planned path, sorted (default: count and bytes only)",
     )
+    add_socket_argument(parser)
     parser.set_defaults(func=gc_main)
 
 
@@ -59,22 +53,12 @@ async def _gc_main(args: argparse.Namespace) -> None:
     setup_logging(settings)
     log = structlog.get_logger(__name__)
 
-    socket_path = settings.unix_path or DEFAULT_SOCKET
     action = PynixdGCAction.EXECUTE if args.execute else PynixdGCAction.DRY_RUN
     if args.limit is not None and args.limit < 0:
         parser_error = f"--limit takes a count, and {args.limit} is not one"
         raise SystemExit(f"pynixd gc: error: {parser_error}")
 
-    store = LocalSocketStore(
-        LocalSocketStoreSpec(
-            store_id=StoreId("cli"),
-            socket_path=socket_path,
-            probe=False,
-            monitor=False,
-        ),
-    )
-
-    await store.start(sync_paths=False)
+    store = await open_pynixd(settings, args.socket, PynixdCollectGarbageRequest.name)
 
     try:
         resp = await store.execute(

@@ -2,23 +2,16 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import anyio
 import structlog
 
-from nix_daemon_protocol.ids import StoreId
-
-from ..config import LocalSocketStoreSpec
 from ..daemon_extensions.pynixd_roots_report import PynixdRootsReportRequest
-from ..store import LocalStore as LocalSocketStore
-from .base import load_settings, setup_logging
+from .base import add_socket_argument, load_settings, open_pynixd, setup_logging
 
 if TYPE_CHECKING:
     import argparse
-
-DEFAULT_SOCKET = Path("/run/pynixd/pynixd.sock")
 
 
 def _human(n: int) -> str:
@@ -41,6 +34,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         default=20,
         help="Show this many roots, by exclusive bytes (default: 20)",
     )
+    add_socket_argument(parser)
     parser.set_defaults(func=roots_main)
 
 
@@ -56,18 +50,7 @@ async def _roots_main(args: argparse.Namespace) -> None:
     setup_logging(settings)
     log = structlog.get_logger(__name__)
 
-    socket_path = settings.unix_path or DEFAULT_SOCKET
-
-    store = LocalSocketStore(
-        LocalSocketStoreSpec(
-            store_id=StoreId("cli"),
-            socket_path=socket_path,
-            probe=False,
-            monitor=False,
-        ),
-    )
-
-    await store.start(sync_paths=False)
+    store = await open_pynixd(settings, args.socket, PynixdRootsReportRequest.name)
 
     try:
         resp = await store.execute(PynixdRootsReportRequest())

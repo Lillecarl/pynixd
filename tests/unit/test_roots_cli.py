@@ -48,12 +48,19 @@ class _FakeStore:
         return None
 
 
-def _args(monkeypatch: pytest.MonkeyPatch, **kwargs: Any) -> argparse.Namespace:
-    """`_roots_main` with the daemon and the settings faked out."""
-    monkeypatch.setattr(roots_cli, "LocalSocketStore", _FakeStore)
+def _fake_daemon(monkeypatch: pytest.MonkeyPatch, store: _FakeStore) -> None:
+    async def open_pynixd(*args: Any) -> _FakeStore:
+        return store
+
+    monkeypatch.setattr(roots_cli, "open_pynixd", open_pynixd)
     monkeypatch.setattr(roots_cli, "load_settings", lambda: SimpleNamespace(unix_path="/sock"))
     monkeypatch.setattr(roots_cli, "setup_logging", lambda settings: None)
-    fields: dict[str, Any] = {"top": 20}
+
+
+def _args(monkeypatch: pytest.MonkeyPatch, **kwargs: Any) -> argparse.Namespace:
+    """`_roots_main` with the daemon and the settings faked out."""
+    _fake_daemon(monkeypatch, _FakeStore())
+    fields: dict[str, Any] = {"top": 20, "socket": None}
     fields.update(kwargs)
     return argparse.Namespace(**fields)
 
@@ -64,10 +71,8 @@ async def test_roots_print_biggest_exclusive_first(
 ) -> None:
     """Bytes read human, rows sorted by exclusive, request unparameterized."""
     store = _FakeStore()
-    monkeypatch.setattr(roots_cli, "LocalSocketStore", lambda *a, **k: store)
-    monkeypatch.setattr(roots_cli, "load_settings", lambda: SimpleNamespace(unix_path="/sock"))
-    monkeypatch.setattr(roots_cli, "setup_logging", lambda settings: None)
-    await roots_cli._roots_main(argparse.Namespace(top=20))
+    _fake_daemon(monkeypatch, store)
+    await roots_cli._roots_main(argparse.Namespace(top=20, socket=None))
 
     assert isinstance(store.request, PynixdRootsReportRequest)
     lines = capsys.readouterr().out.splitlines()

@@ -43,10 +43,14 @@ class _FakeStore:
 
 def _args(monkeypatch: pytest.MonkeyPatch, **kwargs: Any) -> argparse.Namespace:
     """`_gc_main` with the daemon and the settings faked out."""
-    monkeypatch.setattr(gc_cli, "LocalSocketStore", _FakeStore)
+
+    async def open_pynixd(*args: Any) -> _FakeStore:
+        return _FakeStore()
+
+    monkeypatch.setattr(gc_cli, "open_pynixd", open_pynixd)
     monkeypatch.setattr(gc_cli, "load_settings", lambda: SimpleNamespace(unix_path="/sock"))
     monkeypatch.setattr(gc_cli, "setup_logging", lambda settings: None)
-    fields = {"store": None, "execute": False, "limit": None, "show_paths": False}
+    fields = {"store": None, "execute": False, "limit": None, "show_paths": False, "socket": None}
     fields.update(kwargs)
     return argparse.Namespace(**fields)
 

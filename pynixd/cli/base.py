@@ -3,15 +3,91 @@
 from __future__ import annotations
 
 import logging
+import os
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import anyio
 import structlog
 
-from ..config import PynixdSettings
+from nix_daemon_protocol.ids import StoreId
+
+from ..config import LocalSocketStoreSpec, PynixdSettings
 from ..plugins import import_plugin
+from ..store import LocalStore as LocalSocketStore
 
 if TYPE_CHECKING:
+    import argparse
     from collections.abc import Callable
+
+PYNIXD_SOCKET = Path("/run/pynixd/pynixd.sock")
+NIX_DAEMON_SOCKET = Path("/nix/var/nix/daemon-socket/socket")
+
+
+def add_socket_argument(parser: argparse.ArgumentParser) -> None:
+    """The `--socket` option every subcommand that dials the daemon takes."""
+    parser.add_argument(
+        "--socket",
+        type=Path,
+        default=None,
+        help=f"The pynixd socket (default: PYNIXD_UNIX_PATH, NIX_REMOTE, {PYNIXD_SOCKET}, then Nix's daemon socket)",
+    )
+
+
+def socket_candidates(settings: PynixdSettings, explicit: Path | None) -> list[Path]:
+    """Where a pynixd may listen, the most specific first.
+
+    pynixd often serves Nix's own daemon socket, so the default of
+    `unix_path` alone misses it: a NixOS host with pynixd in front of
+    `nix-daemon` has no `/run/pynixd`. Issue #90.
+
+    A path the user named -- `--socket`, or `unix_path` from the
+    environment or a config file -- is the only candidate. Otherwise
+    `NIX_REMOTE=unix://...` comes first, then pynixd's default, then the
+    socket Nix itself dials (`NIX_DAEMON_SOCKET_PATH` moves it, as in Nix).
+    """
+    if explicit is not None:
+        return [explicit]
+    if "unix_path" in settings.model_fields_set and settings.unix_path is not None:
+        return [settings.unix_path]
+    found: list[Path] = []
+    remote = os.environ.get("NIX_REMOTE", "")
+    if remote.startswith("unix://"):
+        found.append(Path(remote.removeprefix("unix://").split("?", 1)[0]))
+    if settings.unix_path is not None:
+        found.append(settings.unix_path)
+    found.append(Path(os.environ.get("NIX_DAEMON_SOCKET_PATH") or NIX_DAEMON_SOCKET))
+    return list(dict.fromkeys(found))
+
+
+async def open_pynixd(settings: PynixdSettings, explicit: Path | None, operation: str) -> LocalSocketStore:
+    """Connect to the first candidate socket whose daemon serves *operation*.
+
+    The handshake names every extension operation pynixd serves, so a plain
+    `nix-daemon` on the same path is told apart before any request goes out.
+    """
+    tried: list[str] = []
+    for path in socket_candidates(settings, explicit):
+        if not await anyio.Path(path).exists():
+            tried.append(f"{path}: no such socket")
+            continue
+        store = LocalSocketStore(
+            LocalSocketStoreSpec(store_id=StoreId("cli"), socket_path=path, probe=False, monitor=False),
+        )
+        try:
+            await store.start(sync_paths=False)
+            async with store.transfer_conn(None) as conn:
+                features = set(conn.features)
+        except Exception as ex:  # noqa: BLE001 -- reported below, with every other candidate
+            await store.close()
+            tried.append(f"{path}: {type(ex).__name__}: {ex}")
+            continue
+        if operation in features:
+            return store
+        await store.close()
+        tried.append(f"{path}: a Nix daemon that does not serve {operation}, so not pynixd")
+    lines = "\n  ".join(tried)
+    raise SystemExit(f"pynixd: no pynixd daemon found. Tried:\n  {lines}\nName one with --socket or PYNIXD_UNIX_PATH.")
 
 
 _DROP_SENTINEL = "_pynixd_drop"
