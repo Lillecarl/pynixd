@@ -12,6 +12,8 @@
   devEnv,
   # `pkgs.path`, for `NIX_PATH`. See the shell hook.
   nixpkgsPath,
+  # `pynixd-agent`, which `tests/unit/test_agent.py` runs. Issue #98.
+  agent,
 }:
 mkShell {
   packages = [
@@ -28,6 +30,7 @@ mkShell {
     # A message about the machine, not about pynixd -- the same class as the
     # `NIX_PATH` note below.
     nix
+    agent
     pyright
     ruff
     sqlite
