@@ -118,6 +118,10 @@ class FaultProxy:
                 if dripping:
                     for byte in chunk:
                         await anyio.sleep(self.drip_delay)
+                        # pynixd cuts the link mid-drip; uvloop raises
+                        # RuntimeError, not ConnectionError, for a write then.
+                        if writer.is_closing():
+                            return
                         writer.write(bytes([byte]))
                         await writer.drain()
                     continue
