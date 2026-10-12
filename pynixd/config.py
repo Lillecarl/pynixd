@@ -135,6 +135,14 @@ class PressureSettings(BaseModel):
     """Seconds after a change before the next one. `avg10` needs about 10 s to
     show what a change did; a shorter wait reacts to the old load."""
 
+    agent: bool = True
+    """Sample an SSH builder with `pynixd-agent`. Off, or on a builder that
+    cannot run it, pynixd polls the same files over SFTP."""
+
+    agents: dict[str, Path] | None = None
+    """System to `pynixd-agent` binary. `None` reads `PYNIXD_AGENTS`, which the
+    package sets to the agent of its own system."""
+
     initial_limit: int | None = None
     """The limit of the first sample. `None` takes the core count of the
     builder, or 1 when it is unknown. Until the first fall the limit doubles

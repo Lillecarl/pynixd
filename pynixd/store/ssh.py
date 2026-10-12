@@ -6,6 +6,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
+import os
+import shlex
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -15,6 +18,7 @@ import asyncssh
 import structlog
 
 from .. import wire
+from ..agent import AgentMonitor, AgentUnavailableError, agent_for
 from ..config import (
     PynixdSettings,
     SSHSocketStoreSpec,
@@ -27,14 +31,20 @@ from ..wire import SSHNixReader, SSHNixWriter
 from .daemon import SSHD_DEFAULT_MAX_SESSIONS, DaemonStore
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     from nix_daemon_protocol.ids import StoreId
 
+    from ..agent import AgentStream
     from ..psi import (
         CpuUtil,
         MemInfo,
     )
 
 log = structlog.get_logger(__name__)
+
+AGENT_DIR = ".cache/pynixd"
+"""Where `pynixd-agent` goes on a builder, relative to the login's home."""
 
 
 class SSHStore(DaemonStore):
@@ -132,15 +142,39 @@ class SSHStore(DaemonStore):
         log.info("ssh_disconnecting_idle", store_id=self.store_id, host=self.host)
         await self.close_ssh()
 
-    def start_psi_polling(self, sftp: asyncssh.SFTPClient) -> None:
-        """Poll the builder's host over SFTP."""
+    def start_psi_polling(self, conn: asyncssh.SSHClientConnection) -> None:
+        """Sample the builder's host: with `pynixd-agent`, or over SFTP. Issue #98."""
         if not self.monitor_enabled:
             if self.monitor is None:
                 self.monitor = DummyResourceMonitor(self.pressure_settings, self.on_pressure_sample)
                 self.monitor.start()
             return
+        if self.monitor is not None and not isinstance(self.monitor, DummyResourceMonitor):
+            return
+        self.stop_psi_polling()
+
+        def fall_back() -> None:
+            self.monitor = self._sftp_poller(conn)
+            self.monitor.start()
+
+        if self.pressure_settings.agent:
+            self.monitor = AgentMonitor(
+                self.pressure_settings,
+                self.on_pressure_sample,
+                functools.partial(self._run_agent, conn),
+                fall_back,
+            )
+            self.monitor.start()
+        else:
+            fall_back()
+
+    def _sftp_poller(self, conn: asyncssh.SSHClientConnection) -> GenericResourcePoller:
+        sftp: asyncssh.SFTPClient | None = None
 
         async def sftp_read(path: str) -> str | None:
+            nonlocal sftp
+            if sftp is None:
+                sftp = await conn.start_sftp_client()
             # /proc files report size 0, so read to EOF rather than by size.
             try:
                 async with sftp.open(path, "r") as f:
@@ -151,13 +185,37 @@ class SSHStore(DaemonStore):
             except asyncssh.SFTPError:
                 return None
 
-        if self.monitor is None or isinstance(self.monitor, DummyResourceMonitor):
-            if self.monitor:
-                task = asyncio.create_task(self.monitor.stop())
-                self._bg_tasks.add(task)
-                task.add_done_callback(self._bg_tasks.discard)
-            self.monitor = GenericResourcePoller(self.pressure_settings, self.on_pressure_sample, sftp_read)
-            self.monitor.start()
+        return GenericResourcePoller(self.pressure_settings, self.on_pressure_sample, sftp_read)
+
+    @contextlib.asynccontextmanager
+    async def _run_agent(self, conn: asyncssh.SSHClientConnection, args: list[str]) -> AsyncIterator[AgentStream]:
+        """Upload the agent for this builder's system once, and run it.
+
+        Uploaded to the login's home and not copied into the builder's store:
+        that needs no trust on the builder, and pynixd's own binaries need not
+        live in the store it serves. The store name of the binary is the file
+        name, so two versions never share one.
+        """
+        if self._feature_matrix is None:
+            with anyio.move_on_after(60):
+                await self._probe_event.wait()
+        systems = sorted(self.systems or ())
+        agent = agent_for(systems, self.pressure_settings.agents)
+        if agent is None:
+            raise AgentUnavailableError(f"no pynixd-agent for {systems}")
+        remote = f"{AGENT_DIR}/{agent.parent.parent.name}"
+        async with conn.start_sftp_client() as sftp:
+            if not await sftp.exists(remote):
+                partial = f"{remote}.{os.getpid()}.part"
+                await sftp.makedirs(AGENT_DIR, exist_ok=True)
+                await sftp.put(str(agent), partial)
+                await sftp.chmod(partial, 0o755)
+                await sftp.posix_rename(partial, remote)
+        process = await conn.create_process(shlex.join([f"./{remote}", *args]), encoding=None)
+        try:
+            yield process.stdout
+        finally:
+            process.close()
 
     def stop_psi_polling(self) -> None:
         """Cancel the resource polling task."""
@@ -234,8 +292,7 @@ class SSHStore(DaemonStore):
                 self.record_success()
 
                 if self.monitor_enabled:
-                    sftp = await self.conn.start_sftp_client()
-                    self.start_psi_polling(sftp)
+                    self.start_psi_polling(self.conn)
             except (asyncssh.misc.Error, OSError):
                 self.last_failure = time.monotonic()
                 self.backoff = min(self.backoff * 2, self.MAX_BACKOFF)

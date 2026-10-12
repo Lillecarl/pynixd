@@ -13,9 +13,12 @@ let
     pythonBuilder = pkgs.python3Packages.buildPythonPackage;
   };
 
+  agent = pkgs.pkgsStatic.callPackage ./nix/agent.nix { };
+
   package = pkgs.python3Packages.callPackage ./nix/pynixd.nix {
     pythonBuilder = pkgs.python3Packages.buildPythonApplication;
     nix-daemon-protocol = daemon-protocol;
+    agents.${pkgs.stdenv.hostPlatform.system} = agent;
   };
   library = pkgs.python3Packages.callPackage ./nix/pynixd.nix {
     pythonBuilder = pkgs.python3Packages.buildPythonPackage;
@@ -327,6 +330,7 @@ package
   inherit
     package
     library
+    agent
     daemon-protocol
     specifictest
     fix
@@ -371,7 +375,7 @@ package
       pynixd-lib = library;
       src = lib.cleanSource ./.;
       inherit (sources) vivarium;
-      inherit devEnv;
+      inherit devEnv agent;
     };
 
     # The Nix functional suite in a UML guest, where cleanup is a poweroff

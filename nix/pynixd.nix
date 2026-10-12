@@ -27,6 +27,8 @@
   anyio,
   uvloop,
   nix-daemon-protocol,
+  # System to `pynixd-agent` build (nix/agent.nix).
+  agents ? { },
 }:
 pythonBuilder (finalAttrs: {
   pname = "pynixd";
@@ -57,7 +59,11 @@ pythonBuilder (finalAttrs: {
   src = lib.cleanSourceWith {
     filter =
       name: type:
-      lib.cleanSourceFilter name type && !lib.hasSuffix ".nix" name && !lib.hasSuffix ".md" name;
+      lib.cleanSourceFilter name type
+      && !lib.hasSuffix ".nix" name
+      && !lib.hasSuffix ".md" name
+      # The C agent builds in nix/agent.nix.
+      && !(type == "directory" && baseNameOf name == "agent");
     src = ../.;
   };
 
@@ -88,6 +94,15 @@ pythonBuilder (finalAttrs: {
 
   nativeCheckInputs = [
     pytest
+  ];
+
+  # `PYNIXD_AGENTS` in `pynixd/agent.py`: system to the agent pynixd uploads
+  # to an SSH builder. Issue #98.
+  makeWrapperArgs = lib.optionals (agents != { }) [
+    "--set-default"
+    "PYNIXD_AGENTS"
+    # Escaped once more: the Python wrapper hook expands these words in a shell.
+    (lib.escapeShellArg (builtins.toJSON (lib.mapAttrs (_: agent: lib.getExe agent) agents)))
   ];
 
   meta = {

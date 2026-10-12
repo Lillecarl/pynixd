@@ -20,6 +20,8 @@
   # imports on the host, nanopynix's oracle for `tests/differential`
   # included.
   devEnv,
+  # `pynixd-agent`, which `tests/unit/test_agent.py` runs against the parser.
+  agent,
 }:
 
 let
@@ -175,6 +177,7 @@ vivariumLib.mkTest (
 
       environment.systemPackages = [
         pytestEnv
+        agent
         pkgs.nix
         pkgs.coreutils
         pkgs.util-linux
