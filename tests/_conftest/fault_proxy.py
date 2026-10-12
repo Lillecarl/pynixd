@@ -30,6 +30,8 @@ class Fault(enum.Enum):
     """Hold the response and keep the socket open, for ever."""
     CORRUPT = "corrupt"
     """Flip every byte of the next chunk."""
+    DRIP = "drip"
+    """From the next chunk on, forward one byte per `drip_delay`: alive, never silent long."""
 
 
 class FaultProxy:
@@ -41,6 +43,7 @@ class FaultProxy:
         self._tasks: set[asyncio.Task[None]] = set()
         self._server: asyncio.AbstractServer | None = None
         self.triggered = anyio.Event()
+        self.drip_delay = 0.1
 
     async def start(self) -> None:
         self._server = await asyncio.start_unix_server(self._accept, path=str(self.listen))
@@ -96,6 +99,7 @@ class FaultProxy:
         *,
         from_daemon: bool,
     ) -> None:
+        dripping = False
         try:
             while chunk := await reader.read(65536):
                 fault = self._armed if from_daemon else None
@@ -106,9 +110,17 @@ class FaultProxy:
                         await anyio.sleep_forever()
                     if fault is Fault.CORRUPT:
                         chunk = bytes(b ^ 0xFF for b in chunk)
+                    elif fault is Fault.DRIP:
+                        dripping = True
                     else:
                         self._break(link, reset=fault is Fault.RESET)
                         return
+                if dripping:
+                    for byte in chunk:
+                        await anyio.sleep(self.drip_delay)
+                        writer.write(bytes([byte]))
+                        await writer.drain()
+                    continue
                 writer.write(chunk)
                 await writer.drain()
         except (ConnectionError, OSError):

@@ -135,6 +135,43 @@ async def test_a_daemon_that_is_gone_fails_fast_and_pynixd_recovers(rig: _Rig) -
     assert await rig.ask_within_bound() is False
 
 
+_REPLY_BYTES = 16
+"""`IsValidPath` of an absent path: `STDERR_LAST` and the answer, 8 bytes each."""
+
+
+async def test_a_daemon_that_drips_its_answer_inside_the_bound_is_alive(rig: _Rig) -> None:
+    """Silence counts from the last byte, so a slow daemon reads as busy, not silent."""
+    rig.proxy.drip_delay = 0.15
+    rig.proxy.arm(Fault.DRIP)
+    answers: list[BaseException | bool] = []
+    async with anyio.create_task_group() as tg:
+
+        async def ask() -> None:
+            answers.append(await rig.ask_within_bound())
+
+        tg.start_soon(ask)
+        await anyio.sleep(1.0)
+        (row,) = upstream_in_flight(rig.server.ctx)
+        assert row.op_s >= 0.9
+        assert row.silent_s < 0.5
+
+    assert rig.proxy.triggered.is_set()
+    assert answers == [False]
+
+
+async def test_a_drip_that_runs_past_the_bound_is_cut_like_a_stall(rig: _Rig) -> None:
+    """`read_timeout` bounds the whole read, not the silence: a pure database
+    read that takes longer than the bound ends, however lively the daemon."""
+    rig.proxy.drip_delay = 2 * _READ_TIMEOUT / _REPLY_BYTES
+    rig.proxy.arm(Fault.DRIP)
+
+    answer = await rig.ask_within_bound()
+
+    assert isinstance(answer, BaseException)
+    assert f"within {_READ_TIMEOUT} s" in str(answer)
+    assert await rig.ask_within_bound() is False
+
+
 async def test_a_read_the_daemon_stops_answering_shows_then_fails_and_the_next_one_works(rig: _Rig) -> None:
     """`read_timeout` bounds a pure database read. Before it fires, `pynixd
     state` names the operation and how long the daemon has been silent."""
