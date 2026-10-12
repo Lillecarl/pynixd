@@ -128,6 +128,10 @@ class DaemonProxy:
         self.r = client_r
         self._hangup = hangup
         """Returns when the client hangs up. `None` watches nothing."""
+        self.connected_at = time.monotonic()
+        self.current_op: tuple[str, float] | None = None
+        """The operation this session runs now, and when it began. `pynixd
+        state` reads it to say what each client waits on. Issue #92."""
         self.w = client_w
         self.client = ClientConn(w=self.w)
         self.ctx = ctx
@@ -280,7 +284,11 @@ class DaemonProxy:
         if self._hangup is None:
             return
         await self._hangup()
-        log.info("client_hung_up")
+        op = self.current_op
+        if op is None:
+            log.debug("client_hung_up")
+        else:
+            log.info("client_hung_up", op=op[0], op_seconds=round(time.monotonic() - op[1], 3))
         scope.cancel()
 
     def _note_encode_time(self, op_num: int, started: float) -> None:
@@ -450,6 +458,7 @@ class DaemonProxy:
             op_name = req_cls.name if req_cls else handler_cls.__name__ if handler_cls else f"op_{op_num}"
 
             t0 = time.monotonic()
+            self.current_op = (op_name, t0)
             result = "ok"
             try:
                 response = await self.dispatch(op_num)
@@ -474,6 +483,7 @@ class DaemonProxy:
                 await self.client.flush()
                 await self.send_error(_error_text(ex))
             finally:
+                self.current_op = None
                 elapsed = time.monotonic() - t0
                 count, acc = self._op_timing.get(op_num, (0, 0.0))
                 self._op_timing[op_num] = (count + 1, acc + elapsed)

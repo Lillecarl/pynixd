@@ -6,23 +6,29 @@ import json
 import time
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 
 import anyio
 import pytest
 
-from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
+from nix_daemon_protocol.ids import LOCAL_STORE_ID, RequestId, StoreId
 from pynixd import metrics, state as state_collector
+from pynixd.config import PynixdSettings
+from pynixd.context import PynixdContext
 from pynixd.daemon_extensions.pynixd_state import PynixdStateRequest
 from pynixd.exceptions import OpNotImplementedError
 from pynixd.handlers.pynixd_state import PynixdStateHandler, _federated_sections, _query_one
+from pynixd.scheduler import Scheduler
 from pynixd.serde.auth import Role
 from pynixd.serde.context import ReadContext, WriteContext
 from pynixd.sessions import ClientSessions
 from pynixd.wire import BytesReader, BytesWriter
-
-if TYPE_CHECKING:
-    from pynixd.context import PynixdContext
+from tests.functional.mock_store import MockStore
+from tests.unit.test_local_build_slots import (
+    _NeverDone,
+    _options as _slot_options,
+    _request as _slot_request,
+)
 
 VERSION = 0x126
 
@@ -218,3 +224,51 @@ async def test_federated_merge_marks_failures() -> None:
     assert merged["quiet"] == {"error": "state op not advertised by this store"}
     assert quiet.calls == []
     assert LOCAL_STORE_ID not in merged and "local" not in merged
+
+
+@pytest.mark.anyio
+async def test_builds_say_why_a_pending_build_waits() -> None:
+    """Issue #92: the counts said "one pending" for the build that held an
+    IFD for hours in #89. This section names it and the slot it waits for."""
+    ctx = PynixdContext(
+        settings=PynixdSettings(),
+        _stores={LOCAL_STORE_ID: MockStore("local", feature_matrix={"x86_64-linux": set()})},
+    )
+    ctx.scheduler = Scheduler(ctx)
+    queue = ctx.scheduler.queue
+    running_id, _ = await queue.enqueue(
+        _slot_request("1"), from_goal_path=True, goal_request_id=RequestId(7), options=_slot_options(1)
+    )
+    running = queue.by_id[running_id]
+    running.assigned_store_id = LOCAL_STORE_ID
+    running.build_task = cast("Any", _NeverDone())
+    await queue.enqueue(_slot_request("2"), from_goal_path=True, goal_request_id=RequestId(7), options=_slot_options(1))
+
+    rows = {row["state"]: row for row in state_collector.collect(cast("PynixdContext", ctx), ["builds"])["builds"]}
+
+    assert rows["building"]["store"] == "local"
+    assert "waits_for" not in rows["building"]
+    assert rows["pending"]["requests"] == {"7": 1}
+    assert rows["pending"]["waits_for"].startswith("a local slot")
+
+
+@dataclass(eq=False)
+class _FakeSession:
+    transport: str
+    username: str
+    connected_at: float
+    current_op: tuple[str, float] | None
+
+
+def test_clients_name_the_operation_each_session_runs() -> None:
+    ctx = _ctx()
+    now = time.monotonic()
+    busy = _FakeSession("unix", "alice", now - 60, ("BuildPaths", now - 30))
+    idle = _FakeSession("ssh", "bob", now - 5, None)
+    ctx.sessions.track(cast("Any", busy), None)
+    ctx.sessions.track(cast("Any", idle), None)
+
+    rows = state_collector.collect(cast("PynixdContext", ctx), ["clients"])["clients"]
+
+    assert [(row["user"], row["op"]) for row in rows] == [("alice", "BuildPaths"), ("bob", None)]
+    assert rows[0]["op_s"] >= 30

@@ -11,15 +11,29 @@ knows instead of failing the whole request.
 from __future__ import annotations
 
 import gc
+import time
 import tracemalloc
 from typing import TYPE_CHECKING, Any
 
 from . import metrics
 
 if TYPE_CHECKING:
-    from .context import PynixdContext
+    from nix_daemon_protocol.ids import RequestId
 
-KNOWN_SECTIONS: tuple[str, ...] = ("queue", "stores", "sessions", "transfers", "totals", "benchmark")
+    from .build_queue import QueuedBuild
+    from .context import PynixdContext
+    from .scheduler import Scheduler
+
+KNOWN_SECTIONS: tuple[str, ...] = (
+    "queue",
+    "builds",
+    "stores",
+    "sessions",
+    "clients",
+    "transfers",
+    "totals",
+    "benchmark",
+)
 """Section names `collect` answers. New sections extend this tuple."""
 
 
@@ -29,10 +43,14 @@ def collect(ctx: PynixdContext, wants: list[str] | None = None) -> dict[str, Any
     sections: dict[str, Any] = {}
     if "queue" in wanted:
         sections["queue"] = _queue_section(ctx)
+    if "builds" in wanted:
+        sections["builds"] = _builds_section(ctx)
     if "stores" in wanted:
         sections["stores"] = _stores_section(ctx)
     if "sessions" in wanted:
         sections["sessions"] = _sessions_section(ctx)
+    if "clients" in wanted:
+        sections["clients"] = _clients_section(ctx)
     if "transfers" in wanted:
         sections["transfers"] = _transfers_section(ctx)
     if "totals" in wanted:
@@ -56,6 +74,67 @@ def _queue_section(ctx: PynixdContext) -> dict[str, Any]:
         elif build.is_pending:
             pending += 1
     return {"scheduler": True, "pending": pending, "building": building, "done": done}
+
+
+def _builds_section(ctx: PynixdContext) -> list[dict[str, Any]]:
+    """Every unfinished build, and why each pending one waits. Issue #92.
+
+    The counts above said "one pending" for the build that held an IFD for
+    hours in #89. This says which build, who wants it, and what holds it.
+    """
+    scheduler = ctx.scheduler
+    if scheduler is None:
+        return []
+    queue = scheduler.queue
+    now = time.monotonic()
+    rows: list[dict[str, Any]] = []
+    for build in queue.queue:
+        if build.is_done:
+            continue
+        wanters = queue.live_wanters(build)
+        row: dict[str, Any] = {
+            "id": int(build.build_id),
+            "drv": str(build.request.drv_path),
+            "state": "building" if build.is_building else "pending",
+            "age_s": round(now - build.enqueued_at, 1),
+            "store": None if build.assigned_store_id is None else str(build.assigned_store_id),
+            "requests": {str(int(r)): queue.max_jobs_of(r) for r in sorted(wanters)},
+            "goal_holders": build.goal_holders,
+            "subscribers": len(build.subscribers),
+            "retries": build.retries,
+        }
+        if build.started_at is not None:
+            row["building_s"] = round(now - build.started_at, 1)
+        if not build.is_building:
+            row["waits_for"] = _why_pending(scheduler, build, wanters)
+        rows.append(row)
+    return rows
+
+
+def _why_pending(scheduler: Scheduler, build: QueuedBuild, wanters: set[RequestId]) -> str:
+    if scheduler.queue.nobody_wants(build):
+        return "nothing: every request that wanted it gave up, the next pass cancels it"
+    if wanters and not any(scheduler.request_has_a_local_slot(r) for r in wanters):
+        return "a local slot: each request that wants it runs its max-jobs of local builds"
+    return "a scheduling pass or a free compatible store"
+
+
+def _clients_section(ctx: PynixdContext) -> list[dict[str, Any]]:
+    """Every live session, and the operation it runs now. Issue #92."""
+    now = time.monotonic()
+    rows: list[dict[str, Any]] = []
+    for proxy in ctx.sessions.proxies():
+        op = proxy.current_op
+        rows.append(
+            {
+                "transport": proxy.transport,
+                "user": proxy.username,
+                "connected_s": round(now - proxy.connected_at, 1),
+                "op": None if op is None else op[0],
+                "op_s": None if op is None else round(now - op[1], 1),
+            }
+        )
+    return sorted(rows, key=lambda row: -(row["op_s"] or 0))
 
 
 def _stores_section(ctx: PynixdContext) -> dict[str, Any]:

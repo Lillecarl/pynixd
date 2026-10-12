@@ -48,6 +48,10 @@ class ClientSessions:
     def __len__(self) -> int:
         return len(self._sessions)
 
+    def proxies(self) -> list[DaemonProxy]:
+        """Every live session. The state collector reads this."""
+        return [proxy for proxy, _task in list(self._sessions)]
+
     def by_transport(self) -> dict[str, int]:
         """Live sessions by transport. The state collector reads this."""
         counts: dict[str, int] = {}

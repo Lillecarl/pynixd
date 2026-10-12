@@ -471,7 +471,7 @@ class Scheduler:
         """
         wanters = self.queue.live_wanters(build)
         if wanters:
-            return not any(self._request_has_a_local_slot(request_id) for request_id in wanters)
+            return not any(self.request_has_a_local_slot(request_id) for request_id in wanters)
         options = build.options
         if options is None:
             return False
@@ -488,7 +488,7 @@ class Scheduler:
         )
         return True
 
-    def _request_has_a_local_slot(self, request_id: RequestId) -> bool:
+    def request_has_a_local_slot(self, request_id: RequestId) -> bool:
         """Whether *request_id* runs fewer local builds than its `max-jobs`.
 
         Counted from the queue on each call, not from the pass: a build that

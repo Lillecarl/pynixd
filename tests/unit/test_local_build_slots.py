@@ -178,7 +178,7 @@ class _NeverDone:
 
 
 class _SlotScheduler:
-    _request_has_a_local_slot = Scheduler._request_has_a_local_slot
+    request_has_a_local_slot = Scheduler.request_has_a_local_slot
 
     def __init__(self, queue: BuildQueue) -> None:
         self.queue = queue
