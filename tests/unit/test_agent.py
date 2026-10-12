@@ -10,9 +10,9 @@ from typing import TYPE_CHECKING
 
 import anyio
 
-from pynixd.agent import AGENT_HELLO, AgentMonitor, agent_args, agent_for, read_agent_frame
+from pynixd.agent import AGENT_HELLO, AgentMonitor, agent_args, agent_for, local_monitor, read_agent_frame
 from pynixd.config import PressureSettings
-from pynixd.monitor import SAMPLED_FILES, health_from_files
+from pynixd.monitor import SAMPLED_FILES, GenericResourcePoller, ResourceMonitor, health_from_files
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -151,3 +151,26 @@ async def test_the_real_agent_speaks_what_the_parser_reads() -> None:
     assert health.meminfo is not None and health.meminfo.mem_total > 0
     assert health.load1 is not None
     assert rc == 0
+
+
+async def test_the_local_store_runs_the_agent_for_its_triggers() -> None:
+    binary = shutil.which("pynixd-agent")
+    assert binary is not None, "pynixd-agent is not on PATH"
+    seen: list[SystemHealth] = []
+    replaced: list[ResourceMonitor] = []
+    settings = PressureSettings(interval=0.2, agents={"this-system": Path(binary)})
+
+    monitor = local_monitor(settings, seen.append, ["this-system"], replaced.append)
+    assert isinstance(monitor, AgentMonitor)
+    monitor.start()
+    with anyio.fail_after(5):
+        while len(seen) < 2:
+            await anyio.sleep(0.05)
+    await monitor.stop()
+    assert replaced == []
+    assert seen[0].meminfo is not None and seen[0].meminfo.mem_total > 0
+
+
+def test_no_agent_for_this_system_polls_in_process() -> None:
+    monitor = local_monitor(PressureSettings(agents={}), lambda _: None, ["this-system"], lambda _: None)
+    assert isinstance(monitor, GenericResourcePoller)

@@ -9,6 +9,8 @@ frame with the code the SFTP poller uses.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -17,10 +19,10 @@ from typing import TYPE_CHECKING, Protocol
 import anyio
 import structlog
 
-from .monitor import ResourceMonitor, health_from_files
+from .monitor import ResourceMonitor, create_monitor, health_from_files
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable
+    from collections.abc import AsyncIterator, Callable, Iterable
     from contextlib import AbstractAsyncContextManager
 
     from .config import PressureSettings
@@ -81,6 +83,38 @@ async def read_agent_frame(stream: AgentStream) -> tuple[dict[str, str | None], 
             return files, rest.partition(" ")[0]
         else:
             raise ValueError(f"pynixd-agent sent {line[:80]!r}")
+
+
+def local_monitor(
+    settings: PressureSettings,
+    on_sample: Callable[[SystemHealth], None],
+    systems: Iterable[str],
+    replace: Callable[[ResourceMonitor], None],
+) -> ResourceMonitor:
+    """This machine's monitor: the agent as a subprocess, for its triggers,
+    or the in-process poller where no agent fits. *replace* installs the
+    poller if the agent does not start."""
+    agent = agent_for(systems, settings.agents) if settings.agent else None
+    if agent is None:
+        return create_monitor(settings, on_sample)
+
+    @contextlib.asynccontextmanager
+    async def launch(args: list[str]) -> AsyncIterator[AgentStream]:
+        proc = await asyncio.create_subprocess_exec(
+            str(agent), *args, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE
+        )
+        try:
+            if proc.stdout is None:
+                raise AgentUnavailableError("no stdout")
+            yield proc.stdout
+        finally:
+            if proc.stdin is not None:
+                proc.stdin.close()
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            await proc.wait()
+
+    return AgentMonitor(settings, on_sample, launch, lambda: replace(create_monitor(settings, on_sample)))
 
 
 class AgentMonitor(ResourceMonitor):

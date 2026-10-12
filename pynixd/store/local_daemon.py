@@ -22,13 +22,15 @@ import structlog
 
 from nix_daemon_protocol.store_dir import on_disk
 
+from ..agent import local_monitor
 from ..config import LocalSocketStoreSpec, PynixdSettings
 from ..connection import Connection
-from ..monitor import DummyResourceMonitor, create_monitor
+from ..monitor import DummyResourceMonitor
 from ..store_path import StorePath
 from ..trust import TrustPolicy
 from ..unix_socket import _SUN_PATH_MAX, open_unix_connection
 from ..wire import UnixNixReader, UnixNixWriter
+from .base import get_current_system
 from .daemon import DaemonStore
 
 if TYPE_CHECKING:
@@ -201,10 +203,16 @@ class LocalStore(DaemonStore):
             atexit.register(self._atexit_kill_daemon)
 
         self.monitor: ResourceMonitor | None = (
-            create_monitor(self.pressure_settings, self.on_pressure_sample)
+            local_monitor(
+                self.pressure_settings, self.on_pressure_sample, [get_current_system()], self._replace_monitor
+            )
             if self.monitor_enabled
             else DummyResourceMonitor(self.pressure_settings, self.on_pressure_sample)
         )
+
+    def _replace_monitor(self, monitor: ResourceMonitor) -> None:
+        self.monitor = monitor
+        monitor.start()
 
     async def start(self, sync_paths: bool = True) -> None:
         """Spawn managed daemon and initialize the store."""
