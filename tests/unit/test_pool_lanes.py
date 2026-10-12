@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 import anyio
 
 from nix_daemon_protocol.ids import StoreId
-from pynixd.config import PynixdSettings
+from pynixd.config import PynixdSettings, StoreSpecBase
 from pynixd.context import PynixdContext
 from pynixd.state import collect
 from tests.functional.mock_store import MockStore
@@ -107,3 +107,11 @@ async def test_state_shows_each_pool_and_who_waits() -> None:
         assert pools["build"].in_use == pools["build"].slots
         assert pools["build"].waiting == 1
         assert pools["transfer"].waiting == 0
+
+
+def test_a_spec_sizes_the_pools() -> None:
+    """A high ceiling is a configuration; the build limit decides below it. Issue #98."""
+    store = MockStore("lanes-size", feature_matrix={"x86_64-linux": set()})
+    assert store._pool_sizes(StoreSpecBase()) == (48, 16)  # noqa: SLF001 -- the sizing is the unit
+    assert store._pool_sizes(StoreSpecBase(max_connections=400)) == (300, 100)  # noqa: SLF001
+    assert store._pool_sizes(StoreSpecBase(max_connections=400, transfer_connections=20)) == (380, 20)  # noqa: SLF001

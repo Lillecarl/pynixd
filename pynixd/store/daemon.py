@@ -216,11 +216,12 @@ class DaemonStore(Store):
     an SSH builder with 8 slots, 8 running builds held every read to it until
     `read_timeout`. Issue #97."""
 
-    def _pool_sizes(self) -> tuple[int, int]:
-        """`(build, transfer)` slots."""
-        transfer = self.TRANSFER_CONNECTIONS or max(2, self.MAX_CONNECTIONS // 4)
-        transfer = min(transfer, self.MAX_CONNECTIONS - 1)
-        return self.MAX_CONNECTIONS - transfer, transfer
+    def _pool_sizes(self, spec: StoreSpecBase) -> tuple[int, int]:
+        """`(build, transfer)` slots: the spec's numbers, or this class's."""
+        total = max(2, spec.max_connections or self.MAX_CONNECTIONS)
+        transfer = spec.transfer_connections or self.TRANSFER_CONNECTIONS or max(2, total // 4)
+        transfer = max(1, min(transfer, total - 1))
+        return total - transfer, transfer
 
     def __init__(self, spec: StoreSpecBase) -> None:
         """Initialize daemon store with pool, probing state, circuit breaker, and reconnect loop."""
@@ -256,7 +257,7 @@ class DaemonStore(Store):
         else:
             self._probe = fm is None
 
-        build_slots, transfer_slots = self._pool_sizes()
+        build_slots, transfer_slots = self._pool_sizes(spec)
         self.build_pool, self.transfer_pool = (
             ConnectionPool(
                 store_id=self.store_id,

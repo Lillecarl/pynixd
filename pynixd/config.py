@@ -227,6 +227,15 @@ class StoreSpecBase(BaseModel):
     """
     pressure: PressureSettings | None = None
     """This store's pressure settings; `None` takes `PynixdSettings.pressure`."""
+    max_connections: int | None = None
+    """Connections to this store at once, both pools. `None` takes the
+    transport's default: 64 on a Unix socket, `MaxSessions` less two over SSH
+    sessions. The build pool's share is the ceiling of the build limit, so a
+    high number here lets pressure decide. An idle nix-daemon worker costs
+    about 1 MiB (issue #98)."""
+    transfer_connections: int | None = None
+    """How many of `max_connections` serve transfers and reads; `None` is a
+    quarter, at least 2."""
     settings: PynixdSettings | None = None
     reconnect: bool = True
     reconnect_min_delay: float = 1.0
