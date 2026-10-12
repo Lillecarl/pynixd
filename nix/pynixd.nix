@@ -23,6 +23,7 @@
   pydantic,
   pydantic-settings,
   prometheus-client,
+  rich,
   anyio,
   uvloop,
   nix-daemon-protocol,
@@ -78,6 +79,7 @@ pythonBuilder (finalAttrs: {
     pydantic
     pydantic-settings
     prometheus-client
+    rich
     anyio
     uvloop
     watchdog

@@ -24,6 +24,7 @@ dependencies = [
     "passlib",
     "cachetools",
     "prometheus_client",
+    "rich",
     "uvloop",
     "anyio",
     "nix-daemon-protocol>=0.1.0",
