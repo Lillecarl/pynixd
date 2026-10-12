@@ -17,10 +17,10 @@ from __future__ import annotations
 import json
 import os
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, NamedTuple
+from typing import TYPE_CHECKING, Literal, NamedTuple, get_args
 from weakref import WeakSet
 
 import structlog
@@ -35,6 +35,8 @@ from prometheus_client import (
 from prometheus_client.core import CounterMetricFamily, GaugeMetricFamily
 
 from nix_daemon_protocol.store_dir import real_store_dir
+
+from .state_models import WaitReason
 
 if TYPE_CHECKING:
     from .build_queue import BuildQueue
@@ -74,9 +76,9 @@ CLIENT_OP_SECONDS_MAX = Gauge(
 )
 
 
-def watch_waiting(reasons: Callable[[], dict[str, int]]) -> None:
+def watch_waiting(reasons: Callable[[], Mapping[WaitReason, int]]) -> None:
     """Answer `pynixd_builds_waiting` from *reasons* at each scrape."""
-    for reason in ("local_slot", "unwanted", "scheduling"):
+    for reason in get_args(WaitReason):
         BUILDS_WAITING.labels(reason=reason).set_function(lambda reason=reason: reasons().get(reason, 0))
 
 
@@ -93,8 +95,9 @@ def watch_queue(queue: BuildQueue) -> None:
     the increments did (#89). The last queue bound wins, which is the
     scheduler's own: there is one per server.
     """
-    for status in ("pending", "building", "done"):
-        QUEUE_SIZE.labels(status=status).set_function(lambda status=status: queue.counts()[status])
+    QUEUE_SIZE.labels(status="pending").set_function(lambda: queue.counts().pending)
+    QUEUE_SIZE.labels(status="building").set_function(lambda: queue.counts().building)
+    QUEUE_SIZE.labels(status="done").set_function(lambda: queue.counts().done)
 
 
 BUILD_DURATION = Histogram(

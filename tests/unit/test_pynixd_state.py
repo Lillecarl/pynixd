@@ -24,6 +24,7 @@ from pynixd.scheduler import Scheduler
 from pynixd.serde.auth import Role
 from pynixd.serde.context import ReadContext, WriteContext
 from pynixd.sessions import ClientSessions
+from pynixd.state_models import FederatedError, QueueCounts, StateReport, StoreRow
 from pynixd.wire import BytesReader, BytesWriter
 from tests.functional.mock_store import MockStore
 from tests.unit.test_local_build_slots import (
@@ -75,28 +76,29 @@ def _ctx(
 
 def test_collect_counts_queue_by_state() -> None:
     ctx = _ctx(builds=[_build(done=True), _build(building=True), _build(), _build()])
-    sections = state_collector.collect(cast("PynixdContext", ctx), ["queue"])
-    assert sections == {"queue": {"scheduler": True, "pending": 2, "building": 1, "done": 1}}
+    report = state_collector.collect(cast("PynixdContext", ctx), ["queue"])
+    assert report == StateReport(queue=QueueCounts(pending=2, building=1, done=1))
 
 
 def test_collect_without_scheduler_reports_none() -> None:
     ctx = SimpleNamespace(scheduler=None, stores={}, sessions=ClientSessions())
-    sections = state_collector.collect(cast("PynixdContext", ctx), ["queue"])
-    assert sections["queue"]["scheduler"] is False
+    report = state_collector.collect(cast("PynixdContext", ctx), ["queue"])
+    assert report.queue == QueueCounts(scheduler=False)
 
 
 def test_collect_names_stores_and_sessions() -> None:
     store = SimpleNamespace(is_healthy=True, feature_matrix={"x86_64-linux": {"kvm"}})
     ctx = _ctx(stores={StoreId("builder-a"): store})
-    sections = state_collector.collect(cast("PynixdContext", ctx), ["stores", "sessions", "no-such-section"])
-    assert sections["stores"] == {"builder-a": {"healthy": True, "systems": ["x86_64-linux"]}}
-    assert sections["sessions"] == {}
-    assert "no-such-section" not in sections
+    report = state_collector.collect(cast("PynixdContext", ctx), ["stores", "sessions", "no-such-section"])
+    assert report.stores == {"builder-a": StoreRow(healthy=True, systems=["x86_64-linux"])}
+    assert report.sessions == {}
+    assert report.queue is None
 
 
 def test_collect_empty_wants_answers_everything() -> None:
-    sections = state_collector.collect(cast("PynixdContext", _ctx()), [])
-    assert set(sections) == set(state_collector.KNOWN_SECTIONS)
+    report = state_collector.collect(cast("PynixdContext", _ctx()), [])
+    answered = {name for name in StateReport.model_fields if getattr(report, name) is not None}
+    assert answered == set(state_collector.KNOWN_SECTIONS)
 
 
 @pytest.mark.anyio
@@ -109,7 +111,8 @@ async def test_query_one_marks_a_hanging_store_unreachable() -> None:
     started = time.monotonic()
     answer = await _query_one(cast(Any, store), [], timeout=0.1)
     assert time.monotonic() - started < 10.0
-    assert "no answer" in answer["error"]
+    assert isinstance(answer, FederatedError)
+    assert "no answer" in answer.error
 
 
 @pytest.mark.anyio
@@ -119,7 +122,7 @@ async def test_query_one_marks_a_stock_daemon_unimplemented() -> None:
 
     store = SimpleNamespace(execute=refuse, features={"PynixdState"})
     answer = await _query_one(cast(Any, store), [])
-    assert answer == {"error": "state op not implemented by this store"}
+    assert answer == FederatedError(error="state op not implemented by this store")
 
 
 class FakeProxy:
@@ -222,9 +225,9 @@ async def test_federated_merge_marks_failures() -> None:
         },
     )
     merged = await _federated_sections(cast(Any, FakeContext(proxy=proxy, role=Role.ADMIN)), ["queue"])
-    assert merged["good"] == {"queue": {"pending": 3}}
-    assert merged["old"] == {"error": "state op not implemented by this store"}
-    assert merged["quiet"] == {"error": "state op not advertised by this store"}
+    assert merged["good"] == StateReport(queue=QueueCounts(pending=3))
+    assert merged["old"] == FederatedError(error="state op not implemented by this store")
+    assert merged["quiet"] == FederatedError(error="state op not advertised by this store")
     assert quiet.calls == []
     assert LOCAL_STORE_ID not in merged and "local" not in merged
 
@@ -247,12 +250,14 @@ async def test_builds_say_why_a_pending_build_waits() -> None:
     running.build_task = cast("Any", _NeverDone())
     await queue.enqueue(_slot_request("2"), from_goal_path=True, goal_request_id=RequestId(7), options=_slot_options(1))
 
-    rows = {row["state"]: row for row in state_collector.collect(cast("PynixdContext", ctx), ["builds"])["builds"]}
+    builds = state_collector.collect(cast("PynixdContext", ctx), ["builds"]).builds
+    assert builds is not None
+    rows = {row.state: row for row in builds}
 
-    assert rows["building"]["store"] == "local"
-    assert "waits_for" not in rows["building"]
-    assert rows["pending"]["requests"] == {"7": 1}
-    assert rows["pending"]["waits_for"].startswith("a local slot")
+    assert rows["building"].store == "local"
+    assert rows["building"].waits_for is None
+    assert rows["pending"].requests == {7: 1}
+    assert rows["pending"].waits_for == "local_slot"
     # The same reason, as `pynixd_builds_waiting` scrapes it.
     assert REGISTRY.get_sample_value("pynixd_builds_waiting", {"reason": "local_slot"}) == 1
 
@@ -273,7 +278,8 @@ def test_clients_name_the_operation_each_session_runs() -> None:
     ctx.sessions.track(cast("Any", busy), None)
     ctx.sessions.track(cast("Any", idle), None)
 
-    rows = state_collector.collect(cast("PynixdContext", ctx), ["clients"])["clients"]
+    rows = state_collector.collect(cast("PynixdContext", ctx), ["clients"]).clients
+    assert rows is not None
 
-    assert [(row["user"], row["op"]) for row in rows] == [("alice", "BuildPaths"), ("bob", None)]
-    assert rows[0]["op_s"] >= 30
+    assert [(row.user, row.op) for row in rows] == [("alice", "BuildPaths"), ("bob", None)]
+    assert (rows[0].op_s or 0) >= 30

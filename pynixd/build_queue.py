@@ -19,6 +19,7 @@ from nix_daemon_protocol.protocol import ActivityType, Verbosity
 from . import metrics, wire
 from .serde import BuildDerivationResponse, BuildMode, BuildResult, BuildResultStatus
 from .serde.context import WriteContext
+from .state_models import QueueCounts
 from .store_path import StorePath
 
 if TYPE_CHECKING:
@@ -493,7 +494,7 @@ class BuildQueue:
         self._max_jobs: dict[RequestId, int | None] = {}
         self.lock: anyio.Lock = anyio.Lock()
 
-    def counts(self) -> dict[str, int]:
+    def counts(self) -> QueueCounts:
         """Builds by state, from a walk of the queue.
 
         The queue gauge and `pynixd state` both read this. Counting by
@@ -501,15 +502,15 @@ class BuildQueue:
         as pending, and a retry took a second pending decrement, so dynhetz
         read pending -2 and more builds running than connections (#89).
         """
-        counts = {"pending": 0, "building": 0, "done": 0}
+        pending = building = done = 0
         for build in self._queue:
             if build.is_done:
-                counts["done"] += 1
+                done += 1
             elif build.is_building:
-                counts["building"] += 1
+                building += 1
             elif build.is_pending:
-                counts["pending"] += 1
-        return counts
+                pending += 1
+        return QueueCounts(pending=pending, building=building, done=done)
 
     def max_jobs_of(self, request_id: RequestId) -> int | None:
         """`max-jobs` of a live goal request, or `None` when it named none."""

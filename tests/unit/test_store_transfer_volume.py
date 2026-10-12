@@ -27,6 +27,7 @@ from pynixd.serde import (
     UnkeyedValidPathInfo,
 )
 from pynixd.sessions import ClientSessions
+from pynixd.state_models import StoreTransfer
 from pynixd.store import transfer as transfer_module
 from pynixd.store.transfer import stream_paths_store_to_store
 from pynixd.substitution_queue import SubstitutionCandidate, SubstitutionQueue
@@ -237,16 +238,10 @@ def test_transfers_section_carries_per_store_volume() -> None:
         stores={"vol-section": object(), "vol-section-quiet": object()},
         sessions=ClientSessions(),
     )
-    sections = state_collector.collect(cast("Any", ctx), ["transfers"])
-    stores = sections["transfers"]["stores"]
-    assert stores["vol-section"]["bytes_out"] >= 40
-    assert stores["vol-section"]["paths_out"] >= 1
-    assert stores["vol-section-quiet"] == {
-        "bytes_in": 0,
-        "bytes_out": 0,
-        "paths_in": 0,
-        "paths_out": 0,
-        "wire_bytes_in": 0,
-        "wire_bytes_out": 0,
-    }
-    assert sections["transfers"]["bytes_received"] >= 0
+    transfers = state_collector.collect(cast("Any", ctx), ["transfers"]).transfers
+    assert transfers is not None
+    stores = transfers.stores
+    assert stores["vol-section"].bytes_out >= 40
+    assert stores["vol-section"].paths_out >= 1
+    assert stores["vol-section-quiet"] == StoreTransfer()
+    assert transfers.bytes_received >= 0

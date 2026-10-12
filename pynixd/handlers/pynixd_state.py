@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import json
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 import anyio
 import structlog
@@ -15,6 +14,7 @@ from ..daemon_extensions.pynixd_state import PynixdStateRequest, PynixdStateResp
 from ..exceptions import OpNotImplementedError
 from ..serde.auth import Role
 from ..serde.context import ReadContext
+from ..state_models import FederatedError, StateReport
 from ._base import Handler
 
 if TYPE_CHECKING:
@@ -29,7 +29,9 @@ the store is wedged or gone, and it is marked unreachable instead of
 wedging `pynixd state` behind it. Issue #81."""
 
 
-async def _query_one(store: Store, wants: list[str], timeout: float = FEDERATED_STORE_TIMEOUT) -> dict[str, Any]:
+async def _query_one(
+    store: Store, wants: list[str], timeout: float = FEDERATED_STORE_TIMEOUT
+) -> StateReport | FederatedError:
     """One store's own sections, or why it has none to give.
 
     Support is decided from the handshake cache before anything is sent,
@@ -39,33 +41,33 @@ async def _query_one(store: Store, wants: list[str], timeout: float = FEDERATED_
     under us. Issue #82.
     """
     if PynixdStateRequest.name not in store.features:
-        return {"error": "state op not advertised by this store"}
+        return FederatedError(error="state op not advertised by this store")
     try:
         with anyio.fail_after(timeout):
             resp = await store.execute(
                 PynixdStateRequest(version=1, wants=wants, federated=False),
             )
     except OpNotImplementedError:
-        return {"error": "state op not implemented by this store"}
+        return FederatedError(error="state op not implemented by this store")
     except TimeoutError:
-        return {"error": f"no answer in {timeout} seconds"}
+        return FederatedError(error=f"no answer in {timeout} seconds")
     except Exception as exc:
         log.warning("state_federated_store_failed", error=str(exc), exc_info=True)
-        return {"error": f"{type(exc).__name__}: {exc}"}
+        return FederatedError(error=f"{type(exc).__name__}: {exc}")
     try:
-        return json.loads(resp.payload)
+        return StateReport.model_validate_json(resp.payload)
     except (ValueError, AttributeError) as exc:
-        return {"error": f"unreadable answer: {exc}"}
+        return FederatedError(error=f"unreadable answer: {exc}")
 
 
-async def _federated_sections(ctx: RequestContext, wants: list[str]) -> dict[str, Any]:
+async def _federated_sections(ctx: RequestContext, wants: list[str]) -> dict[str, StateReport | FederatedError]:
     """Every non-local store's answer, keyed by store id.
 
     One level only: the queries go out with `federated` false, so a store
     answers itself and no topology can loop. A task group bounds the whole
     fan-out by the slowest store, not the sum of them.
     """
-    merged: dict[str, Any] = {}
+    merged: dict[str, StateReport | FederatedError] = {}
 
     async def query(store_id: object, store: Store) -> None:
         merged[str(store_id)] = await _query_one(store, wants)
@@ -95,7 +97,7 @@ class PynixdStateHandler(Handler):
             )
             return None
 
-        payload = state_collector.collect(ctx.proxy.ctx, req.wants)
+        report = state_collector.collect(ctx.proxy.ctx, req.wants)
         if req.federated:
-            payload["federated"] = await _federated_sections(ctx, req.wants)
-        return PynixdStateResponse(version=1, payload=json.dumps(payload))
+            report = report.model_copy(update={"federated": await _federated_sections(ctx, req.wants)})
+        return PynixdStateResponse(version=1, payload=report.model_dump_json(exclude_none=True))

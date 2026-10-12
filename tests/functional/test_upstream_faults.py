@@ -149,8 +149,8 @@ async def test_a_read_the_daemon_stops_answering_shows_then_fails_and_the_next_o
         tg.start_soon(ask)
         await anyio.sleep(_READ_TIMEOUT / 2)
         (row,) = upstream_in_flight(rig.server.ctx)
-        assert row["op"] == "IsValidPathRequest"
-        assert row["silent_s"] >= 1
+        assert row.op == "IsValidPathRequest"
+        assert row.silent_s >= 1
         # The same, as a Prometheus scrape sees it.
         assert _sample("pynixd_upstream_ops_waiting", store_id="local") == 1
         assert (_sample("pynixd_upstream_silence_seconds_max", store_id="local") or 0) >= 1

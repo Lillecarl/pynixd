@@ -479,12 +479,12 @@ class Server:
             await anyio.sleep(SILENT_UPSTREAM_CHECK)
             live: set[tuple[str, str]] = set()
             for row in upstream_in_flight(self.ctx):
-                key = (row["conn"], row["op"])
-                if row["silent_s"] < SILENT_UPSTREAM_WARN:
+                key = (row.conn, row.op)
+                if row.silent_s < SILENT_UPSTREAM_WARN:
                     continue
                 live.add(key)
                 if key not in warned:
-                    log.warning("upstream_silent", **row)
+                    log.warning("upstream_silent", **row.model_dump())
             warned = live
 
     async def _liveness_tick(self, watch: LivenessWatch, interval: float, dirty: DirtyFlag) -> None:
