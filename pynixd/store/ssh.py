@@ -345,8 +345,10 @@ class SSHSubprocessStore(SSHStore):
     `_send_probe` does not catch, so the store goes into a 300 second
     cooldown. Issue #43, found while bounding the probe in #15.
 
-    Two below the ceiling, so a session somebody else opens on the same
-    connection still fits. It stays above `PROBE_CONCURRENCY`: the probe's
+    Two below the ceiling: the monitor holds one session (`pynixd-agent`,
+    or the SFTP poller), and one stays free for a session somebody else
+    opens on the same connection. The agent's one-time upload borrows that
+    free one. It stays above `PROBE_CONCURRENCY`: the probe's
     builds are pool connections too, and a pool no wider than the probe would
     let a probe block every other caller."""
 
