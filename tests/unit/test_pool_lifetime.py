@@ -19,7 +19,12 @@ from pynixd.store.pool import ConnectionPool
 
 
 class FakeReader:
+    bytes_read = 0
+
     async def is_dirty(self) -> bool:
+        return False
+
+    def peer_closed(self) -> bool:
         return False
 
 

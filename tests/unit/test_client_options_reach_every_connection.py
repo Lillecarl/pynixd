@@ -278,7 +278,13 @@ async def test_the_build_carries_the_set_of_the_client_that_asked() -> None:
 
 
 class FakeIo:
+    bytes_read = 0
+    bytes_written = 0
+
     async def is_dirty(self) -> bool:
+        return False
+
+    def peer_closed(self) -> bool:
         return False
 
     async def close(self) -> None:

@@ -233,6 +233,17 @@ class ConnectionPool:
                     await candidate.close()
                 continue
 
+            if candidate.r.peer_closed():
+                # The daemon closed it while it sat idle, as a restart does
+                # to every pooled link. Handing it out failed the next
+                # client with an IncompleteReadError (#93).
+                log.info("pool_discarding_closed_by_peer", store_id=self.store_id, conn_id=candidate.id)
+                if candidate in self.all_conns:
+                    self.all_conns.remove(candidate)
+                with suppress(Exception):
+                    await candidate.close()
+                continue
+
             if candidate.dirty or await candidate.r.is_dirty():
                 log.warning(
                     "pool_discarding_dirty_conn",

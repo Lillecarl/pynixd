@@ -134,6 +134,14 @@ class NixReader:
     def _transport_is_dirty(self) -> bool:
         return False
 
+    def peer_closed(self) -> bool:
+        """Has the other side closed the stream, with nothing left to read?
+
+        The transport reads while a connection sits idle, so a close lands
+        here before anyone asks for the next byte.
+        """
+        return False
+
 
 class SSHNixReader(NixReader):
     # Read ahead, because a call costs the same whatever it asks for. The NAR
@@ -192,6 +200,9 @@ class SSHNixReader(NixReader):
             return b"".join(parts)
         except ssh_connection_lost():
             raise EOFError("SSH connection lost") from None
+
+    def peer_closed(self) -> bool:
+        return self._pos >= len(self._buf) and self.reader.at_eof()
 
     def _transport_is_dirty(self) -> bool:
         if (len(self._buf) - self._pos) > 0:
@@ -270,6 +281,9 @@ class UnixNixReader(NixReader):
         if (len(self._buf) - self._pos) > 0:
             return True
         return bool(self.reader._buffer)  # type: ignore[attr-defined]
+
+    def peer_closed(self) -> bool:
+        return self._pos >= len(self._buf) and self.reader.at_eof()
 
 
 class StrCoercible(Protocol):
