@@ -1,7 +1,6 @@
 """Tests for the build log pub/sub system (QueuedBuild subscribers + byte buffer replay)."""
 
 import asyncio
-import contextlib
 
 import anyio
 import pytest
@@ -92,26 +91,26 @@ async def test_build_log_pubsub_two_clients():
 
     # Trigger scheduling — this assigns the build and spawns execute_build.
     # The build will block on build_blocker inside MockStore.execute_mock().
-    await scheduler.schedule()
-    await anyio.sleep(0.05)
+    async with scheduler.workers():
+        await scheduler.schedule()
+        await anyio.sleep(0.05)
 
-    # Verify the build is blocked (assigned but waiting).
-    queued_build = scheduler.queue.by_id[build_id]
-    assert queued_build.is_building
+        # Verify the build is blocked (assigned but waiting).
+        queued_build = scheduler.queue.by_id[build_id]
+        assert queued_build.is_building
 
-    # Release the block after a short delay to simulate build execution time.
-    # In a real scenario this would be ~10s; here we use a brief delay so the
-    # test stays fast while still exercising the timing-sensitive path.
-    async def release_blocker():
-        await anyio.sleep(0.2)  # Simulate build execution time
-        build_blocker.set()
+        # Release the block after a short delay to simulate build execution
+        # time, so the test stays fast and still takes the timing-sensitive path.
+        async def release_blocker():
+            await anyio.sleep(0.2)
+            build_blocker.set()
 
-    release_task = asyncio.create_task(release_blocker())
+        release_task = asyncio.create_task(release_blocker())
 
-    # Wait for the build to complete (this is when _execute() fans out logs).
-    resp = await future
-    assert resp.result.status == BuildResultStatus.BUILT
-    await release_task
+        # Wait for the build to complete (this is when _execute() fans out logs).
+        resp = await future
+        assert resp.result.status == BuildResultStatus.BUILT
+        await release_task
 
     # Now subscribe client2 — the build is already done, so add_subscriber
     # will replay the full _log_buf.
@@ -232,24 +231,18 @@ async def test_client_bound_active_build_task_cancels_after_last_unsubscribe():
     client = ClientConn(BytesWriter("client"))
     assert await scheduler.queue.subscribe(build_id, client, cancel_on_unsubscribe=True)
 
-    await scheduler.schedule()
-    build = scheduler.queue.by_id[build_id]
-    for _ in range(20):
-        if build.is_building:
-            break
-        await anyio.sleep(0.01)
+    async with scheduler.workers():
+        await scheduler.schedule()
+        build = scheduler.queue.by_id[build_id]
+        assert build.is_building
+        assert await scheduler.queue.unsubscribe(build_id, client)
 
-    build_task = build.build_task
-    assert build_task is not None
-    assert await scheduler.queue.unsubscribe(build_id, client)
+        for _ in range(20):
+            if not build.is_building:
+                break
+            await anyio.sleep(0.01)
 
-    for _ in range(20):
-        if build_task.done():
-            break
-        await anyio.sleep(0.01)
-
-    assert build_task.done()
+        # The worker left: it saw the cancel, not the blocked build's end.
+        assert not build.is_building
     assert future.done()
     assert future.result().result.status == BuildResultStatus.MISC_FAILURE
-    with contextlib.suppress(asyncio.CancelledError):
-        await build_task

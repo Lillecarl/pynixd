@@ -28,7 +28,6 @@ from pynixd.state_models import FederatedError, QueueCounts, StateReport, StoreR
 from pynixd.wire import BytesReader, BytesWriter
 from tests.functional.mock_store import MockStore
 from tests.unit.test_local_build_slots import (
-    _NeverDone,
     _options as _slot_options,
     _request as _slot_request,
 )
@@ -247,7 +246,7 @@ async def test_builds_say_why_a_pending_build_waits() -> None:
     )
     running = queue.by_id[running_id]
     running.assigned_store_id = LOCAL_STORE_ID
-    running.build_task = cast("Any", _NeverDone())
+    running.worker = anyio.CancelScope()
     await queue.enqueue(_slot_request("2"), from_goal_path=True, goal_request_id=RequestId(7), options=_slot_options(1))
 
     builds = state_collector.collect(cast("PynixdContext", ctx), ["builds"]).builds

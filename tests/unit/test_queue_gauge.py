@@ -8,9 +8,7 @@ than there were store connections.
 
 from __future__ import annotations
 
-import asyncio
-from typing import Any, cast
-
+import anyio
 from prometheus_client import REGISTRY
 
 from pynixd import metrics
@@ -26,11 +24,6 @@ def _request(name: str) -> BuildDerivationRequest:
     )
 
 
-class _Running:
-    def done(self) -> bool:
-        return False
-
-
 def _gauge(status: str) -> float | None:
     return REGISTRY.get_sample_value("pynixd_build_queue_size", {"status": status})
 
@@ -42,10 +35,8 @@ async def test_a_build_that_fails_after_its_task_ended_moves_no_gauge_wrongly() 
     running_id, _ = await queue.enqueue(_request("b"))
     ended_id, _ = await queue.enqueue(_request("c"))
 
-    queue.by_id[running_id].build_task = cast("Any", _Running())
-    ended = asyncio.get_running_loop().create_future()
-    ended.set_result(None)
-    queue.by_id[ended_id].build_task = cast("Any", ended)
+    queue.by_id[running_id].worker = anyio.CancelScope()
+    # The worker of this one already ended, so no handle is left.
     await queue.fail(ended_id, "the store went away")
 
     assert (_gauge("pending"), _gauge("building"), _gauge("done")) == (1.0, 1.0, 1.0)

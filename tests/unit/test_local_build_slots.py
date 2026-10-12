@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, cast
 
+import anyio
 import pytest
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, RequestId, StoreId
@@ -172,11 +173,6 @@ def test_the_count_that_reaches_the_limit_is_the_count_of_builds() -> None:
 # ── Each client counts its own builds. Issue #89 ──────────────────────────
 
 
-class _NeverDone:
-    def done(self) -> bool:
-        return False
-
-
 class _SlotScheduler:
     request_has_a_local_slot = Scheduler.request_has_a_local_slot
 
@@ -192,7 +188,7 @@ async def _local_build(queue: BuildQueue, name: str, request: RequestId, jobs: i
     build = queue.by_id[build_id]
     if running:
         build.assigned_store_id = LOCAL_STORE_ID
-        build.build_task = cast("Any", _NeverDone())
+        build.worker = anyio.CancelScope()
     return build
 
 
@@ -290,6 +286,11 @@ class _AssignScheduler:
         del store
         self.executed.append(build.build_id)
 
+    def _spawn_worker(self, build: QueuedBuild, store: object) -> None:
+        """Marks the build as building and runs nothing: the assignment is the unit."""
+        del store
+        build.worker = anyio.CancelScope()
+
 
 def _request(name: str) -> BuildDerivationRequest:
     return BuildDerivationRequest(
@@ -334,7 +335,7 @@ async def test_the_slot_a_failure_frees_does_not_go_to_the_same_request() -> Non
     )
 
     assert scheduler.executed == []
-    assert pending.build_task is None
+    assert not pending.is_building
     assert waiting == []
     # **And it is answered, not left pending.** A goal of the same request can
     # still be awaiting this future -- an input of a root that has not
@@ -363,8 +364,6 @@ async def test_keep_going_still_gives_the_slot_to_the_next_build() -> None:
         {},
     )
 
-    # The assignment is what the rule governs. `execute_build` runs in a task
-    # that the loop has not stepped yet when `_assign_to_stores` returns, so
-    # the task is the observable and `scheduler.executed` is not.
-    assert pending.build_task is not None
-    pending.build_task.cancel()
+    # The assignment is what the rule governs, so the worker handle is the
+    # observable and `scheduler.executed` is not.
+    assert pending.is_building

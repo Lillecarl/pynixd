@@ -14,6 +14,7 @@ they are pulled automatically.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from typing import TYPE_CHECKING
 
@@ -34,7 +35,9 @@ from .substitution_queue import SubstitutionQueue
 from .system_features import effective_required_features
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
+    from collections.abc import AsyncIterator, Iterable, Mapping
+
+    from anyio.abc import TaskGroup
 
     from nix_daemon_protocol.aliases import StorePathSet
     from nix_daemon_protocol.ids import BuildId, RequestId, StoreId
@@ -82,6 +85,7 @@ class Scheduler:
         self.allocator = BuildAllocator(self.stores, self.local_store, self.ranker)
         self.trigger_event = anyio.Event()
         self.running = False
+        self._workers: TaskGroup | None = None
 
     @property
     def stores(self) -> dict[StoreId, DaemonStore]:
@@ -166,13 +170,13 @@ class Scheduler:
         pending = await self.queue.get_pending()
         for build in pending:
             if build.assigned_store_id == store_id:
-                if build.build_task and not build.build_task.done():
+                if build.is_building:
                     log.info(
                         "cancelling_build_for_store_removal",
                         build_id=build.build_id,
                         store_id=store_id,
                     )
-                    build.build_task.cancel()
+                    build.cancel_worker()
                 build.reset_for_retry(store_id)
 
         self.trigger()
@@ -219,24 +223,61 @@ class Scheduler:
         )
         return res
 
+    @contextlib.asynccontextmanager
+    async def workers(self) -> AsyncIterator[None]:
+        """The task group every build runs in. Leaving it cancels them all."""
+        async with anyio.create_task_group() as tg:
+            self._workers = tg
+            try:
+                yield
+            finally:
+                self._workers = None
+                tg.cancel_scope.cancel()
+
+    def _spawn_worker(self, build: QueuedBuild, store: DaemonStore) -> None:
+        workers = self._workers
+        if workers is None:
+            raise RuntimeError("builds run only inside Scheduler.workers")
+        scope = anyio.CancelScope()
+        build.worker = scope
+        workers.start_soon(self._run_worker, build, store, scope)
+
+    async def _run_worker(self, build: QueuedBuild, store: DaemonStore, scope: anyio.CancelScope) -> None:
+        # One crashed build must not cancel its siblings in the group.
+        try:
+            # A cancel from before the start lands at the first await only,
+            # after `execute_build` has already marked paths and named a store.
+            if scope.cancel_called:
+                return
+            with scope:
+                await self.execute_build(build, store)
+        except Exception:
+            # Failed, not left pending: the loop would retry a deterministic
+            # crash on every pass. `fail` raises ValueError for a pruned build.
+            log.exception("build_worker_crashed", build_id=build.build_id)
+            with contextlib.suppress(ValueError):
+                await self.queue.fail(build.build_id, "Internal scheduler error")
+        finally:
+            build.worker_ended(scope)
+            self.trigger()
+
     async def start(self) -> None:
-        """Start the scheduler loop."""
+        """Run the scheduler loop. Its end cancels every build."""
         self.running = True
         log.info("scheduler_started")
-        while self.running:
-            try:
-                await self.trigger_event.wait()
-                self.trigger_event = anyio.Event()
-                await self.schedule()
-                await anyio.sleep(0.01)
-            except anyio.get_cancelled_exc_class():
-                break
-            except Exception:
-                log.exception("scheduler_pass_failed")
-                await anyio.sleep(1.0)
+        async with self.workers():
+            while self.running:
+                try:
+                    await self.trigger_event.wait()
+                    self.trigger_event = anyio.Event()
+                    await self.schedule()
+                    await anyio.sleep(0.01)
+                except Exception:
+                    log.exception("scheduler_pass_failed")
+                    await anyio.sleep(1.0)
 
     async def stop(self) -> None:
-        """Stop the scheduler and cancel all pending builds."""
+        """Stop the scheduler loop, which cancels every build."""
         self.running = False
         self.trigger()
 
@@ -404,9 +445,7 @@ class Scheduler:
                 # running builds reads this field, and a task that has not
                 # started yet would otherwise carry no store and go uncounted.
                 build.assigned_store_id = rs.store_id
-                build.build_task = asyncio.create_task(
-                    self.execute_build(build, rs.store),
-                )
+                self._spawn_worker(build, rs.store)
                 assigned_this_pass[rs.store_id] = assigned_this_pass.get(rs.store_id, 0) + 1
             else:
                 # All compatible stores are busy, or this build can't be placed

@@ -141,7 +141,12 @@ class QueuedBuild:
         self.finished_at: float | None = None
         self.retries = 0
         self.store_failures: dict[StoreId, int] = {}
-        self.build_task: asyncio.Task[object] | None = None
+        self.worker: anyio.CancelScope | None = None
+        """The scope of the worker that runs this build, from assignment until it ends.
+
+        `Scheduler._assign_to_stores` makes it before the worker starts, so a
+        pass that runs first counts the build as building. A cancel before the
+        worker enters the scope cancels it on entry."""
 
         self.from_goal_path: bool = False
 
@@ -183,8 +188,17 @@ class QueuedBuild:
 
     @property
     def is_building(self) -> bool:
-        """Whether a build task is currently running."""
-        return self.build_task is not None and not self.build_task.done()
+        """Whether a worker runs this build, or is about to."""
+        return self.worker is not None
+
+    def cancel_worker(self) -> None:
+        if self.worker is not None:
+            self.worker.cancel()
+
+    def worker_ended(self, scope: anyio.CancelScope) -> None:
+        """The worker of *scope* is gone. A retry may already run a newer one."""
+        if self.worker is scope:
+            self.worker = None
 
     @property
     def is_done(self) -> bool:
@@ -209,7 +223,7 @@ class QueuedBuild:
         """
         self.retries += 1
         self.started_at = None
-        self.build_task = None
+        self.worker = None
 
         # Increment failure count for this specific store
         self.store_failures[failed_store_id] = self.store_failures.get(failed_store_id, 0) + 1
@@ -218,7 +232,7 @@ class QueuedBuild:
         """Reset state because store was temporarily busy/stressed.
         Does NOT increment retries or change failure counts.
         """
-        self.build_task = None
+        self.worker = None
         self.started_at = None
 
     @property
@@ -881,8 +895,7 @@ class BuildQueue:
         reading a run can still find it.
         """
         build.finished_at = time.monotonic()
-        if build.build_task is not None and not build.build_task.done():
-            build.build_task.cancel()
+        build.cancel_worker()
         response = BuildDerivationResponse(
             result=BuildResult(
                 status=BuildResultStatus.MISC_FAILURE,

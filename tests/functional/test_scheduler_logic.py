@@ -30,6 +30,15 @@ PSI-aware routing) with zero flakiness and high speed.
 """
 
 
+async def _one_pass(scheduler: Scheduler) -> None:
+    """One scheduling pass. Leaving the group cancels the builds it started.
+
+    The assignment is set before a worker runs, so it is what these tests read.
+    """
+    async with scheduler.workers():
+        await scheduler.schedule()
+
+
 @pytest.mark.xfail(reason="missing BuildDerivationRequest mock response in MockStore — pre-existing")
 async def test_scheduler_load_balancing():
     """Verify that the scheduler correctly assigns builds to idle remote stores.
@@ -72,21 +81,17 @@ async def test_scheduler_load_balancing():
         request,
     )
 
-    # 4. Trigger scheduler manually
-    await scheduler.schedule()
+    async with scheduler.workers():
+        # 4. Trigger scheduler manually
+        await scheduler.schedule()
 
-    # 5. Verify assignment (polling to account for background task startup)
-    queued_build = scheduler.queue.by_id[build_id]
-    for _ in range(10):
-        if queued_build.assigned_store_id is not None:
-            break
-        await anyio.sleep(0.01)
+        # 5. Verify assignment
+        queued_build = scheduler.queue.by_id[build_id]
+        assert queued_build.assigned_store_id == StoreId("remote1")
 
-    assert queued_build.assigned_store_id == StoreId("remote1")
-
-    # 6. Wait for completion
-    resp = await future
-    assert resp.result.status == BuildResultStatus.BUILT
+        # 6. Wait for completion
+        resp = await future
+        assert resp.result.status == BuildResultStatus.BUILT
 
 
 @pytest.mark.xfail(reason="missing BuildDerivationRequest mock response in MockStore — pre-existing")
@@ -135,7 +140,7 @@ async def test_scheduler_skips_saturated_store():
     )
 
     # Pass 1: No slots available anywhere (scores < 0)
-    await scheduler.schedule()
+    await _one_pass(scheduler)
 
     queued_build = scheduler.queue.by_id[build_id]
     assert queued_build.assigned_store_id is None
@@ -145,7 +150,7 @@ async def test_scheduler_skips_saturated_store():
     remote1.pool.active_connections = 0
 
     # Pass 2: Now it should be assigned
-    await scheduler.schedule()
+    await _one_pass(scheduler)
 
     # Wait for the build task to start and assign
     for _ in range(10):
@@ -204,7 +209,7 @@ async def test_scheduler_proactive_transfer():
     )
 
     # Pass 1: busy is best (has paths) but saturated. idle has slot but needs paths.
-    await scheduler.schedule()
+    await _one_pass(scheduler)
 
     queued_build = scheduler.queue.by_id[build_id]
 
@@ -269,7 +274,7 @@ async def test_scheduler_cpu_utilization():
         request,
     )
 
-    await scheduler.schedule()
+    await _one_pass(scheduler)
 
     queued_build = scheduler.queue.by_id[build_id]
 
@@ -330,7 +335,7 @@ async def test_scheduler_feature_matching():
         request,
     )
 
-    await scheduler.schedule()
+    await _one_pass(scheduler)
 
     queued_build = scheduler.queue.by_id[build_id]
 
@@ -364,7 +369,7 @@ async def test_scheduler_fails_build_for_unknown_platform():
         request,
     )
 
-    await scheduler.schedule()
+    await _one_pass(scheduler)
 
     build = scheduler.queue.by_id[build_id]
     assert build.is_done
@@ -394,7 +399,7 @@ async def test_scheduler_queues_build_for_dynamic_platform():
         request,
     )
 
-    await scheduler.schedule()
+    await _one_pass(scheduler)
 
     build = scheduler.queue.by_id[build_id]
     assert not build.is_done
@@ -421,7 +426,7 @@ async def test_scheduler_queues_build_for_dynamic_platform_with_features():
         request,
     )
 
-    await scheduler.schedule()
+    await _one_pass(scheduler)
 
     build = scheduler.queue.by_id[build_id]
     assert not build.is_done
@@ -447,7 +452,7 @@ async def test_scheduler_fails_build_for_missing_dynamic_feature():
         request,
     )
 
-    await scheduler.schedule()
+    await _one_pass(scheduler)
 
     build = scheduler.queue.by_id[build_id]
     assert build.is_done
@@ -507,7 +512,7 @@ async def test_dynamic_feature_matrix_survives_store_removal():
         request,
     )
 
-    await scheduler.schedule()
+    await _one_pass(scheduler)
 
     build = scheduler.queue.by_id[build_id]
     assert not build.is_done
