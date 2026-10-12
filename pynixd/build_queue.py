@@ -493,6 +493,24 @@ class BuildQueue:
         self._max_jobs: dict[RequestId, int | None] = {}
         self.lock: anyio.Lock = anyio.Lock()
 
+    def counts(self) -> dict[str, int]:
+        """Builds by state, from a walk of the queue.
+
+        The queue gauge and `pynixd state` both read this. Counting by
+        increments drifted: a build that failed after its task ended counted
+        as pending, and a retry took a second pending decrement, so dynhetz
+        read pending -2 and more builds running than connections (#89).
+        """
+        counts = {"pending": 0, "building": 0, "done": 0}
+        for build in self._queue:
+            if build.is_done:
+                counts["done"] += 1
+            elif build.is_building:
+                counts["building"] += 1
+            elif build.is_pending:
+                counts["pending"] += 1
+        return counts
+
     def max_jobs_of(self, request_id: RequestId) -> int | None:
         """`max-jobs` of a live goal request, or `None` when it named none."""
         return self._max_jobs.get(request_id)
@@ -630,7 +648,6 @@ class BuildQueue:
                 description=build.description,
                 request_ids=list(scheduler_request_ids),
             )
-            metrics.QUEUE_SIZE.labels(status="pending").inc()
             return build.build_id, future
 
     async def subscribe(self, build_id: BuildId, client: ClientConn, *, cancel_on_unsubscribe: bool = False) -> bool:
@@ -734,8 +751,6 @@ class BuildQueue:
                     self._note_a_request_that_gave_up(b, response.result.status)
                     log.info("build_completed", build_id=build_id)
 
-                    metrics.QUEUE_SIZE.labels(status="building").dec()
-                    metrics.QUEUE_SIZE.labels(status="done").inc()
                     status = "success" if response.result.status == BuildResultStatus.BUILT else "failure"
                     metrics.BUILDS_COMPLETED.labels(status=status).inc()
                     if b.build_time is not None:
@@ -780,11 +795,6 @@ class BuildQueue:
                     self._note_a_request_that_gave_up(b, response.result.status)
                     log.info("build_failed", build_id=build_id, error_msg=error_msg)
 
-                    if b.is_building:
-                        metrics.QUEUE_SIZE.labels(status="building").dec()
-                    else:
-                        metrics.QUEUE_SIZE.labels(status="pending").dec()
-                    metrics.QUEUE_SIZE.labels(status="done").inc()
                     metrics.BUILDS_COMPLETED.labels(status="failure").inc()
 
                     return
@@ -907,11 +917,6 @@ class BuildQueue:
         # method: a client that disconnected, and a goal system that let go.
         log.info("build_cancelled", build_id=build.build_id, reason=log_reason or error_msg)
 
-        if build.is_building:
-            metrics.QUEUE_SIZE.labels(status="building").dec()
-        else:
-            metrics.QUEUE_SIZE.labels(status="pending").dec()
-        metrics.QUEUE_SIZE.labels(status="done").inc()
         metrics.BUILDS_COMPLETED.labels(status="failure").inc()
 
     async def release_build(self, build_id: BuildId, request_id: RequestId) -> None:

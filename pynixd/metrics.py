@@ -37,6 +37,7 @@ from prometheus_client.core import CounterMetricFamily, GaugeMetricFamily
 from nix_daemon_protocol.store_dir import real_store_dir
 
 if TYPE_CHECKING:
+    from .build_queue import BuildQueue
     from .store.pool import ConnectionPool
 
 log = structlog.get_logger(__name__)
@@ -48,6 +49,18 @@ QUEUE_SIZE = Gauge(
     "Number of builds currently in the queue",
     ["status"],  # pending, building, done
 )
+
+
+def watch_queue(queue: BuildQueue) -> None:
+    """Answer the queue gauge from *queue* itself at each scrape.
+
+    A walk of a few hundred builds per scrape, and it cannot drift the way
+    the increments did (#89). The last queue bound wins, which is the
+    scheduler's own: there is one per server.
+    """
+    for status in ("pending", "building", "done"):
+        QUEUE_SIZE.labels(status=status).set_function(lambda status=status: queue.counts()[status])
+
 
 BUILD_DURATION = Histogram(
     "pynixd_build_duration_seconds",

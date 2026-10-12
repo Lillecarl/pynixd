@@ -72,6 +72,7 @@ class Scheduler:
     ) -> None:
         self.ctx = ctx
         self.queue = BuildQueue()
+        metrics.watch_queue(self.queue)
         self.substitution_queue = SubstitutionQueue(ctx)
         self.local_store = ctx.local_store
         self._dynamic_feature_matrix: dict[str, set[str]] = {}
@@ -398,8 +399,6 @@ class Scheduler:
                     store_id=rs.store_id,
                     score=rs.score,
                 )
-                metrics.QUEUE_SIZE.labels(status="pending").dec()
-                metrics.QUEUE_SIZE.labels(status="building").inc()
                 # Named here, and not in `execute_build` alone. The count of
                 # running builds reads this field, and a task that has not
                 # started yet would otherwise carry no store and go uncounted.

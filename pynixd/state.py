@@ -65,15 +65,7 @@ def _queue_section(ctx: PynixdContext) -> dict[str, Any]:
     scheduler = ctx.scheduler
     if scheduler is None:
         return {"scheduler": False, "pending": 0, "building": 0, "done": 0}
-    pending = building = done = 0
-    for build in scheduler.queue.queue:
-        if build.is_done:
-            done += 1
-        elif build.is_building:
-            building += 1
-        elif build.is_pending:
-            pending += 1
-    return {"scheduler": True, "pending": pending, "building": building, "done": done}
+    return {"scheduler": True, **scheduler.queue.counts()}
 
 
 def _builds_section(ctx: PynixdContext) -> list[dict[str, Any]]:

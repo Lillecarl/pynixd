@@ -13,6 +13,7 @@ import pytest
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, RequestId, StoreId
 from pynixd import metrics, state as state_collector
+from pynixd.build_queue import BuildQueue
 from pynixd.config import PynixdSettings
 from pynixd.context import PynixdContext
 from pynixd.daemon_extensions.pynixd_state import PynixdStateRequest
@@ -65,7 +66,8 @@ def _ctx(
     builds: list[SimpleNamespace] | None = None,
     stores: dict[object, object] | None = None,
 ) -> SimpleNamespace:
-    queue = SimpleNamespace(queue=list(builds or []))
+    queue = SimpleNamespace(queue=list(builds or []), _queue=list(builds or []))
+    queue.counts = lambda: BuildQueue.counts(cast("Any", queue))
     scheduler = SimpleNamespace(queue=queue)
     return SimpleNamespace(scheduler=scheduler, stores=stores or {}, sessions=ClientSessions())
 
