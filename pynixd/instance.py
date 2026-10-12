@@ -170,11 +170,11 @@ class Server:
             settings = PynixdSettings(**kwargs)
 
         if stores is None:
-            spec = LocalSocketStoreSpec(store_id=LOCAL_STORE_ID, monitor=False)
+            spec = LocalSocketStoreSpec(store_id=LOCAL_STORE_ID)
             stores = {LOCAL_STORE_ID: spec.to_store(str(LOCAL_STORE_ID))}
         elif LOCAL_STORE_ID not in stores:
             stores = dict(stores)
-            spec = LocalSocketStoreSpec(store_id=LOCAL_STORE_ID, monitor=False)
+            spec = LocalSocketStoreSpec(store_id=LOCAL_STORE_ID)
             stores[LOCAL_STORE_ID] = spec.to_store(str(LOCAL_STORE_ID))
 
         local_store = stores[LOCAL_STORE_ID]
