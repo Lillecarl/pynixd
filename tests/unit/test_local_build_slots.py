@@ -282,6 +282,10 @@ class _AssignScheduler:
         del build, running, assigned
         return False
 
+    def _has_build_room(self, store: object, running: object, assigned: object) -> bool:
+        del store, running, assigned
+        return True
+
     async def execute_build(self, build: QueuedBuild, store: object) -> None:
         del store
         self.executed.append(build.build_id)

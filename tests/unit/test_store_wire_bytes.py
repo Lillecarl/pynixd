@@ -119,7 +119,6 @@ def _pool() -> ConnectionPool:
     return ConnectionPool(
         store_id="wire-pool",
         factory=factory,
-        gate=cast("Any", None),
     )
 
 

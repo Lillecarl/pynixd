@@ -133,53 +133,33 @@ class SSHStore(DaemonStore):
         await self.close_ssh()
 
     def start_psi_polling(self, sftp: asyncssh.SFTPClient) -> None:
-        """Start resource pressure polling over SFTP using the GenericResourcePoller."""
-
-        """Start consolidated resource poller over SFTP."""
+        """Poll the builder's host over SFTP."""
         if not self.monitor_enabled:
-            # If monitoring is explicitly disabled, use dummy monitor with 0.0 load
             if self.monitor is None:
-                self.monitor = DummyResourceMonitor(self.gate, self.settings)
+                self.monitor = DummyResourceMonitor(self.pressure_settings, self.on_pressure_sample)
                 self.monitor.start()
             return
 
-        async def sftp_read(path: str) -> str:
-            async with sftp.open(path, "r") as f:
-                attrs = await f.stat()
-                if attrs.size:
-                    return await f.read()
-                chunks = []
-                while True:
-                    chunk = await f.read(65536)
-                    if not chunk:
-                        break
-                    chunks.append(chunk)
-                return "".join(chunks)
-
-        async def sftp_exists(path: str) -> bool:
+        async def sftp_read(path: str) -> str | None:
+            # /proc files report size 0, so read to EOF rather than by size.
             try:
-                await sftp.stat(path)
+                async with sftp.open(path, "r") as f:
+                    chunks = []
+                    while chunk := await f.read(65536):
+                        chunks.append(chunk)
+                    return "".join(chunks)
             except asyncssh.SFTPError:
-                return False
-            else:
-                return True
+                return None
 
         if self.monitor is None or isinstance(self.monitor, DummyResourceMonitor):
             if self.monitor:
                 task = asyncio.create_task(self.monitor.stop())
                 self._bg_tasks.add(task)
                 task.add_done_callback(self._bg_tasks.discard)
-            self.monitor = GenericResourcePoller(
-                self.gate,
-                self.settings,
-                sftp_read,
-                sftp_exists,
-            )
+            self.monitor = GenericResourcePoller(self.pressure_settings, self.on_pressure_sample, sftp_read)
             self.monitor.start()
 
     def stop_psi_polling(self) -> None:
-        """Cancel the resource polling task."""
-
         """Cancel the resource polling task."""
         if self.monitor is not None:
             task = asyncio.create_task(self.monitor.stop())
@@ -199,9 +179,7 @@ class SSHStore(DaemonStore):
         if self.monitor.health.psi is None:
             return None
 
-        # Stale check: 3x interval
-        interval = getattr(self.monitor, "interval", 5.0)
-        if time.monotonic() - self.monitor.health.timestamp > interval * 3:
+        if time.monotonic() - self.monitor.health.timestamp > self.monitor.interval * 3:
             return None
         return self.monitor.health.psi.pressure_score()
 

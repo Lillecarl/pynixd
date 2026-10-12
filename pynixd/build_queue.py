@@ -232,13 +232,6 @@ class QueuedBuild:
         # Increment failure count for this specific store
         self.store_failures[failed_store_id] = self.store_failures.get(failed_store_id, 0) + 1
 
-    def reset_for_busy(self) -> None:
-        """Reset state because store was temporarily busy/stressed.
-        Does NOT increment retries or change failure counts.
-        """
-        self.worker = None
-        self.started_at = None
-
     @property
     def wait_time(self) -> float | None:
         """Seconds between enqueue and build start."""

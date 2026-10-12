@@ -89,6 +89,58 @@ class StoreRankingSettings(BaseModel):
     """Minimum score required for a store to be considered. If lower, builds stay queued."""
 
 
+class PressureSettings(BaseModel):
+    """How the pressure of a builder moves its build limit. Issue #98.
+
+    A store runs at most its build limit of builds, between 1 and the size of
+    its build pool. Each signal has a high mark and a low mark. Past a high
+    mark the limit falls; under every low mark, with each slot in use, it
+    rises; between the two it holds, so one noisy sample cannot flap it.
+
+    Pressure is PSI `avg10` in percent of wall time, for the whole machine.
+    """
+
+    enabled: bool = True
+    """Off: the limit is the build pool size, and nothing moves it."""
+
+    interval: float = 2.0
+    """Seconds between two samples. The kernel updates `avg10` every 2 s."""
+
+    memory_full_high: float = 2.0
+    memory_full_low: float = 0.5
+    """`memory` `full`: each task stalls on memory. Past 2 % the machine thrashes."""
+
+    io_full_high: float = 25.0
+    io_full_low: float = 10.0
+    """`io` `full`. Network storage idles at several percent; dynhetz measured 3 %."""
+
+    cpu_some_high: float = 60.0
+    """`cpu` `some` at or past this holds the limit. CPU pressure never lowers
+    it: a builder with every core busy is the goal, and it does not thrash."""
+
+    load_per_core_high: float = 1.5
+    """The 1-minute load average per core that holds the limit, read only on
+    a builder with no PSI."""
+
+    min_available_memory_mb: int = 1024
+    """`MemAvailable` under this lowers the limit, and twice this holds it."""
+
+    decrease_factor: float = 0.5
+    """A fall sets the limit to this share of the builds that run."""
+
+    increase_step: int = 1
+    """A rise past slow start adds this many builds."""
+
+    settle: float = 10.0
+    """Seconds after a change before the next one. `avg10` needs about 10 s to
+    show what a change did; a shorter wait reacts to the old load."""
+
+    initial_limit: int | None = None
+    """The limit of the first sample. `None` takes the core count of the
+    builder, or 1 when it is unknown. Until the first fall the limit doubles
+    at each rise, from this number."""
+
+
 class StoreSpecBase(BaseModel):
     """Common settings shared by all store specs."""
 
@@ -165,6 +217,8 @@ class StoreSpecBase(BaseModel):
     default, and `store/daemon.py` read it with `getattr` because the base
     did not have it.
     """
+    pressure: PressureSettings | None = None
+    """This store's pressure settings; `None` takes `PynixdSettings.pressure`."""
     settings: PynixdSettings | None = None
     reconnect: bool = True
     reconnect_min_delay: float = 1.0
@@ -808,13 +862,7 @@ class PynixdSettings(BaseSettings):
     `EXEMPTIONS` entry covers this. Issue #54.
     """
 
-    # Resource Monitoring
-    psi_cpu_threshold: float = 15.0  # % pressure (some)
-    psi_mem_threshold: float = 10.0  # % pressure (some)
-    psi_io_threshold: float = 10.0  # % pressure (some)
-    min_available_memory_mb: int = 512  # Hard gate: block if < 512MB available
-    max_cpu_util: float = 90.0  # Fallback: max 90% utilization
-    gate_timeout: float = 5.0  # seconds to wait for pressure to subside
+    pressure: PressureSettings = Field(default_factory=PressureSettings)
 
     # Plugins
     plugins: list[Path] = Field(default_factory=list)

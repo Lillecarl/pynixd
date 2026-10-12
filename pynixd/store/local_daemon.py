@@ -200,11 +200,10 @@ class LocalStore(DaemonStore):
         if self.managed:
             atexit.register(self._atexit_kill_daemon)
 
-        # Resource Monitoring
         self.monitor: ResourceMonitor | None = (
-            create_monitor(self.gate, self.settings)
+            create_monitor(self.pressure_settings, self.on_pressure_sample)
             if self.monitor_enabled
-            else DummyResourceMonitor(self.gate, self.settings)
+            else DummyResourceMonitor(self.pressure_settings, self.on_pressure_sample)
         )
 
     async def start(self, sync_paths: bool = True) -> None:

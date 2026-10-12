@@ -20,7 +20,7 @@ import time
 from collections.abc import Callable, Iterable, Mapping
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, NamedTuple, get_args
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, get_args
 from weakref import WeakSet
 
 import structlog
@@ -713,6 +713,78 @@ class StorePoolCollector:
 
 STORE_POOLS = StorePoolCollector()
 REGISTRY.register(STORE_POOLS)
+
+BUILD_LIMIT_CHANGES = Counter(
+    "pynixd_store_build_limit_changes_total",
+    "Changes of a store's build limit, by direction and reason (#98)",
+    ["store_id", "direction", "reason"],
+)
+
+
+class StorePressureCollector:
+    """Each store's build limit and the host sample behind it. Issue #98.
+
+    Reads `store.build_limit` and `store.monitor.health` at scrape, by
+    attribute, because importing the store classes here is a cycle.
+    """
+
+    def __init__(self) -> None:
+        self._stores: WeakSet[Any] = WeakSet()
+
+    def register(self, store: object) -> None:
+        self._stores.add(store)
+
+    def collect(self):
+        """Yield the limit, its reason, and the sample of each live store."""
+        limit = GaugeMetricFamily("pynixd_store_build_limit", "Builds the store may run now (#98)", labels=["store_id"])
+        reason = GaugeMetricFamily(
+            "pynixd_store_build_limit_reason",
+            "1 for the reason of the current build limit",
+            labels=["store_id", "reason"],
+        )
+        pressure = GaugeMetricFamily(
+            "pynixd_store_pressure_percent",
+            "PSI avg10 of the store's host, machine-wide",
+            labels=["store_id", "resource", "kind"],
+        )
+        available = GaugeMetricFamily(
+            "pynixd_store_memory_available_bytes", "MemAvailable of the store's host", labels=["store_id"]
+        )
+        load = GaugeMetricFamily("pynixd_store_load1", "1-minute load average of the store's host", labels=["store_id"])
+        age = GaugeMetricFamily(
+            "pynixd_store_sample_age_seconds", "Seconds since the last host sample of the store", labels=["store_id"]
+        )
+        # One sample per store_id: a removed and re-added store can linger
+        # here, and duplicate labels make Prometheus reject the whole scrape.
+        latest: dict[str, Any] = {str(store.store_id): store for store in self._stores}
+        now = time.monotonic()
+        for store_id, store in latest.items():
+            build_limit = store.build_limit
+            limit.add_metric([store_id], build_limit.limit)
+            reason.add_metric([store_id, str(build_limit.reason)], 1)
+            if build_limit.sampled_at is None or store.monitor is None:
+                continue
+            age.add_metric([store_id], now - build_limit.sampled_at)
+            health = store.monitor.health
+            if health.psi is not None:
+                for resource in ("cpu", "memory", "io"):
+                    metric = getattr(health.psi, resource)
+                    pressure.add_metric([store_id, resource, "some"], metric.some_avg10)
+                    pressure.add_metric([store_id, resource, "full"], metric.full_avg10)
+            if health.meminfo is not None and health.meminfo.mem_total:
+                available.add_metric([store_id], health.meminfo.mem_available * 1024)
+            if health.load1 is not None:
+                load.add_metric([store_id], health.load1)
+        yield limit
+        yield reason
+        yield pressure
+        yield available
+        yield load
+        yield age
+
+
+STORE_PRESSURE = StorePressureCollector()
+REGISTRY.register(STORE_PRESSURE)
 
 
 class StoreTrafficCollector:

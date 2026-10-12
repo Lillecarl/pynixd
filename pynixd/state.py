@@ -22,6 +22,7 @@ from .state_models import (
     Benchmark,
     BuildRow,
     ClientRow,
+    LimitRow,
     PoolRow,
     QueueCounts,
     StateReport,
@@ -38,6 +39,8 @@ if TYPE_CHECKING:
 
     from .build_queue import QueuedBuild
     from .context import PynixdContext
+    from .monitor import ResourceMonitor
+    from .pressure import BuildLimit
     from .scheduler import Scheduler
     from .store.pool import ConnectionPool
 
@@ -119,6 +122,8 @@ def pending_reason(scheduler: Scheduler, build: QueuedBuild, wanters: set[Reques
         return "unwanted"
     if wanters and not any(scheduler.request_has_a_local_slot(r) for r in wanters):
         return "local_slot"
+    if build.build_id in scheduler.held_by_pressure:
+        return "pressure"
     return "scheduling"
 
 
@@ -192,9 +197,32 @@ def _stores_section(ctx: PynixdContext) -> dict[str, StoreRow]:
                 )
                 for pool in _pools_of(store)
             },
+            limit=_limit_of(store, now),
         )
         for store_id, store in ctx.stores.items()
     }
+
+
+def _limit_of(store: object, now: float) -> LimitRow | None:
+    """A daemon store's build limit and its last sample; an HTTP cache has none."""
+    limit: BuildLimit | None = getattr(store, "build_limit", None)
+    if limit is None:
+        return None
+    monitor: ResourceMonitor | None = getattr(store, "monitor", None)
+    health = monitor.health if monitor is not None and limit.sampled_at is not None else None
+    psi = health.psi if health else None
+    mem = health.meminfo if health and health.meminfo and health.meminfo.mem_total else None
+    return LimitRow(
+        limit=limit.limit,
+        ceiling=limit.ceiling,
+        reason=str(limit.reason),
+        sample_age_s=None if limit.sampled_at is None else round(now - limit.sampled_at, 1),
+        cpu_some=psi.cpu.some_avg10 if psi else None,
+        memory_full=psi.memory.full_avg10 if psi else None,
+        io_full=psi.io.full_avg10 if psi else None,
+        available_mb=mem.available_mb if mem else None,
+        load1=health.load1 if health else None,
+    )
 
 
 def _transfers_section(ctx: PynixdContext) -> Transfers:

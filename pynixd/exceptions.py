@@ -16,10 +16,6 @@ class BackendError(PynixdError):
     """
 
 
-class ResourceExhaustedError(PynixdError):
-    """Raised when system resources are too stressed to proceed (PSI/Load)."""
-
-
 class ClosingError(PynixdError):
     """An error that ends the session after the client reads it.
 

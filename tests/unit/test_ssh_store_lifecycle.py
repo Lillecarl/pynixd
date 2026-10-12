@@ -32,7 +32,6 @@ import pytest
 
 from nix_daemon_protocol.ids import StoreId
 from pynixd.config import SSHSubprocessStoreSpec
-from pynixd.monitor import ResourceGate
 from pynixd.store.pool import ConnectionPool
 from pynixd.store.ssh import SSHStore, SSHSubprocessStore
 
@@ -159,7 +158,6 @@ class TestPoolEmptyNotification:
         return ConnectionPool(
             store_id="builder",
             factory=factory,
-            gate=ResourceGate(),
             idle_ttl=0.01,
             on_pool_empty=on_empty,
         )
@@ -191,7 +189,6 @@ class TestPoolEmptyNotification:
         pool = ConnectionPool(
             store_id="builder",
             factory=factory,
-            gate=ResourceGate(),
             on_pool_empty=boom,
         )
         with anyio.fail_after(1):

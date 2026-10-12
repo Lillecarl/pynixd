@@ -27,10 +27,12 @@ from nix_daemon_protocol.wire_ops import WireRequest
 
 from .. import metrics, wire
 from .._lazy import ssh_errors
+from ..config import PressureSettings
 from ..constants import FEATURE_REALISATION_WITH_PATH
 from ..drv_hash import output_hashes
 from ..exceptions import BackendError
-from ..monitor import ResourceGate, ResourceMonitor
+from ..monitor import ResourceMonitor
+from ..pressure import BuildLimit
 from ..serde import (
     AddToStoreRequest,
     BasicDerivation,
@@ -57,7 +59,7 @@ if TYPE_CHECKING:
     from ..config import StoreSpecBase
     from ..connection import Connection
     from ..drv_parser import Derivation
-    from ..psi import CpuUtil, MemInfo
+    from ..psi import CpuUtil, MemInfo, SystemHealth
     from ..serde import SetOptionsRequest
     from ..store_path import StorePath
 
@@ -254,13 +256,11 @@ class DaemonStore(Store):
         else:
             self._probe = fm is None
 
-        self.gate = ResourceGate()
         build_slots, transfer_slots = self._pool_sizes()
         self.build_pool, self.transfer_pool = (
             ConnectionPool(
                 store_id=self.store_id,
                 factory=self._create_conn_with_counter,
-                gate=self.gate,
                 idle_ttl=self.idle_ttl,
                 max_lifetime=self.max_lifetime,
                 max_connections=slots,
@@ -272,6 +272,13 @@ class DaemonStore(Store):
             for lane, slots in (("build", build_slots), ("transfer", transfer_slots))
         )
 
+        self.pressure_settings: PressureSettings = spec.pressure or (
+            spec.settings.pressure if spec.settings else PressureSettings()
+        )
+        self.build_limit = BuildLimit(str(self.store_id), build_slots, self.pressure_settings)
+        self.on_capacity: Callable[[], None] | None = None
+        """Called when the build limit rises; the scheduler sets it to its trigger."""
+        metrics.STORE_PRESSURE.register(self)
         self.monitor: ResourceMonitor | None = None
         self.consecutive_failures: int = 0
         self.cooldown_until: float = 0.0
@@ -348,6 +355,12 @@ class DaemonStore(Store):
         return features.isdisjoint(_platform_specific)
 
     # ── Resource metrics ────────────────────────────────────────────
+
+    def on_pressure_sample(self, health: SystemHealth) -> None:
+        """Move the build limit for one sample of this store's host."""
+        if self.build_limit.observe(health, self.build_pool.active_connections, time.monotonic()):
+            if self.on_capacity is not None:
+                self.on_capacity()
 
     @property
     def pressure(self) -> float | None:

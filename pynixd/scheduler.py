@@ -26,7 +26,7 @@ from nix_daemon_protocol.ids import LOCAL_STORE_ID
 from . import metrics, state
 from .allocator import BuildAllocator, RankedStore, TelemetryStoreRanker
 from .build_queue import BuildQueue, QueuedBuild
-from .exceptions import BackendError, InfrastructureError, ResourceExhaustedError
+from .exceptions import BackendError, InfrastructureError
 from .serde import LogNext, QueryValidPathsRequest
 from .store import DaemonStore, LocalDBStore
 from .store.transfer import stream_paths_store_to_store
@@ -100,6 +100,11 @@ class Scheduler:
         self.trigger_event = anyio.Event()
         self.running = False
         self._workers: TaskGroup | None = None
+        self.held_by_pressure: set[BuildId] = set()
+        """Builds the last pass left pending because each candidate store
+        was at its build limit."""
+        for store in [*self.stores.values(), self.local_store]:
+            store.on_capacity = self.trigger
 
     @property
     def stores(self) -> dict[StoreId, DaemonStore]:
@@ -146,6 +151,7 @@ class Scheduler:
         log.info("store_added_to_scheduler", store_id=store.store_id, dynamic=dynamic)
         if isinstance(store, DaemonStore) and not store.no_schedule:
             self.allocator.add_store(store)
+            store.on_capacity = self.trigger
         if dynamic and store.feature_matrix:
             self.add_dynamic_features(store.feature_matrix)
         self.trigger()
@@ -390,6 +396,7 @@ class Scheduler:
         """
         waiting_slot: list[QueuedBuild] = []
         assigned_this_pass: dict[StoreId, int] = {}
+        self.held_by_pressure = set()
 
         for build in schedulable:
             build_features = effective_required_features(build.request.derivation)
@@ -441,7 +448,15 @@ class Scheduler:
                 continue
 
             if ranked or local_is_fallback:
-                rs = next(iter(ranked)) if ranked else RankedStore(local_store.store_id, 0.0, local_store)
+                candidates = list(ranked) if ranked else [RankedStore(local_store.store_id, 0.0, local_store)]
+                roomy = next(
+                    (c for c in candidates if self._has_build_room(c.store, running_builds, assigned_this_pass)), None
+                )
+                if roomy is None:
+                    self.held_by_pressure.add(build.build_id)
+                    waiting_slot.append(build)
+                    continue
+                rs = roomy
                 if rs.store_id == local_store.store_id and self._local_slot_is_full(
                     build,
                     running_builds,
@@ -474,6 +489,16 @@ class Scheduler:
                 waiting_slot.append(build)
 
         return waiting_slot
+
+    @staticmethod
+    def _has_build_room(
+        store: DaemonStore,
+        running_builds: Mapping[StoreId, int],
+        assigned_this_pass: Mapping[StoreId, int],
+    ) -> bool:
+        """Whether the build limit of *store* lets one more build start. Issue #98."""
+        running = running_builds.get(store.store_id, 0) + assigned_this_pass.get(store.store_id, 0)
+        return store.build_limit.has_room(running)
 
     def _local_slot_is_full(
         self,
@@ -686,15 +711,6 @@ class Scheduler:
                     completed = True
                     self.trigger()
 
-        except ResourceExhaustedError as e:
-            log.info(
-                "build_deferred_busy",
-                build_id=build.build_id,
-                store_id=store.store_id,
-                reason=str(e),
-            )
-            build.reset_for_busy()
-            self.trigger()
         except (BackendError, InfrastructureError) as e:
             log.warning("build_failed_retryable", build_id=build.build_id, error=str(e))
             await build.post_log_and_fanout(LogNext(text=f"pynixd: build failed on {store.store_id}, retrying: {e}\n"))

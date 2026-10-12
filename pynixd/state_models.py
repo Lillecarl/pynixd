@@ -11,12 +11,13 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-WaitReason = Literal["unwanted", "local_slot", "scheduling"]
+WaitReason = Literal["unwanted", "local_slot", "pressure", "scheduling"]
 """What a pending build waits for. `WAITS_FOR` words each one."""
 
 WAITS_FOR: dict[str, str] = {
     "unwanted": "nothing: every request that wanted it gave up, the next pass cancels it",
     "local_slot": "a local slot: each request that wants it runs its max-jobs of local builds",
+    "pressure": "a build limit: each store it can build on runs as many builds as its host takes now (#98)",
     "scheduling": "a scheduling pass or a free compatible store",
 }
 
@@ -84,10 +85,26 @@ class PoolRow(_Model):
     longest_wait_s: float = 0.0
 
 
+class LimitRow(_Model):
+    """A store's build limit and the sample that set it. Issue #98."""
+
+    limit: int
+    ceiling: int
+    reason: str
+    sample_age_s: float | None = None
+    cpu_some: float | None = None
+    memory_full: float | None = None
+    io_full: float | None = None
+    """PSI `avg10`, in percent."""
+    available_mb: int | None = None
+    load1: float | None = None
+
+
 class StoreRow(_Model):
     healthy: bool
     systems: list[str] = []
     pools: dict[str, PoolRow] = {}
+    limit: LimitRow | None = None
 
 
 class StoreTransfer(_Model):

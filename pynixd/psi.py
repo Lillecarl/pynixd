@@ -123,30 +123,25 @@ class CpuUtil:
 
 @dataclass
 class SystemHealth:
-    """Unified system health state with threshold checking."""
+    """One sample of a host: pressure, memory, CPU and load."""
 
     psi: PsiSnapshot | None = None
     meminfo: MemInfo | None = None
     cpu_util: CpuUtil | None = None
+    cores: float | None = None
+    load1: float | None = None
+    """The 1-minute load average."""
     timestamp: float = field(default_factory=time.monotonic)
 
-    def is_cpu_stressed(self, psi_threshold: float, util_threshold: float) -> bool:
-        """True if CPU pressure or utilization exceeds thresholds."""
-        return bool(
-            (self.psi and self.psi.cpu.some_avg10 >= psi_threshold)
-            or (self.cpu_util and self.cpu_util.utilization >= util_threshold)
-        )
+    @property
+    def has_signal(self) -> bool:
+        """Whether the sample says anything a build limit can act on."""
+        return self.psi is not None or bool(self.meminfo and self.meminfo.mem_total) or self.load1 is not None
 
-    def is_mem_stressed(self, psi_threshold: float, min_free_kb: int) -> bool:
-        """True if Memory pressure exceeds threshold or free RAM is too low."""
-        return bool(
-            (self.psi and self.psi.memory.some_avg10 >= psi_threshold)
-            or (self.meminfo and self.meminfo.mem_available < min_free_kb)
-        )
 
-    def is_io_stressed(self, psi_threshold: float) -> bool:
-        """True if IO pressure exceeds threshold."""
-        return bool(self.psi and self.psi.io.some_avg10 >= psi_threshold)
+def parse_loadavg(text: str) -> float:
+    """The 1-minute load average from `/proc/loadavg`."""
+    return float(text.split()[0])
 
 
 def parse_cpu_stat(text: str) -> CgroupCpuStat:

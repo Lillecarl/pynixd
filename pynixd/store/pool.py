@@ -19,7 +19,6 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
 
     from ..connection import Connection
-    from ..monitor import ResourceGate
     from ..serde import SetOptionsRequest
 
 log = structlog.get_logger(__name__)
@@ -41,7 +40,6 @@ class ConnectionPool:
         self,
         store_id: str,
         factory: Callable[[], Awaitable[Connection]],
-        gate: ResourceGate,
         idle_ttl: float = 10.0,
         max_lifetime: float = 300.0,
         max_connections: int = 64,
@@ -50,11 +48,10 @@ class ConnectionPool:
         lane: str = "transfer",
         reuse: bool = True,
     ) -> None:
-        """Configure pool with connection factory, memory gate, and concurrency limits."""
+        """Configure pool with connection factory and concurrency limits."""
 
         self.store_id = store_id
         self.factory = factory
-        self.gate = gate
         self.idle_ttl = idle_ttl
         self.max_lifetime = max_lifetime
         """How long a connection may serve before the pool retires it.
@@ -350,9 +347,6 @@ class ConnectionPool:
 
         await self._take_slot()
         try:
-            # Wait for memory safety before allocating a connection.
-            await self.gate.wait_mem_clear()
-
             self.active_connections += 1
             conn: Connection | None = None
             try:

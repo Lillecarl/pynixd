@@ -59,14 +59,6 @@ class FakeConnection(Connection):
         self.closed = True
 
 
-class FakeGate:
-    async def acquire(self, *args: object, **kwargs: object) -> None:
-        return None
-
-    def release(self, *args: object, **kwargs: object) -> None:
-        return None
-
-
 def make_pool(max_lifetime: float) -> ConnectionPool:
     async def factory() -> Connection:
         return FakeConnection("new")
@@ -74,7 +66,6 @@ def make_pool(max_lifetime: float) -> ConnectionPool:
     return ConnectionPool(
         store_id="test",
         factory=factory,
-        gate=FakeGate(),  # type: ignore[arg-type] -- the pool only holds this for `acquire`
         max_lifetime=max_lifetime,
     )
 

@@ -306,14 +306,6 @@ class PooledConnection:
         self.closed = True
 
 
-class FakeGate:
-    async def acquire(self, *args: object, **kwargs: object) -> None:
-        return None
-
-    def release(self, *args: object, **kwargs: object) -> None:
-        return None
-
-
 def _pool() -> ConnectionPool:
     async def factory() -> PooledConnection:
         return PooledConnection("fresh", None)
@@ -321,7 +313,6 @@ def _pool() -> ConnectionPool:
     return ConnectionPool(
         store_id="test",
         factory=cast("Any", factory),
-        gate=cast("Any", FakeGate()),
         max_lifetime=0.0,
         idle_ttl=10_000.0,
     )
