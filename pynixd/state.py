@@ -101,7 +101,7 @@ def _builds_section(ctx: PynixdContext) -> list[BuildRow]:
                 age_s=round(now - build.enqueued_at, 1),
                 store=None if build.assigned_store_id is None else str(build.assigned_store_id),
                 requests={int(r): queue.max_jobs_of(r) for r in sorted(wanters)},
-                goal_holders=build.goal_holders,
+                goal_holders=len(build.holders),
                 subscribers=len(build.subscribers),
                 retries=build.retries,
                 building_s=None if build.started_at is None else round(now - build.started_at, 1),

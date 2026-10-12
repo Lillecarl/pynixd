@@ -71,10 +71,6 @@ class FakeEngine:
         self.request_id = RequestId(1)
         self.subscribed: list[tuple[BuildId, ClientConn]] = []
         self.unsubscribed: list[tuple[BuildId, ClientConn]] = []
-        self.held_builds: list[BuildId] = []
-
-    def note_a_held_build(self, build_id: BuildId) -> None:
-        self.held_builds.append(build_id)
 
     async def subscribe_build(self, build_id: BuildId, client: ClientConn) -> bool:
         self.subscribed.append((build_id, client))

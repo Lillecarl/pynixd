@@ -97,8 +97,8 @@ async def test_a_cancelled_request_lets_go_of_its_builds(monkeypatch: pytest.Mon
     """The request's teardown runs to the end under an anyio cancellation.
 
     `anyio.Lock.acquire` checks for cancellation before it takes even a free
-    lock, so an unshielded `let_go_of_every_build` stops at its first
-    `let_go` and the build keeps a holder that no request owns.
+    lock, so an unshielded `let_go_of_every_build` stops before the release
+    and the build keeps a holder that no request owns.
     """
     ctx = _context()
     scheduler = ctx.scheduler
@@ -118,7 +118,6 @@ async def test_a_cancelled_request_lets_go_of_its_builds(monkeypatch: pytest.Mon
                 from_goal_path=True,
                 goal_request_id=self.engine.request_id,
             )
-            self.engine.note_a_held_build(build_id)
             taken.update(build=queue.by_id[build_id], future=future)
             held.set()
             await anyio.sleep_forever()
@@ -135,7 +134,7 @@ async def test_a_cancelled_request_lets_go_of_its_builds(monkeypatch: pytest.Mon
         tg.cancel_scope.cancel()
 
     build = taken["build"]
-    assert build.goal_holders == 0
+    assert build.holders == set()
     assert taken["future"].done()
     assert "no goal waits for it" in taken["future"].result().result.error_msg
     assert engine.request_id not in queue._given_up

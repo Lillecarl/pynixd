@@ -73,7 +73,7 @@ class FakeBuild:
         self.build_id = "build-1"
         self.is_building = False
         self.assigned_store_id: StoreId | None = None
-        self.goal_request_ids: set[RequestId] = set()
+        self.holders: set[RequestId] = set()
 
 
 def _running_build(store_id: StoreId) -> FakeBuild:

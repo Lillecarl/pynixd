@@ -45,6 +45,7 @@ class BuildRow(_Model):
     requests: dict[int, int | None] = {}
     """Each live request that wants it, and that request's `max-jobs`."""
     goal_holders: int = 0
+    """Goal requests that hold the build, given-up ones included."""
     subscribers: int = 0
     retries: int = 0
     building_s: float | None = None

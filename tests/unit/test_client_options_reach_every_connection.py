@@ -233,10 +233,6 @@ class FakeEngine:
         # The engine is the request, as far as the build queue is concerned.
         # Issue Lillecarl/nanopynix#286.
         self.request_id = RequestId(1)
-        self.held_builds: list[BuildId] = []
-
-    def note_a_held_build(self, build_id: BuildId) -> None:
-        self.held_builds.append(build_id)
 
     async def subscribe_build(self, build_id: BuildId, client: ClientConn) -> bool:
         del build_id, client

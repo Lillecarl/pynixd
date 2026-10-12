@@ -172,25 +172,10 @@ class QueuedBuild:
         somebody else asked for. Per client, because the client that asked for
         the build reads no such activity. Issue #25."""
 
-        # The number of goal systems that wait for this build. One request
-        # holds one reference, whatever number of its goals want the same
-        # derivation, because `GoalEngine` lives for one request and lets go
-        # of every build it holds when that request answers. `BuildQueue.let_go`
-        # states what the count decides. Issue Lillecarl/nanopynix#196.
-        self.goal_holders = 0
-
-        # Every goal system that ever wanted this build, by request. This is
-        # the *support* of `goal_holders`, which is the count, and the two are
-        # not the same question. One request can hold one build through two
-        # goals -- `drv^out` and `drv^*` reach one derivation -- so the count
-        # can be two where this set holds one entry.
-        #
-        # **It is append-only, and that is deliberate.** `let_go` names no
-        # request, so a release cannot say which entry to drop, and a stale
-        # entry is the safe direction: `BuildQueue.nobody_wants` asks whether
-        # every entry gave up, and an entry that is still there and did not
-        # give up makes the answer False, which runs the build. Issue Lillecarl/nanopynix#286.
-        self.goal_request_ids: set[RequestId] = set()
+        # The goal requests that hold this build. `BuildQueue.release_request`
+        # ends the build when the last one lets go. A request holds once,
+        # whatever number of its goals reach the derivation. Issue #91.
+        self.holders: set[RequestId] = set()
 
         # Guards add_subscriber replay vs post_log_bytes fanout so that a
         # joining client never misses bytes that arrive during catch-up.
@@ -492,6 +477,8 @@ class BuildQueue:
         # brings a limit of its own. `Scheduler._local_slot_is_full` reads
         # this. Issue #89.
         self._max_jobs: dict[RequestId, int | None] = {}
+        # The builds each goal request holds, so one release finds them all.
+        self._held: dict[RequestId, set[BuildId]] = {}
         self.lock: anyio.Lock = anyio.Lock()
 
     def counts(self) -> QueueCounts:
@@ -518,7 +505,7 @@ class BuildQueue:
 
     def live_wanters(self, build: QueuedBuild) -> set[RequestId]:
         """The goal requests that still want *build*."""
-        return build.goal_request_ids - self._given_up
+        return build.holders - self._given_up
 
     @property
     def queue(self) -> Sequence[QueuedBuild]:
@@ -585,6 +572,8 @@ class BuildQueue:
         so the same drv_path always means the same build.
         """
         drv_path = str(request.drv_path)
+        if from_goal_path and goal_request_id is None:
+            raise RuntimeError("a goal build needs the goal request that holds it")
 
         async with self.lock:
             if goal_request_id is not None:
@@ -594,14 +583,11 @@ class BuildQueue:
             if existing is not None and not existing.is_done:
                 log.debug("build_deduped", id=existing.build_id)
                 existing.from_goal_path = existing.from_goal_path or from_goal_path
-                # Under the same lock as the dedup. A goal system that took
-                # the reference after `enqueue` returned could find the build
-                # cancelled between the two calls, because another request
-                # that let go in that moment brought the count to zero.
-                if from_goal_path:
-                    existing.goal_holders += 1
-                    if goal_request_id is not None:
-                        existing.goal_request_ids.add(goal_request_id)
+                # Under the same lock as the dedup. A hold taken after
+                # `enqueue` returned could find the build cancelled between
+                # the two calls, by another request that let go in that moment.
+                if from_goal_path and goal_request_id is not None:
+                    self._hold_locked(existing, goal_request_id)
                 if scheduler_request_id is not None:
                     existing.scheduler_request_ids.add(scheduler_request_id)
                     if derived_paths_for_request:
@@ -629,10 +615,8 @@ class BuildQueue:
                 options=options,
             )
             build.from_goal_path = from_goal_path
-            if from_goal_path:
-                build.goal_holders += 1
-                if goal_request_id is not None:
-                    build.goal_request_ids.add(goal_request_id)
+            if from_goal_path and goal_request_id is not None:
+                self._hold_locked(build, goal_request_id)
             self.next_id += 1
             self._queue.append(build)
             self._by_path[drv_path] = build
@@ -674,8 +658,12 @@ class BuildQueue:
                 self._cancel_locked(build, "pynixd: build cancelled because all clients disconnected")
             return removed
 
-    async def let_go(self, build_id: BuildId) -> None:
-        """One goal system stops waiting for this build.
+    def _hold_locked(self, build: QueuedBuild, request_id: RequestId) -> None:
+        build.holders.add(request_id)
+        self._held.setdefault(request_id, set()).add(build.build_id)
+
+    async def release_request(self, request_id: RequestId) -> None:
+        """A goal request lets go of every build it holds, and is forgotten.
 
         **A build ends when no goal of any request waits for it.** Nix takes
         the same decision one step earlier: `Worker::removeGoal` at
@@ -688,9 +676,8 @@ class BuildQueue:
         every client that asked for the same derivation, and one client that
         gave up must not take the work of the others.
         `_the_result_unless_it_stops` in `goals/requests.py` states that rule.
-        The count answers the question that the rule really asks: the build
-        ends when the **last** goal system lets go, and not when the first one
-        does.
+        The build ends when the **last** request lets go, and not when the
+        first one does.
 
         `main:build` measures both halves. `build.sh:269` builds the
         `cancelled-builds` fixture with `-j2`. Its `slow` derivation writes to
@@ -700,16 +687,23 @@ class BuildQueue:
         about two seconds and kills that builder. pynixd left it running, a
         second request deduplicated onto it, and the run reached the 300 s
         timeout of the test. Issue Lillecarl/nanopynix#196.
+
+        The give-up mark and `max-jobs` go in the same step, so no scheduling
+        pass sees the request forgotten while it still holds a build
+        (Lillecarl/nanopynix#286). A second call finds nothing. Issue #91.
         """
         async with self.lock:
-            build = self._by_id.get(build_id)
-            if build is None:
-                return
-            if build.goal_holders <= 0:
-                return
-            build.goal_holders -= 1
-            if build.goal_holders == 0 and not build.is_done:
-                self._cancel_locked(build, "pynixd: build cancelled because no goal waits for it")
+            for build_id in self._held.pop(request_id, set()):
+                build = self._by_id.get(build_id)
+                if build is None:
+                    continue
+                build.holders.discard(request_id)
+                build.scheduler_request_ids.discard(request_id)
+                if not build.holders and not build.is_done:
+                    self._cancel_locked(build, "pynixd: build cancelled because no goal waits for it")
+            self._given_up.discard(request_id)
+            self._max_jobs.pop(request_id, None)
+        await self.prune()
 
     async def get_pending(self) -> list[QueuedBuild]:
         """Every build that is not done, in the order Nix would take them.
@@ -825,7 +819,7 @@ class BuildQueue:
         options = build.options
         if options is None or options.keep_going:
             return
-        self._given_up |= build.goal_request_ids
+        self._given_up |= build.holders
 
     def nobody_wants(self, build: QueuedBuild) -> bool:
         """Has every goal system that wanted *build* already given up?
@@ -838,14 +832,13 @@ class BuildQueue:
         **A build that a second, live request also wants is still wanted.**
         That is the property `AGENTS.md` states -- a build of pynixd serves
         every client that asked for it -- and the subset test is what keeps
-        it. A stale entry in `goal_request_ids` can only make the answer
-        False, which runs the build.
+        it.
 
-        A build that no goal system asked for answers False, because the set
-        is empty and every set contains the empty set. Such a build belongs to
+        A build that no goal system holds answers False, because the set is
+        empty and every set contains the empty set. Such a build belongs to
         `build_derived_paths` or to pynixd itself, and no request ends it.
         """
-        return bool(build.goal_request_ids) and build.goal_request_ids <= self._given_up
+        return bool(build.holders) and build.holders <= self._given_up
 
     async def cancel_unwanted(self, build_id: BuildId) -> None:
         """End a build that no live request wants, and answer everyone waiting.
@@ -854,12 +847,12 @@ class BuildQueue:
         deadlocks.** A build of a request that gave up can still have a goal
         of that request awaiting its future: `_realise_input_derivations`
         waits for the input goals of a root, and the root has not answered
-        yet, so `let_go_of_every_build` has not run. `main:build` measured it
+        yet, so `release_request` has not run. `main:build` measured it
         -- build 12 of `nix build -f fod-failing.nix -L x4` was skipped, never
         cancelled and never completed, and the whole test hit its 300 s cap.
 
         Resolving the future is what breaks that: the goal reads a failure,
-        the root fails with it, the request answers, and `let_go` then finds
+        the root fails with it, the request answers, and `release_request` then finds
         nothing left to do. Nix reaches the same end differently --
         `Goal::amDone` at `goal.cc:242` drops every waitee that is left when
         one fails and `keep-going` is off, so those derivations are not built
@@ -876,17 +869,6 @@ class BuildQueue:
             # made it three -- one for x1, which really failed, and one each
             # for x2 and x3, which this cancelled.
             self._cancel_locked(build, "", log_reason="the request that wanted it stopped")
-
-    async def forget_request(self, request_id: RequestId) -> None:
-        """Drop *request_id* from the give-up set, once it holds no build.
-
-        `GoalEngine.let_go_of_every_build` calls this after it gives every
-        reference back, and the order matters: a call before the last `let_go`
-        would let a pass assign a build that the request no longer wants.
-        """
-        async with self.lock:
-            self._given_up.discard(request_id)
-            self._max_jobs.pop(request_id, None)
 
     def _cancel_locked(self, build: QueuedBuild, error_msg: str, *, log_reason: str | None = None) -> None:
         """Cancel a queued build while ``self.lock`` is held.
@@ -920,21 +902,6 @@ class BuildQueue:
 
         metrics.BUILDS_COMPLETED.labels(status="failure").inc()
 
-    async def release_build(self, build_id: BuildId, request_id: RequestId) -> None:
-        """Give back one request's reference on a build.
-
-        Discards the id from both reference sets; the liveness count goes
-        through `let_go`, which may cancel. A later `prune` drops the build
-        once done, unstreamed, and unreferenced. Discarding an id never
-        held is a no-op, so deduped sharers keep theirs.
-        """
-        async with self.lock:
-            build = self._by_id.get(build_id)
-            if build is None:
-                return
-            build.goal_request_ids.discard(request_id)
-            build.scheduler_request_ids.discard(request_id)
-
     async def prune(self) -> None:
         """Drop finished builds nobody waits for and nobody streams.
 
@@ -952,10 +919,7 @@ class BuildQueue:
             doomed = {
                 id(build)
                 for build in self._queue
-                if build.is_done
-                and not build.scheduler_request_ids
-                and not build.goal_request_ids
-                and not build.subscribers
+                if build.is_done and not build.scheduler_request_ids and not build.holders and not build.subscribers
             }
             if not doomed:
                 return

@@ -57,10 +57,10 @@ async def test_a_build_that_no_goal_waits_for_ends() -> None:
     queue = BuildQueue()
     drv_path = StorePath("/nix/store/00000000000000000000000000000001-slow.drv")
 
-    build_id, future = await queue.enqueue(_build_request(drv_path), from_goal_path=True)
-    assert queue.by_id[build_id].goal_holders == 1
+    build_id, future = await queue.enqueue(_build_request(drv_path), from_goal_path=True, goal_request_id=RequestId(1))
+    assert queue.by_id[build_id].holders == {RequestId(1)}
 
-    await queue.let_go(build_id)
+    await queue.release_request(RequestId(1))
 
     assert future.done()
     assert "no goal waits for it" in str(future.result().result.error_msg)
@@ -77,32 +77,55 @@ async def test_a_build_that_another_request_still_wants_runs_on() -> None:
     queue = BuildQueue()
     drv_path = StorePath("/nix/store/00000000000000000000000000000001-slow.drv")
 
-    first_id, future = await queue.enqueue(_build_request(drv_path), from_goal_path=True)
-    second_id, _ = await queue.enqueue(_build_request(drv_path), from_goal_path=True)
+    first_id, future = await queue.enqueue(_build_request(drv_path), from_goal_path=True, goal_request_id=RequestId(1))
+    second_id, _ = await queue.enqueue(_build_request(drv_path), from_goal_path=True, goal_request_id=RequestId(2))
 
     assert second_id == first_id
-    assert queue.by_id[first_id].goal_holders == 2
+    assert queue.by_id[first_id].holders == {RequestId(1), RequestId(2)}
 
-    await queue.let_go(first_id)
+    await queue.release_request(RequestId(1))
     assert not future.done()
 
-    await queue.let_go(first_id)
+    await queue.release_request(RequestId(2))
     assert future.done()
 
 
 @pytest.mark.anyio
+async def test_one_request_holds_once_and_releases_once() -> None:
+    """`drv^out` and `drv^*` reach one derivation through two goals of one request."""
+    queue = BuildQueue()
+    drv_path = StorePath("/nix/store/00000000000000000000000000000001-slow.drv")
+
+    build_id, future = await queue.enqueue(_build_request(drv_path), from_goal_path=True, goal_request_id=RequestId(1))
+    await queue.enqueue(_build_request(drv_path), from_goal_path=True, goal_request_id=RequestId(1))
+    assert queue.by_id[build_id].holders == {RequestId(1)}
+
+    await queue.release_request(RequestId(1))
+    assert future.done()
+    await queue.release_request(RequestId(1))
+
+
+@pytest.mark.anyio
 async def test_a_build_that_no_goal_ever_held_is_left_alone() -> None:
-    """`from_goal_path` marks the calls that take a reference, and no other."""
+    """`from_goal_path` marks the calls that take a hold, and no other."""
     queue = BuildQueue()
     drv_path = StorePath("/nix/store/00000000000000000000000000000001-slow.drv")
 
     build_id, future = await queue.enqueue(_build_request(drv_path))
 
-    assert queue.by_id[build_id].goal_holders == 0
+    assert queue.by_id[build_id].holders == set()
 
-    await queue.let_go(build_id)
+    await queue.release_request(RequestId(1))
 
     assert not future.done()
+
+
+@pytest.mark.anyio
+async def test_a_goal_build_names_its_request() -> None:
+    queue = BuildQueue()
+    drv_path = StorePath("/nix/store/00000000000000000000000000000001-slow.drv")
+    with pytest.raises(RuntimeError, match="goal request"):
+        await queue.enqueue(_build_request(drv_path), from_goal_path=True)
 
 
 # ── A request that stopped takes no further build slot. Issue Lillecarl/nanopynix#286 ───
@@ -244,7 +267,7 @@ async def test_a_build_that_succeeds_ends_no_request() -> None:
 async def test_a_build_no_goal_asked_for_is_wanted() -> None:
     """`build_derived_paths` and pynixd's own builds have no goal system.
 
-    Their `goal_request_ids` is empty, and the empty set is a subset of every
+    Their `holders` is empty, and the empty set is a subset of every
     set, so the answer has to be guarded rather than left to the subset test.
     """
     queue = BuildQueue()
@@ -259,19 +282,27 @@ async def test_a_build_no_goal_asked_for_is_wanted() -> None:
 async def test_a_request_that_finished_is_forgotten() -> None:
     """The give-up set must not grow for the life of the daemon.
 
-    `GoalEngine.let_go_of_every_build` calls `forget_request` after it gives
-    every reference back, so a later build carrying a stale id is not skipped
-    by a request that is long gone.
+    The release ends the build the request left behind, and it forgets the
+    give-up mark: a later build under the same id is wanted again.
     """
     queue = BuildQueue()
     request = RequestId(1)
     first, second = await _two_builds_of(queue, request, options=_options(keep_going=False))
     await queue.complete(first, _failed())
-    assert queue.nobody_wants(queue.by_id[second]) is True
+    left_behind = queue.by_id[second]
+    assert queue.nobody_wants(left_behind) is True
 
-    await queue.forget_request(request)
+    await queue.release_request(request)
 
-    assert queue.nobody_wants(queue.by_id[second]) is False
+    assert left_behind.is_done
+    assert second not in queue.by_id
+    third, _ = await queue.enqueue(
+        _build_request(StorePath("/nix/store/00000000000000000000000000000003-x3.drv")),
+        from_goal_path=True,
+        goal_request_id=request,
+        options=_options(keep_going=False),
+    )
+    assert queue.nobody_wants(queue.by_id[third]) is False
 
 
 @pytest.mark.anyio

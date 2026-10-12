@@ -111,5 +111,8 @@ A typed side-effect lane owned by the singleton scheduler. Build work lives in t
 ### SubstitutionQueue
 The scheduler-owned substitution lane. It exposes `can_substitute(path)` for fast availability checks, `get_substituter(path)` for selecting the highest-priority healthy source, and `substitute(path)` for deduplicated path imports into the local store.
 
+### Build Hold
+A goal request's claim on a queued build. `BuildQueue.enqueue` takes the hold under the same lock as the `.drv` deduplication, and records it both on the build (`QueuedBuild.holders`) and per request. When the request answers, `BuildQueue.release_request` drops every hold of that request in one step. A build that loses its last holder before it finishes is cancelled. A build with no holders at all (`build_derived_paths`, pynixd's own builds) is never ended this way.
+
 ### Client-Bound Build Subscription
 A build log subscription tied to an active client request. Client-bound subscriptions are reference-counted per build. If the last such subscriber is explicitly removed before completion, the queued build is cancelled; internal no-client scheduler users are not cancelled by this rule.

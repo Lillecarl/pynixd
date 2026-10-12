@@ -47,7 +47,7 @@ async def _the_result_unless_it_stops(goal: EnsureDerivedPathGoal, stop: anyio.E
     NIX-DEVIATION (#27): `Worker::run` at `worker.cc:352` leaves its loop
     when `topGoals` is empty, and the destructor of the goals that are left
     kills each builder. pynixd keeps every such build and ends it in
-    `BuildQueue.let_go`, when the **last** goal system stops waiting for it.
+    `BuildQueue.release_request`, when the **last** request stops waiting for it.
     The difference is worth its cost because a build here is shared: a second
     client that asked for the same derivation still wants it, and killing it
     for the first client takes the work of the second. The cost is the builds

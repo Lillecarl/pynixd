@@ -127,11 +127,6 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
             goal_request_id=self.engine.request_id,
             options=options,
         )
-        # `from_goal_path` made the queue take a reference for this request,
-        # under its own lock. This records which one to give back when the
-        # request answers, and it takes no await, so nothing lands between the
-        # two calls and loses the record. Issue Lillecarl/nanopynix#196.
-        self.engine.note_a_held_build(build_id)
         # The build is on the queue now, so the next root goal of the request
         # may enqueue behind it and the order of the queue decides. Issue Lillecarl/nanopynix#207.
         self._reached_the_queue.set()

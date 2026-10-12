@@ -357,7 +357,7 @@ class Scheduler:
             # **It ends the build rather than leaving it pending.** A goal of
             # the same request can still be waiting for it -- an input of a
             # root that has not answered -- and that root is what runs
-            # `let_go`, so a build left pending waits for a release that waits
+            # `release_request`, so a build left pending waits for a release that waits
             # for the build. `cancel_unwanted` holds the measurement.
             # Issue Lillecarl/nanopynix#286.
             if self.queue.nobody_wants(build):
@@ -502,7 +502,7 @@ class Scheduler:
         running = sum(
             1
             for b in self.queue.by_id.values()
-            if b.is_building and b.assigned_store_id == local_id and request_id in b.goal_request_ids
+            if b.is_building and b.assigned_store_id == local_id and request_id in b.holders
         )
         if running < max(1, jobs):
             return True

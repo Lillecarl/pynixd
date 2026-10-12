@@ -80,21 +80,6 @@ class GoalEngine:
         self._lock = anyio.Lock()
         self._goals: dict[Any, Goal[Any]] = {}
         self.substitution_import_limiter = anyio.Semaphore(4)
-        # Every build that a goal of this engine waits for. `proxy.py` makes
-        # one engine for one request, so this list is the reference that the
-        # request holds on the build queue. `let_go_of_every_build` gives it
-        # back. Issue Lillecarl/nanopynix#196.
-        self._held_builds: list[BuildId] = []
-
-    def note_a_held_build(self, build_id: BuildId) -> None:
-        """Record that a goal of this request waits for *build_id*.
-
-        `BuildQueue.enqueue` already took the reference, under its own lock,
-        for every call that `from_goal_path` marks. This only remembers which
-        reference to give back. It takes no await, so a cancellation cannot
-        land between the two and lose the record.
-        """
-        self._held_builds.append(build_id)
 
     async def let_go_of_every_build(self) -> None:
         """Give back every build reference that this request took.
@@ -107,27 +92,13 @@ class GoalEngine:
         answers is the moment this request wants nothing more, whatever state
         its goals are in.
 
-        `BuildQueue.let_go` ends a build that no other request holds.
-
-        This runs once. A second call finds the list empty, so the entry point
-        of `build_paths`, which calls `build_paths_with_results` on the same
-        engine, gives no reference back twice.
+        `BuildQueue.release_request` ends each build that no other request
+        holds. A second call finds nothing held.
         """
-        held = self._held_builds
-        self._held_builds = []
         scheduler = self.ctx.scheduler
         if scheduler is None:
             return
-        for build_id in held:
-            await scheduler.queue.let_go(build_id)
-            await scheduler.queue.release_build(build_id, self.request_id)
-        # After the loop, and not before it. `nobody_wants` reads this set, so
-        # forgetting the request while it still held a build would let a
-        # scheduling pass assign a build that this request no longer wants.
-        # Issue Lillecarl/nanopynix#286.
-        await scheduler.queue.forget_request(self.request_id)
-        # The request answered: finished builds nobody else holds can go.
-        await scheduler.queue.prune()
+        await scheduler.queue.release_request(self.request_id)
 
     async def subscribe_build(self, build_id: BuildId, client: ClientConn) -> bool:
         """Subscribe *client* to real-time log output for the given *build_id*."""
