@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import os
 import struct
+import time
 from typing import TYPE_CHECKING, Protocol
 
 from anyio.lowlevel import checkpoint
@@ -85,6 +86,9 @@ class NixReader:
         int-add per transport read: thousands of times rarer than the
         protocol reads it serves, and off every per-chunk path.
         """
+        self.last_read_at = time.monotonic()
+        """When the transport last delivered bytes. `pynixd state` reads it
+        to say how long a daemon has been silent. Issue #93."""
 
     async def readexactly(self, n: int) -> bytes:
         raise NotImplementedError
@@ -181,6 +185,7 @@ class SSHNixReader(NixReader):
                 # Only `need` is new: `head` came out of the buffer, where it
                 # was counted when the transport filled it.
                 self.bytes_read += need
+                self.last_read_at = time.monotonic()
                 return head + data
 
             parts = [head]
@@ -189,6 +194,7 @@ class SSHNixReader(NixReader):
                 if not chunk:
                     raise EOFError("SSH connection closed")
                 self.bytes_read += len(chunk)
+                self.last_read_at = time.monotonic()
                 if len(chunk) >= need:
                     parts.append(chunk[:need])
                     self._buf = chunk
@@ -259,6 +265,7 @@ class UnixNixReader(NixReader):
             # Only `need` is new: `head` came out of the buffer, where it
             # was counted when the transport filled it.
             self.bytes_read += need
+            self.last_read_at = time.monotonic()
             return head + data
 
         parts = [head]
@@ -267,6 +274,7 @@ class UnixNixReader(NixReader):
             if not chunk:
                 raise asyncio.IncompleteReadError(b"".join(parts), n)
             self.bytes_read += len(chunk)
+            self.last_read_at = time.monotonic()
             if len(chunk) >= need:
                 parts.append(chunk[:need])
                 self._buf = chunk

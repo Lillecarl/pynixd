@@ -14,11 +14,13 @@ from typing import TYPE_CHECKING
 
 import anyio
 import pytest
+from prometheus_client import REGISTRY
 
 from nix_daemon_protocol.ids import StoreId
 from pynixd import Server
 from pynixd.connection import Connection
 from pynixd.serde import IsValidPathRequest, StorePath
+from pynixd.state import upstream_in_flight
 from pynixd.store import LocalSocketStore
 from pynixd.wire import UnixNixReader, UnixNixWriter
 from tests._conftest.fault_proxy import Fault, FaultProxy
@@ -31,6 +33,12 @@ if TYPE_CHECKING:
 _ABSENT = "/nix/store/00000000000000000000000000000000-absent"
 _ANSWER_WITHIN = 10
 """Seconds a client may wait for any answer, error or not."""
+_READ_TIMEOUT = 3
+"""The local store's `read_timeout`, short so a stalled read ends inside the bound."""
+
+
+def _sample(name: str, **labels: str) -> float | None:
+    return REGISTRY.get_sample_value(name, labels)
 
 
 @dataclass
@@ -74,6 +82,7 @@ async def rig() -> AsyncIterator[_Rig]:
             no_probe=True,
             managed=False,
             socket_path=root / "proxy.sock",
+            read_timeout=_READ_TIMEOUT,
         )
     )
     client_socket = root / "pynixd.sock"
@@ -94,19 +103,9 @@ async def rig() -> AsyncIterator[_Rig]:
         await daemon.close()
 
 
-_UNBOUNDED = "pynixd has no bound on an upstream that stops answering (#93)"
-
-
-@pytest.mark.parametrize(
-    "fault",
-    [
-        Fault.CLOSE,
-        Fault.RESET,
-        # Flipped bytes read as a huge length, and pynixd waits for bytes the
-        # daemon never sends: a stall by another road.
-        pytest.param(Fault.CORRUPT, marks=pytest.mark.xfail(strict=True, reason=_UNBOUNDED)),
-    ],
-)
+# CORRUPT: flipped bytes read as a huge length, and pynixd waits for bytes the
+# daemon never sends -- a stall by another road, which `read_timeout` ends.
+@pytest.mark.parametrize("fault", [Fault.CLOSE, Fault.RESET, Fault.CORRUPT])
 async def test_a_broken_response_fails_the_operation_and_the_next_one_works(rig: _Rig, fault: Fault) -> None:
     rig.proxy.arm(fault)
 
@@ -136,11 +135,30 @@ async def test_a_daemon_that_is_gone_fails_fast_and_pynixd_recovers(rig: _Rig) -
     assert await rig.ask_within_bound() is False
 
 
-@pytest.mark.xfail(strict=True, reason=_UNBOUNDED)
-async def test_a_daemon_that_stops_answering_still_gets_the_client_an_answer(rig: _Rig) -> None:
+async def test_a_read_the_daemon_stops_answering_shows_then_fails_and_the_next_one_works(rig: _Rig) -> None:
+    """`read_timeout` bounds a pure database read. Before it fires, `pynixd
+    state` names the operation and how long the daemon has been silent."""
+    timeouts_before = _sample("pynixd_upstream_read_timeouts_total", store_id="local") or 0
     rig.proxy.arm(Fault.STALL)
+    answers: list[BaseException | bool] = []
+    async with anyio.create_task_group() as tg:
 
-    answer = await rig.ask_within_bound()
+        async def ask() -> None:
+            answers.append(await rig.ask_within_bound())
 
+        tg.start_soon(ask)
+        await anyio.sleep(_READ_TIMEOUT / 2)
+        (row,) = upstream_in_flight(rig.server.ctx)
+        assert row["op"] == "IsValidPathRequest"
+        assert row["silent_s"] >= 1
+        # The same, as a Prometheus scrape sees it.
+        assert _sample("pynixd_upstream_ops_waiting", store_id="local") == 1
+        assert (_sample("pynixd_upstream_silence_seconds_max", store_id="local") or 0) >= 1
+
+    assert _sample("pynixd_upstream_read_timeouts_total", store_id="local") == timeouts_before + 1
     assert rig.proxy.triggered.is_set()
+    (answer,) = answers
     assert isinstance(answer, BaseException)
+    assert f"within {_READ_TIMEOUT} s" in str(answer)
+    assert upstream_in_flight(rig.server.ctx) == []
+    assert await rig.ask_within_bound() is False

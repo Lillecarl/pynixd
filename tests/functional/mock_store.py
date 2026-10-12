@@ -68,6 +68,9 @@ class MockConnection:
         # constant, so a pool with a `max_lifetime` retires a mock the way it
         # retires a real one.
         self.opened_at: float = time.monotonic()
+        # `ConnectionPool.waiting_on_upstream` reads it, and a mock call
+        # finishes before anything could scrape it.
+        self.current_op: tuple[str, float] | None = None
 
         # Dummy reader/writer to avoid AttributeErrors on .identifier
         class DummyRW:
@@ -77,6 +80,10 @@ class MockConnection:
                 # the pool sums. A mock moves no bytes, so both stay zero.
                 self.bytes_read = 0
                 self.bytes_written = 0
+                self.last_read_at = time.monotonic()
+
+            def peer_closed(self) -> bool:
+                return False
 
             def framed(self):
                 return self

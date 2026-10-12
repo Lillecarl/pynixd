@@ -124,6 +124,10 @@ class ConnectionPool:
         """Human-readable pool statistics."""
         return f"active={self.active_connections} idle={len(self.idle_conns)} total={len(self.all_conns)}"
 
+    def waiting_on_upstream(self) -> list[Connection]:
+        """Connections waiting on an operation now. Issue #93."""
+        return [conn for conn in self.all_conns if conn.current_op is not None]
+
     def start_sweep(self) -> None:
         """Start the idle connection sweep task if not already running."""
 

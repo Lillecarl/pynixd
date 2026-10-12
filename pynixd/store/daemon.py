@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
+import math
 import time
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any, Final
@@ -12,11 +13,19 @@ from typing import TYPE_CHECKING, Any, Final
 import anyio
 import structlog
 
+from nix_daemon_protocol import (
+    IsValidPathRequest,
+    QueryDerivationOutputMapRequest,
+    QueryPathFromHashPartRequest,
+    QueryPathInfoRequest,
+    QueryReferrersRequest,
+    QueryValidPathsRequest,
+)
 from nix_daemon_protocol.protocol import ResultType
 from nix_daemon_protocol.store_dir import store_prefix
 from nix_daemon_protocol.wire_ops import WireRequest
 
-from .. import wire
+from .. import metrics, wire
 from .._lazy import ssh_errors
 from ..constants import FEATURE_REALISATION_WITH_PATH
 from ..drv_hash import output_hashes
@@ -53,6 +62,19 @@ if TYPE_CHECKING:
     from ..store_path import StorePath
 
 log = structlog.get_logger(__name__)
+
+_BOUNDED_READS = (
+    IsValidPathRequest,
+    QueryPathInfoRequest,
+    QueryValidPathsRequest,
+    QueryReferrersRequest,
+    QueryPathFromHashPartRequest,
+    QueryDerivationOutputMapRequest,
+)
+"""Reads of the store database that take no lock, so `read_timeout` bounds
+them. A GC, a build and anything behind the GC lock stay unbounded: the
+daemon can be silent for a long time and still be right (#93)."""
+
 _CB_THRESHOLD: int = 3
 _CB_MAX_COOLDOWN: float = 300.0
 
@@ -206,6 +228,7 @@ class DaemonStore(Store):
         self.no_schedule = spec.no_schedule
         self.idle_ttl = spec.idle_ttl
         self.max_lifetime = spec.max_lifetime
+        self.read_timeout = spec.read_timeout
         self.version: int = wire.PROTOCOL_VERSION
         self.nix_version: str = ""
         self.conn_counter = 0
@@ -477,12 +500,20 @@ class DaemonStore(Store):
         is_build = not request.forward if isinstance(request, WireRequest) else request.is_build
         pool = self.build_conn if is_build else self.transfer_conn
         options = client.options if client is not None else None
+        bound = self.read_timeout if isinstance(request, _BOUNDED_READS) else math.inf
 
         try:
-            async with pool(options) as conn:
-                return await conn.call(
-                    request, client=client, suppress_last=suppress_last, raise_on_error=raise_on_error
-                )
+            with anyio.fail_after(bound):
+                async with pool(options) as conn:
+                    return await conn.call(
+                        request, client=client, suppress_last=suppress_last, raise_on_error=raise_on_error
+                    )
+        except TimeoutError:
+            # The connection left through an exception, so the pool drops it.
+            metrics.UPSTREAM_READ_TIMEOUTS.labels(store_id=self.store_id).inc()
+            raise BackendError(
+                f"pynixd: store {self.store_id} did not answer {type(request).__name__} within {bound:g} s"
+            ) from None
         except _TRANSPORT_ERRORS + ssh_errors():
             self.record_failure()
             raise

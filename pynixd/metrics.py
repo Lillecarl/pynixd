@@ -51,6 +51,41 @@ QUEUE_SIZE = Gauge(
 )
 
 
+UPSTREAM_READ_TIMEOUTS = Counter(
+    "pynixd_upstream_read_timeouts_total",
+    "Database reads a store left unanswered past read_timeout (#93)",
+    ["store_id"],
+)
+
+BUILDS_WAITING = Gauge(
+    "pynixd_builds_waiting",
+    "Pending builds by what they wait for: local_slot, unwanted or scheduling (#92)",
+    ["reason"],
+)
+
+CLIENT_OPS = Gauge(
+    "pynixd_client_ops_in_progress",
+    "Client operations pynixd is answering now",
+)
+
+CLIENT_OP_SECONDS_MAX = Gauge(
+    "pynixd_client_op_seconds_max",
+    "How long the oldest client operation in progress has run",
+)
+
+
+def watch_waiting(reasons: Callable[[], dict[str, int]]) -> None:
+    """Answer `pynixd_builds_waiting` from *reasons* at each scrape."""
+    for reason in ("local_slot", "unwanted", "scheduling"):
+        BUILDS_WAITING.labels(reason=reason).set_function(lambda reason=reason: reasons().get(reason, 0))
+
+
+def watch_client_ops(ops: Callable[[], list[float]]) -> None:
+    """Answer the client operation gauges from *ops*, the start of each one in progress."""
+    CLIENT_OPS.set_function(lambda: len(ops()))
+    CLIENT_OP_SECONDS_MAX.set_function(lambda: max((time.monotonic() - t for t in ops()), default=0.0))
+
+
 def watch_queue(queue: BuildQueue) -> None:
     """Answer the queue gauge from *queue* itself at each scrape.
 
@@ -595,7 +630,19 @@ class StorePoolCollector:
         # collector runs, and two samples carrying the same labels make
         # Prometheus reject the **whole scrape** -- every series of this
         # process goes dark, not only these three.
+        waiting = GaugeMetricFamily(
+            "pynixd_upstream_ops_waiting",
+            "Operations sent to the store and not yet answered",
+            labels=["store_id"],
+        )
+        silence = GaugeMetricFamily(
+            "pynixd_upstream_silence_seconds_max",
+            "Longest time a waiting operation has heard nothing from the store (#93)",
+            labels=["store_id"],
+        )
         counts: dict[str, tuple[int, int, int]] = {}
+        quiet: dict[str, tuple[int, float]] = {}
+        now = time.monotonic()
         for pool in self._pools:
             was = counts.get(pool.store_id, (0, 0, 0))
             counts[pool.store_id] = (
@@ -603,13 +650,26 @@ class StorePoolCollector:
                 was[1] + len(pool.idle_conns),
                 was[2] + len(pool.all_conns),
             )
+            ops, longest = quiet.get(pool.store_id, (0, 0.0))
+            for conn in pool.waiting_on_upstream():
+                op = conn.current_op
+                if op is None:
+                    continue
+                ops += 1
+                longest = max(longest, now - max(op[1], conn.r.last_read_at))
+            quiet[pool.store_id] = (ops, longest)
         for store_id, (busy, free, held) in counts.items():
             in_flight.add_metric([store_id], busy)
             idle.add_metric([store_id], free)
             total.add_metric([store_id], held)
+        for store_id, (ops, longest) in quiet.items():
+            waiting.add_metric([store_id], ops)
+            silence.add_metric([store_id], longest)
         yield in_flight
         yield idle
         yield total
+        yield waiting
+        yield silence
 
 
 STORE_POOLS = StorePoolCollector()

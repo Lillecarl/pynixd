@@ -191,6 +191,9 @@ class Connection:
         used it last. `apply_options` reads this field, and it sends nothing
         when the set does not change. Issue Lillecarl/nanopynix#192.
         """
+        self.current_op: tuple[str, float] | None = None
+        """The operation this connection waits on, and when it was sent.
+        `ConnectionPool.in_flight` and `pynixd state` read it. Issue #93."""
         self.on_close: Callable[[Connection], None] | None = None
         """Report-once hook the pool sets to collect this connection's totals.
 
@@ -282,18 +285,21 @@ class Connection:
         await self.apply_options(options if options is not None else (client.options if client else None))
 
         self.op_log.append(type(request).__name__)
-
-        await request.to_writer(WriteContext.from_conn(self))
-        await self.w.drain()
-        resp_cls = type(request).response_type
-        return await resp_cls.from_reader(
-            ReadContext.from_conn(
-                self,
-                client=client,
-                buffer_logs=not suppress_last,
-                raise_on_error=raise_on_error,
-            ),
-        )
+        self.current_op = (type(request).__name__, time.monotonic())
+        try:
+            await request.to_writer(WriteContext.from_conn(self))
+            await self.w.drain()
+            resp_cls = type(request).response_type
+            return await resp_cls.from_reader(
+                ReadContext.from_conn(
+                    self,
+                    client=client,
+                    buffer_logs=not suppress_last,
+                    raise_on_error=raise_on_error,
+                ),
+            )
+        finally:
+            self.current_op = None
 
     async def call_with_payload(
         self,
@@ -315,15 +321,18 @@ class Connection:
         await self.apply_options(client.options if client else None)
 
         self.op_log.append(type(request).__name__)
-
-        await request.to_writer(WriteContext.from_conn(self))
-        framed = self.w.framed()
-        framed.write(payload)
-        await framed.finalize()
-        resp_cls = type(request).response_type
-        return await resp_cls.from_reader(
-            ReadContext.from_conn(self, client=client, buffer_logs=not suppress_last),
-        )
+        self.current_op = (type(request).__name__, time.monotonic())
+        try:
+            await request.to_writer(WriteContext.from_conn(self))
+            framed = self.w.framed()
+            framed.write(payload)
+            await framed.finalize()
+            resp_cls = type(request).response_type
+            return await resp_cls.from_reader(
+                ReadContext.from_conn(self, client=client, buffer_logs=not suppress_last),
+            )
+        finally:
+            self.current_op = None
 
     # ── Handshake ───────────────────────────────────────────────────
 

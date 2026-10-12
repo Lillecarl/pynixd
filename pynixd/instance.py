@@ -27,6 +27,7 @@ from .health import HealthReport, LoopLagMonitor, StallWatchdog
 from .liveness_watch import DirtyFlag, StableRootsWatch
 from .scheduler import Scheduler
 from .serde.protocol import PynixdGCAction
+from .state import upstream_in_flight
 from .store import DaemonStore, ExternalUnixStore, LocalDBStore, LocalStore, Store, is_http_binary_cache
 from .store_layout import DEFAULT_STORE_DIR
 from .unix_server import start_unix_server
@@ -56,6 +57,10 @@ def _trigger_due(now: float, last_trigger: float, cooldown: float) -> bool:
 # copies the path into that array, so a longer one cannot be bound at all.
 # `sys.platform` and not a `uname` call, because the value is a property of
 # the C library this process was built against.
+SILENT_UPSTREAM_WARN = 600.0
+"""Seconds of silence after which an upstream operation is logged once."""
+SILENT_UPSTREAM_CHECK = 60.0
+
 _SUN_PATH_LIMIT = {"linux": 108, "darwin": 104}
 _SUN_PATH_LIMIT_DEFAULT = 104
 """The smaller of the two, for a platform this table does not name. A path
@@ -208,6 +213,8 @@ class Server:
         )
 
         self.ctx.scheduler = Scheduler(self.ctx)
+        sessions = self.ctx.sessions
+        metrics.watch_client_ops(lambda: [p.current_op[1] for p in sessions.proxies() if p.current_op is not None])
 
         self.background_tasks: list[asyncio.Task[Any]] = []
         self.ssh_server: asyncssh.SSHAcceptor | None = None
@@ -460,6 +467,26 @@ class Server:
         finally:
             metrics.GC_CYCLE_DURATION.observe(time.monotonic() - started)
 
+    async def _warn_silent_upstreams(self) -> None:
+        """Log each upstream operation once when its store goes quiet too long.
+
+        Nothing is cut off: a GC or a build may be silent for an hour and be
+        right. The warning and `pynixd state --section upstream` are how a
+        stalled one gets seen (#93).
+        """
+        warned: set[tuple[str, str]] = set()
+        while True:
+            await anyio.sleep(SILENT_UPSTREAM_CHECK)
+            live: set[tuple[str, str]] = set()
+            for row in upstream_in_flight(self.ctx):
+                key = (row["conn"], row["op"])
+                if row["silent_s"] < SILENT_UPSTREAM_WARN:
+                    continue
+                live.add(key)
+                if key not in warned:
+                    log.warning("upstream_silent", **row)
+            warned = live
+
     async def _liveness_tick(self, watch: LivenessWatch, interval: float, dirty: DirtyFlag) -> None:
         """Refresh the mirror on every wake, trace at most hourly.
 
@@ -652,6 +679,7 @@ class Server:
             self.stall_watchdog.beat()
             self.stall_watchdog.start()
         self.background_tasks.append(asyncio.create_task(self.loop_lag.run()))
+        self.background_tasks.append(asyncio.create_task(self._warn_silent_upstreams()))
 
         s = self.settings
         if s.ssh_port is not None:

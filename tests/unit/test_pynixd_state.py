@@ -10,6 +10,7 @@ from typing import Any, cast
 
 import anyio
 import pytest
+from prometheus_client import REGISTRY
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, RequestId, StoreId
 from pynixd import metrics, state as state_collector
@@ -252,6 +253,8 @@ async def test_builds_say_why_a_pending_build_waits() -> None:
     assert "waits_for" not in rows["building"]
     assert rows["pending"]["requests"] == {"7": 1}
     assert rows["pending"]["waits_for"].startswith("a local slot")
+    # The same reason, as `pynixd_builds_waiting` scrapes it.
+    assert REGISTRY.get_sample_value("pynixd_builds_waiting", {"reason": "local_slot"}) == 1
 
 
 @dataclass(eq=False)

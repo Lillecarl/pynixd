@@ -123,7 +123,7 @@ class TestTheMetricsSwitch:
 
 
 class FakePool:
-    """The three attributes the collector reads.
+    """What the collector reads.
 
     A class and not a `SimpleNamespace`: the collector holds pools weakly, and
     `SimpleNamespace` cannot be weakly referenced.
@@ -134,6 +134,9 @@ class FakePool:
         self.active_connections = in_flight
         self.idle_conns = [object()] * idle
         self.all_conns = [object()] * total
+
+    def waiting_on_upstream(self) -> list[object]:
+        return []
 
 
 class TestThePoolCollector:

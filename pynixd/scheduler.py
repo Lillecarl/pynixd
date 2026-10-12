@@ -22,7 +22,7 @@ import structlog
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID
 
-from . import metrics
+from . import metrics, state
 from .allocator import BuildAllocator, RankedStore, TelemetryStoreRanker
 from .build_queue import BuildQueue, QueuedBuild
 from .exceptions import BackendError, InfrastructureError, ResourceExhaustedError
@@ -73,6 +73,7 @@ class Scheduler:
         self.ctx = ctx
         self.queue = BuildQueue()
         metrics.watch_queue(self.queue)
+        metrics.watch_waiting(lambda: state.pending_reasons(self))
         self.substitution_queue = SubstitutionQueue(ctx)
         self.local_store = ctx.local_store
         self._dynamic_feature_matrix: dict[str, set[str]] = {}

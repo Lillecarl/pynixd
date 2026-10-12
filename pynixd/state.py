@@ -30,6 +30,7 @@ KNOWN_SECTIONS: tuple[str, ...] = (
     "stores",
     "sessions",
     "clients",
+    "upstream",
     "transfers",
     "totals",
     "benchmark",
@@ -51,6 +52,8 @@ def collect(ctx: PynixdContext, wants: list[str] | None = None) -> dict[str, Any
         sections["sessions"] = _sessions_section(ctx)
     if "clients" in wanted:
         sections["clients"] = _clients_section(ctx)
+    if "upstream" in wanted:
+        sections["upstream"] = upstream_in_flight(ctx)
     if "transfers" in wanted:
         sections["transfers"] = _transfers_section(ctx)
     if "totals" in wanted:
@@ -98,17 +101,36 @@ def _builds_section(ctx: PynixdContext) -> list[dict[str, Any]]:
         if build.started_at is not None:
             row["building_s"] = round(now - build.started_at, 1)
         if not build.is_building:
-            row["waits_for"] = _why_pending(scheduler, build, wanters)
+            row["waits_for"] = _WAITS_FOR[pending_reason(scheduler, build, wanters)]
         rows.append(row)
     return rows
 
 
-def _why_pending(scheduler: Scheduler, build: QueuedBuild, wanters: set[RequestId]) -> str:
+_WAITS_FOR = {
+    "unwanted": "nothing: every request that wanted it gave up, the next pass cancels it",
+    "local_slot": "a local slot: each request that wants it runs its max-jobs of local builds",
+    "scheduling": "a scheduling pass or a free compatible store",
+}
+
+
+def pending_reason(scheduler: Scheduler, build: QueuedBuild, wanters: set[RequestId]) -> str:
+    """What a pending build waits for, as a key of `_WAITS_FOR`."""
     if scheduler.queue.nobody_wants(build):
-        return "nothing: every request that wanted it gave up, the next pass cancels it"
+        return "unwanted"
     if wanters and not any(scheduler.request_has_a_local_slot(r) for r in wanters):
-        return "a local slot: each request that wants it runs its max-jobs of local builds"
-    return "a scheduling pass or a free compatible store"
+        return "local_slot"
+    return "scheduling"
+
+
+def pending_reasons(scheduler: Scheduler) -> dict[str, int]:
+    """Pending builds counted by `pending_reason`, for `pynixd_builds_waiting`."""
+    counts: dict[str, int] = {}
+    queue = scheduler.queue
+    for build in queue.queue:
+        if build.is_pending:
+            reason = pending_reason(scheduler, build, queue.live_wanters(build))
+            counts[reason] = counts.get(reason, 0) + 1
+    return counts
 
 
 def _clients_section(ctx: PynixdContext) -> list[dict[str, Any]]:
@@ -127,6 +149,34 @@ def _clients_section(ctx: PynixdContext) -> list[dict[str, Any]]:
             }
         )
     return sorted(rows, key=lambda row: -(row["op_s"] or 0))
+
+
+def upstream_in_flight(ctx: PynixdContext) -> list[dict[str, Any]]:
+    """Every operation waiting on a store, and how long that store is silent.
+
+    A GC or a build can be silent for a long time and be right, so pynixd
+    cuts none of them off; this is where a stalled one shows (#93).
+    """
+    now = time.monotonic()
+    rows: list[dict[str, Any]] = []
+    for store_id, store in ctx.stores.items():
+        pool = getattr(store, "pool", None)
+        if pool is None:
+            continue
+        for conn in pool.waiting_on_upstream():
+            op = conn.current_op
+            if op is None:
+                continue
+            rows.append(
+                {
+                    "store": str(store_id),
+                    "conn": conn.id,
+                    "op": op[0],
+                    "op_s": round(now - op[1], 1),
+                    "silent_s": round(now - max(op[1], conn.r.last_read_at), 1),
+                }
+            )
+    return sorted(rows, key=lambda row: -row["silent_s"])
 
 
 def _stores_section(ctx: PynixdContext) -> dict[str, Any]:

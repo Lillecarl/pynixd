@@ -98,6 +98,13 @@ class StoreSpecBase(BaseModel):
     feature_matrix: dict[str, set[str]] | None = None
     nix_bin: str = "nix"
     idle_ttl: float = 10.0
+    read_timeout: float = 300.0
+    """Seconds a pure database read may wait for this store's answer.
+
+    Only reads that take no lock: a GC, a build and anything that waits on
+    the GC lock can be silent for a long time and are never cut off.
+    `pynixd state` shows those instead (#93).
+    """
     max_lifetime: float = 300.0
     """How long a pooled connection may serve before the pool retires it.
 
