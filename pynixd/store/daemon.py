@@ -267,6 +267,7 @@ class DaemonStore(Store):
                 on_connection_created=self._on_connection_created,
                 on_pool_empty=self._on_a_pool_empty,
                 lane=lane,
+                reuse=lane != "build",
             )
             for lane, slots in (("build", build_slots), ("transfer", transfer_slots))
         )

@@ -48,6 +48,7 @@ class ConnectionPool:
         on_connection_created: Callable[[Connection], None] | None = None,
         on_pool_empty: Callable[[], Awaitable[None]] | None = None,
         lane: str = "transfer",
+        reuse: bool = True,
     ) -> None:
         """Configure pool with connection factory, memory gate, and concurrency limits."""
 
@@ -71,6 +72,15 @@ class ConnectionPool:
         """
         self.lane = lane
         """Which of a store's pools this is: `build` or `transfer`. Issue #97."""
+        self.reuse = reuse
+        """Whether a returned connection waits for the next caller, or closes.
+
+        A build pool does not reuse. The daemon's worker keeps a temporary
+        root on each output a build checked or made, for as long as it
+        lives, so an idle build connection kept those roots past the build.
+        `multiple-outputs.sh:80` of Nix's suite deletes such an output
+        around pynixd and failed. Nix's worker serves one client and exits
+        with it; a build connection here serves one build and closes."""
         self.max_connections = max_connections
         self._slots = anyio.Semaphore(max_connections)
         self.slot_waiters: list[float] = []
@@ -365,21 +375,21 @@ class ConnectionPool:
                     if conn is not None:
                         now = time.monotonic()
                         retired = self._too_old(conn, now)
-                        if conn.dirty or retired:
-                            if retired and not conn.dirty:
-                                log.debug(
-                                    "pool_retiring_old_connection",
-                                    store_id=self.store_id,
-                                    conn_id=conn.id,
-                                    age=f"{now - conn.opened_at:.1f}s",
-                                    max_lifetime=f"{self.max_lifetime:.1f}s",
-                                )
-                            else:
+                        if conn.dirty or retired or not self.reuse:
+                            if conn.dirty:
                                 log.warning(
                                     "store_discarding_dirty_connection",
                                     store_id=self.store_id,
                                     conn_id=conn.id,
                                     op_log=" -> ".join(conn.op_log[-10:]) or "(empty)",
+                                )
+                            else:
+                                log.debug(
+                                    "pool_retiring_old_connection" if retired else "pool_closing_used_connection",
+                                    store_id=self.store_id,
+                                    conn_id=conn.id,
+                                    lane=self.lane,
+                                    age=f"{now - conn.opened_at:.1f}s",
                                 )
                             if conn in self.all_conns:
                                 self.all_conns.remove(conn)

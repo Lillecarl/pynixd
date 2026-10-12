@@ -68,6 +68,23 @@ async def test_full_build_slots_leave_reads_a_connection() -> None:
         assert not got_a_build, "a build got a slot past the build pool's size"
 
 
+async def test_a_build_connection_closes_when_returned_and_a_transfer_one_waits() -> None:
+    """A daemon worker keeps a temporary root on each output it built or
+    checked, for as long as it lives. An idle build connection kept those
+    roots past the build, and `multiple-outputs.sh:80` of Nix's suite could
+    not delete the output around pynixd."""
+    store = MockStore("lanes-reuse", feature_matrix={"x86_64-linux": set()})
+
+    async with store.build_conn():
+        pass
+    async with store.transfer_conn():
+        pass
+
+    assert store.build_pool.all_conns == []
+    assert store.build_pool.idle_conns == []
+    assert len(store.transfer_pool.idle_conns) == 1
+
+
 async def test_state_shows_each_pool_and_who_waits() -> None:
     store = MockStore("lanes-state", feature_matrix={"x86_64-linux": set()})
     ctx = PynixdContext(settings=PynixdSettings(), _stores={StoreId("lanes-state"): store})
