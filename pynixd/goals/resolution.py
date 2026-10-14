@@ -352,18 +352,7 @@ def resolve_derivation(
     return _resolve_deferred_outputs(resolved, drv_name)
 
 
-def _collect_leaf_outputs(node: ChildMapNode) -> list[str]:
-    """Collect all leaf output names from a ChildMapNode tree."""
-    if node.outputs:
-        return list(node.outputs)
-    for child in node.children.values():
-        leaf = _collect_leaf_outputs(child)
-        if leaf:
-            return leaf
-    return []
-
-
-# Type alias: (drv_path, output_name) -> resolved store path
+# Keys contain the root derivation and the complete output chain.
 type DynamicPathMap = dict[tuple[StorePath | str, ...], StorePath]
 
 
@@ -374,19 +363,9 @@ def _resolve_dynamic_node(
     parent_hash: bytes | None,
     rewrites: dict[str, str],
     new_input_srcs: set[StorePath],
+    chain: tuple[str, ...] = (),
 ) -> None:
-    """Recursively resolve placeholders for a ChildMapNode tree.
-
-    Walks the tree depth-first, computing placeholders at each level.
-    At the root (parent_hash is None), the placeholder is
-    ``downstream_placeholder`` (level-1). Deeper levels use
-    ``downstream_placeholder_unknown_derivation``.
-
-    All non-root placeholders resolve to the same leaf output path
-    (looked up as ``(drv_path, leaf_output_name)``), because the
-    DynamicBuildGoal chain collapses intermediate levels into the
-    final output.
-    """
+    """Resolve each requested output with its complete chain and placeholder."""
     hash_part = str(drv_path).rsplit("/", 1)[-1].split("-", 1)[0]
     dyn_drv_name = _nix_drv_name(drv_path)
 
@@ -396,40 +375,12 @@ def _resolve_dynamic_node(
             # Level 1: unknownCaOutput placeholder
             clear = f"nix-upstream-output:{hash_part}:{_output_path_name(dyn_drv_name, child_name)}"
             this_hash = hashlib.sha256(clear.encode()).digest()
-            placeholder_prefix = "/" + nix32_encode(this_hash)
         else:
             # Level 2+: unknownDerivation placeholder
             this_hash = downstream_placeholder_unknown_derivation_raw(
                 parent_hash,
                 child_name,
             )
-            placeholder_prefix = downstream_placeholder_unknown_derivation(
-                parent_hash,
-                child_name,
-            )
-
-        # Resolve leaf outputs reachable via this child
-        # All leaf outputs at any depth resolve to the final output path
-        for leaf_out in _collect_leaf_outputs(child_node):
-            placeholder = downstream_placeholder(drv_path, leaf_out) if parent_hash is None else placeholder_prefix
-            actual_path = path_map.get((drv_path, leaf_out))
-            if actual_path is not None:
-                log.debug(
-                    "resolve_dyn_rewrite",
-                    drv_path=str(drv_path),
-                    leaf_out=leaf_out,
-                    placeholder=placeholder,
-                    actual_path=str(actual_path),
-                )
-                rewrites[placeholder] = str(actual_path)
-                new_input_srcs.add(StorePath(path=str(actual_path)))
-            else:
-                log.debug(
-                    "resolve_dyn_no_path",
-                    drv_path=str(drv_path),
-                    leaf_out=leaf_out,
-                    path_key=f"({drv_path}, {leaf_out})",
-                )
 
         # Recurse into child for deeper levels
         _resolve_dynamic_node(
@@ -439,10 +390,10 @@ def _resolve_dynamic_node(
             this_hash,
             rewrites,
             new_input_srcs,
+            (*chain, child_name),
         )
 
-    # Handle flat outputs at this level (leaf or root with no children)
-    if node.outputs and not node.children:
+    if node.outputs:
         for leaf_out in node.outputs:
             if parent_hash is None:
                 placeholder = downstream_placeholder(drv_path, leaf_out)
@@ -451,7 +402,10 @@ def _resolve_dynamic_node(
                     parent_hash,
                     leaf_out,
                 )
-            actual_path = path_map.get((drv_path, leaf_out))
+            actual_path = path_map.get((drv_path, *chain, leaf_out))
+            if actual_path is None:
+                reference = "!".join((str(drv_path), *chain, leaf_out))
+                raise ValueError(f"No resolved path for {reference}")
             log.debug(
                 "resolve_dyn_flat",
                 drv_path=str(drv_path),
@@ -460,9 +414,8 @@ def _resolve_dynamic_node(
                 path_found=actual_path is not None,
                 parent_hash=parent_hash is not None,
             )
-            if actual_path is not None:
-                rewrites[placeholder] = str(actual_path)
-                new_input_srcs.add(StorePath(path=str(actual_path)))
+            rewrites[placeholder] = str(actual_path)
+            new_input_srcs.add(StorePath(path=str(actual_path)))
 
 
 def resolve_dynamic_derivation(
@@ -480,9 +433,8 @@ def resolve_dynamic_derivation(
     Args:
         drv: The parsed derivation (with dynamic_input_drvs as ChildMapNode)
         drv_path: The .drv store path (for computing output names)
-        dynamic_output_paths: {(drv_path, *chain): actual_path}
-            Maps each chain element to its resolved store path.
-            E.g., {(producer,): drv_path, (producer, "out"): target_path}
+        dynamic_output_paths: {(drv_path, *chain, output_name): actual_path}
+            Maps each complete output reference to its resolved store path.
 
     Returns:
         A resolved BasicDerivation with placeholders rewritten and

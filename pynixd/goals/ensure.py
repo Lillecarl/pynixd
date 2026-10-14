@@ -399,7 +399,12 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
                 BuildResultStatus.UNKNOWN,
             )
         if not inner_drv.is_derivation():
-            return outer_result
+            collapsed = outer_result.copy()
+            for output_name in self.derived_path.output_names:
+                collapsed.dynamic_paths[
+                    (self.derived_path.base_store_path(), *self.derived_path.chain, output_name)
+                ] = inner_drv
+            return collapsed
 
         wrapped = self.derived_path.wrap(inner_drv)
         remainder_goal = await self.engine.get_ensure_derived_path_goal(wrapped, self.build_mode, self.substituter_ids)
@@ -407,7 +412,11 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         await remainder_goal.subscribe_many(self._subscribers)
         result = await self.run_child(remainder_goal)
 
-        nested_result = result.with_dynamic_outputs(self.derived_path.base_store_path())
+        nested_result = result.copy()
+        for output_name, output_path in result.resolved_outputs.items():
+            nested_result.dynamic_paths[
+                (self.derived_path.base_store_path(), *self.derived_path.chain, output_name)
+            ] = output_path
         nested_result.produced_paths.add(inner_drv)
         return nested_result
 
@@ -472,7 +481,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         # (Lillecarl/nanopynix#183), and it missed a fixed-output derivation with a
         # content-addressed input, which carries a placeholder as well.
         domain_drv_path = StorePath(str(drv_path))
-        if parsed.dynamic_input_drvs and dynamic_paths:
+        if parsed.dynamic_input_drvs:
             dynamic_paths = await self._input_paths(parsed, dynamic_paths)
             basic = resolve_dynamic_derivation(parsed, domain_drv_path, dynamic_paths)
         elif parsed.input_drvs:
@@ -1075,7 +1084,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         the derivation reads but does not name gets nothing, and
         `resolve_derivation` then says which one.
         """
-        answer: DynamicPathMap = {}
+        answer: DynamicPathMap = dict(dynamic_paths)
         for input_drv_path, output_names in parsed.input_drvs.items():
             drv_path = StorePath(input_drv_path)
             static: dict[str, StorePath] | None = None

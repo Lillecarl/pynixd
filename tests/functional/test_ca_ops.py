@@ -831,6 +831,38 @@ async def test_dynamic_drv_wrapper_via_pynixd(
 
 
 @pytest.mark.ca_derivations
+async def test_deferred_dynamic_producer_via_pynixd(dyn_env) -> None:
+    """Issue #9: build a deferred producer before resolving its consumer."""
+    _, uri = dyn_env
+    rc, stdout, _, stdboth = await run_subproc(
+        [
+            str(CLIENT_BIN),
+            "build",
+            "--option",
+            "builders",
+            "",
+            "--store",
+            uri,
+            "--impure",
+            "--file",
+            str(TEST_NIX),
+            "dyn.deferredWrapper",
+            "--no-link",
+            "--print-out-paths",
+        ],
+        nix_config=DYN_NIX_CONFIG,
+        expected_retcode=0,
+    )
+    assert rc == 0, stdboth
+    rc, content, _, stdboth = await run_subproc(
+        [str(CLIENT_BIN), "store", "cat", "--store", uri, stdout.strip()],
+        nix_config=DYN_NIX_CONFIG,
+    )
+    assert rc == 0, stdboth
+    assert content == "hello\nhello\n"
+
+
+@pytest.mark.ca_derivations
 async def test_deep_dynamic_drv_chain_via_pynixd(
     profiler: pyinstrument.Profiler,
     dyn_env,

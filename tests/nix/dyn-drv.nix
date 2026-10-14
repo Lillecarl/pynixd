@@ -58,6 +58,37 @@ let
     '';
   };
 
+  # A produced derivation must carry its producer's name without `.drv`.
+  deferredTarget = mkDrv {
+    name = "deferred-producer";
+    buildCommand = "echo hello > $out";
+  };
+
+  deferredProducer = mkCADrv {
+    name = "deferred-producer.drv";
+    hashMode = "text";
+    buildCommand = ''
+      while IFS= read -r line || [ -n "$line" ]; do
+        : "$line"
+      done < "${caFloat.outPath}"
+      while IFS= read -r line || [ -n "$line" ]; do
+        printf '%s\n' "$line"
+      done < "${builtins.unsafeDiscardOutputDependency deferredTarget.drvPath}" > $out
+    '';
+  };
+
+  deferredWrapper = mkDrv {
+    name = "use-deferred-producer";
+    buildCommand = ''
+      while IFS= read -r line || [ -n "$line" ]; do
+        printf '%s\n' "$line"
+      done < "${builtins.outputOf deferredProducer.outPath "out"}" > $out
+      while IFS= read -r line || [ -n "$line" ]; do
+        printf '%s\n' "$line"
+      done < "${hello.outPath}" >> $out
+    '';
+  };
+
   # ── Deep chain: 5 layers of nested outputOf ──────────────────
   #
   # builtins.outputOf wraps its first argument in a
@@ -210,7 +241,7 @@ let
 
 in
 {
-  inherit hello producingDrv wrapper target producer deepWrapper
+  inherit hello producingDrv wrapper deferredProducer deferredWrapper target producer deepWrapper
           baseA baseB caFloat producerA producerB refA refB refC crazy
           caFloat2 deferredDyn;
 }

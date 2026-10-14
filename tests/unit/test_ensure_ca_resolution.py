@@ -23,14 +23,19 @@ Issue Lillecarl/nanopynix#183.
 
 from __future__ import annotations
 
+import hashlib
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
 from pynixd.derived_path import DerivedPath
-from pynixd.drv_parser import Derivation
+from pynixd.drv_parser import ChildMapNode, Derivation
 from pynixd.goals.ensure import EnsureDerivedPathGoal
-from pynixd.goals.resolution import downstream_placeholder
+from pynixd.goals.resolution import (
+    downstream_placeholder,
+    downstream_placeholder_unknown_derivation,
+    resolve_dynamic_derivation,
+)
 from pynixd.goals.results import GoalResult, goal_success
 from pynixd.goals.substitute import SubstituteAttempt
 from pynixd.serde import BuildMode, IsValidPathResponse, QueryRealisationRequest, QueryRealisationResponse
@@ -284,3 +289,137 @@ async def test_the_output_stays_floating() -> None:
 
     assert sent.outputs["out"].path == ""
     assert sent.outputs["out"].method == "r:sha256"
+
+
+@pytest.mark.anyio
+async def test_dynamic_paths_survive_regular_input_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Issue #9: a deferred consumer keeps its producer output and source edge."""
+    producer = StorePath(ROOT_DRV)
+    parent_hash = hashlib.sha256(b"nix-upstream-output:00000000000000000000000000000001:rootCA").digest()
+    placeholder = downstream_placeholder_unknown_derivation(parent_hash, "out")
+    consumer = _dependent()
+    consumer.input_drvs = {StorePath(LEGACY_DRV): ["out"]}
+    consumer.dynamic_input_drvs = {producer: ChildMapNode(children={"out": ChildMapNode(outputs=["out"])})}
+    consumer.args = [placeholder]
+    consumer.env["application"] = placeholder
+    read_derivation = FakeLocalStore.read_derivation
+
+    async def read(store: FakeLocalStore, path: str) -> Derivation | None:
+        return consumer if path == DEP_DRV else await read_derivation(store, path)
+
+    async def child_result(child: FakeChildGoal) -> GoalResult:
+        del child
+        result = goal_success()
+        result.resolved_outputs = {"out": StorePath(ROOT_OUT)}
+        result.dynamic_paths = {(producer, "out", "out"): StorePath(ROOT_OUT)}
+        return result
+
+    monkeypatch.setattr(FakeLocalStore, "read_derivation", read)
+    monkeypatch.setattr(FakeChildGoal, "result", child_result)
+    sent = await _sent()
+
+    assert sent.env["application"] == ROOT_OUT
+    assert sent.args == [ROOT_OUT]
+    assert {StorePath(ROOT_OUT), StorePath(LEGACY_OUT)} <= sent.input_srcs
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("chain", [("out",), ("out", "next", "out")])
+async def test_nested_goals_record_the_complete_output_chain(chain: tuple[str, ...]) -> None:
+    producer = StorePath(ROOT_DRV)
+    inner = StorePath(LEGACY_DRV)
+    requested: list[DerivedPath] = []
+
+    class Child(FakeChildGoal):
+        def __init__(self, path: StorePath) -> None:
+            self.path = path
+
+        async def result(self) -> GoalResult:
+            result = goal_success()
+            result.resolved_outputs = {chain[-1] if self.path == inner else "out": self.path}
+            return result
+
+    class Engine(FakeEngine):
+        async def get_ensure_derived_path_goal(self, dp: Any, build_mode: int, substituter_ids: Any) -> FakeChildGoal:
+            del build_mode, substituter_ids
+            requested.append(dp)
+            return Child(inner if len(requested) == 1 else StorePath(ROOT_OUT))
+
+    dp = DerivedPath("!".join((ROOT_DRV, *chain, "out")))
+    goal = EnsureDerivedPathGoal(
+        engine=cast("GoalEngine", Engine()),
+        derived_path=dp,
+        build_mode=BuildMode.NORMAL,
+        substituter_ids=(),
+    )
+    result = await goal.result()
+
+    assert requested == [dp.outer, dp.wrap(inner)]
+    assert result.dynamic_paths[(producer, *chain, "out")] == StorePath(ROOT_OUT)
+    assert (producer, "out") not in result.dynamic_paths
+    assert inner in result.produced_paths
+
+
+@pytest.mark.anyio
+async def test_a_chain_past_a_plain_output_records_that_output() -> None:
+    """`deepWrapper` asks for `!out` past `target`, which is not a derivation."""
+    requested: list[DerivedPath] = []
+
+    class Child(FakeChildGoal):
+        async def result(self) -> GoalResult:
+            result = goal_success()
+            result.resolved_outputs = {"out": StorePath(ROOT_OUT)}
+            return result
+
+    class Engine(FakeEngine):
+        async def get_ensure_derived_path_goal(self, dp: Any, build_mode: int, substituter_ids: Any) -> FakeChildGoal:
+            del build_mode, substituter_ids
+            requested.append(dp)
+            return Child()
+
+    dp = DerivedPath(f"{ROOT_DRV}!out!out")
+    goal = EnsureDerivedPathGoal(
+        engine=cast("GoalEngine", Engine()),
+        derived_path=dp,
+        build_mode=BuildMode.NORMAL,
+        substituter_ids=(),
+    )
+    result = await goal.result()
+
+    assert requested == [dp.outer]
+    assert result.dynamic_paths[(StorePath(ROOT_DRV), "out", "out")] == StorePath(ROOT_OUT)
+
+
+def test_dynamic_branches_with_the_same_output_name_resolve_separately() -> None:
+    producer = StorePath(ROOT_DRV)
+    root_hash = "00000000000000000000000000000001"
+    hashes = {
+        name: hashlib.sha256(f"nix-upstream-output:{root_hash}:rootCA-{name}".encode()).digest() for name in ("a", "b")
+    }
+    placeholders = {name: downstream_placeholder_unknown_derivation(parent, "out") for name, parent in hashes.items()}
+    consumer = _dependent()
+    consumer.input_drvs = {}
+    consumer.dynamic_input_drvs = {
+        producer: ChildMapNode(
+            outputs=["out"],
+            children={name: ChildMapNode(outputs=["out"]) for name in hashes},
+        )
+    }
+    consumer.env = {**placeholders, "producer": downstream_placeholder(producer, "out")}
+    paths = {
+        (producer, "out"): StorePath(ROOT_OUT),
+        (producer, "a", "out"): StorePath(LEGACY_OUT),
+        (producer, "b", "out"): StorePath(FIXED_OUT),
+    }
+    sent = resolve_dynamic_derivation(consumer, StorePath(DEP_DRV), paths)
+
+    assert sent.env == {"a": LEGACY_OUT, "b": FIXED_OUT, "producer": ROOT_OUT}
+    assert set(paths.values()) <= sent.input_srcs
+
+
+def test_a_missing_dynamic_output_refuses_resolution() -> None:
+    consumer = _dependent()
+    consumer.input_drvs = {}
+    consumer.dynamic_input_drvs = {StorePath(ROOT_DRV): ChildMapNode(children={"out": ChildMapNode(outputs=["out"])})}
+    with pytest.raises(ValueError, match="No resolved path for .*!out!out"):
+        resolve_dynamic_derivation(consumer, StorePath(DEP_DRV), {})
