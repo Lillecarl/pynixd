@@ -357,17 +357,10 @@ class Server:
     async def _gc_tick(self) -> None:
         """Watch the disk on a short cadence, collect on pressure or schedule.
 
-        A full pass traces the roots under the garbage collector lock, which
-        holds up builds for as long as the trace takes -- far too dear to
-        run every minute. The watch instead reads the disk usage, which costs
-        a `statvfs` and no locks: over `gc_high_watermark` it drives bounded
-        passes back to back until pressure drops (the target is the floor,
-        so pressure has hysteresis built in), and every `gc_interval` it runs
-        the full pass regardless. Triggers share a cooldown window, so a
-        hovering disk fires at most once per `gc_cooldown` no matter which
-        rule would run. An hour of writes cannot fill the disk unanswered
-        when the watch answers in a minute; the full pass stays the backstop
-        for slow drift.
+        The high watermark starts a drive. The store's target ends it.
+        Each drive runs bounded passes while collection makes progress.
+        Triggers share a cooldown window; scheduled passes also collect below
+        the watermark at `gc_interval`.
         """
         settings = self.ctx.settings
         log.info(
@@ -404,19 +397,31 @@ class Server:
         One watermark pass relieves a little; a flood needs many, and a
         poll interval between each turns minutes of deleting into hours of
         waiting. So the drive re-checks pressure right after each pass and
-        runs the next while still over the watermark: up to
+        runs the next while still over the store's target: up to
         `gc_watermark_max_passes` passes, stopping early when a pass frees
         nothing -- refused everything or planned nothing -- because more
         passes change nothing until the world does. Issue #71.
         """
         cap = self.ctx.settings.gc_watermark_max_passes
         for _ in range(cap):
-            if not self._over_watermark():
+            if not self._over_gc_target():
                 return
             resp = await self._gc_pass("watermark")
             if resp is None or not resp.store_paths:
                 return
         log.info("gc_drive_capped", cap=cap)
+
+    def _over_gc_target(self) -> bool:
+        """Continue an active drive until the local store reaches its target."""
+        local = self.ctx.local_store
+        target = getattr(local, "gc_target_usage", None)
+        if target is None:
+            return self._over_watermark()
+        usage = Collector._disk_usage(local)
+        if usage is None:
+            return False
+        used, total = usage
+        return total > 0 and used / total > target
 
     def _over_watermark(self) -> bool:
         """Whether disk pressure currently warrants a bounded pass."""

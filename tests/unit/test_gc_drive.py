@@ -20,7 +20,7 @@ class FakeDrive:
         self._freed = freed
         self.passes = 0
 
-    def _over_watermark(self) -> bool:
+    def _over_gc_target(self) -> bool:
         return self._pressured.pop(0)
 
     async def _gc_pass(self, reason: str) -> Any | None:
@@ -33,12 +33,12 @@ class FakeDrive:
 
 
 async def _drive(fake: FakeDrive) -> None:
-    await Server._drive_to_target(cast("Server", fake))
+    await Server._drive_to_target(cast(Server, fake))
 
 
 @pytest.mark.anyio
 async def test_drive_stops_when_pressure_drops() -> None:
-    """Two freeing passes, then the re-check reads under the watermark."""
+    """Two freeing passes, then the re-check reads at or below the target."""
     fake = FakeDrive(pressured=[True, True, False], freed=[10, 10])
     await _drive(fake)
     assert fake.passes == 2
@@ -82,3 +82,25 @@ def test_disk_usage_reads_the_store_filesystem(monkeypatch: pytest.MonkeyPatch) 
     local = SimpleNamespace(layout=SimpleNamespace(real_store_dir="/store"))
     assert Collector._disk_usage(cast("Any", local)) == (90, 100)
     assert seen == ["/store"]
+
+
+async def test_drive_continues_below_watermark_until_target(monkeypatch: pytest.MonkeyPatch) -> None:
+    readings = iter([(88, 100), (74, 100), (70, 100)])
+    monkeypatch.setattr(Collector, "_disk_usage", staticmethod(lambda local: next(readings)))
+
+    class Drive(FakeDrive):
+        def _over_gc_target(self) -> bool:
+            return Server._over_gc_target(cast(Server, self))
+
+        def _over_watermark(self) -> bool:
+            raise AssertionError("an active drive must use the target")
+
+    fake = Drive(pressured=[], freed=[10, 10])
+    fake.ctx.local_store = SimpleNamespace(gc_target_usage=0.7)
+    await _drive(fake)
+    assert fake.passes == 2
+
+
+def test_drive_without_a_target_uses_the_watermark() -> None:
+    fake = SimpleNamespace(ctx=SimpleNamespace(local_store=object()), _over_watermark=lambda: True)
+    assert Server._over_gc_target(cast(Server, fake))
