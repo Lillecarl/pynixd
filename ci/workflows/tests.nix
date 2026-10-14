@@ -1,23 +1,15 @@
-# The CI workflow, as a value rather than as text.
+# The test workflow, as a value rather than as text.
 #
-# `.github/workflows/ci.yml` is rendered from this file. Edit this one;
-# `checks.ciWorkflow` compares the render against what is committed and fails
-# when they differ. `nix run --file . ci-workflow-update` writes the new
-# render.
+# nixidae renders it to `.github/workflows/pynixd-tests.yml`, with pynixd as
+# the working directory of every step. Tests run only in nixidae; pynixd's
+# own repository runs ci/workflows/pages.nix. nixidae/nixidae#4.
 #
 # ghanix is the schema. It takes `lib` and nothing else, which is what lets
 # this repository use it while pinning its own nixpkgs.
 #
 { lib, ghalib, nixVersion }:
 let
-  inherit (import ./bootstrap.nix { inherit lib nixVersion; }) bootstrap divertedStores;
-
-  # Docs are published from develop only. Every other branch builds nothing
-  # here, because the Pages deployment has one destination.
-  developOnly = "github.ref == 'refs/heads/develop'";
-
-  # One umbrella revision, read by every job that runs nix.
-  umbrellaRev = "\${{ needs.umbrella-rev.outputs.rev }}";
+  inherit (import ./bootstrap.nix { inherit lib nixVersion; }) divertedStores;
 
   # A gate, as one step. Each one names what broke without a reader opening a
   # log, and each pytest suite is its own process.
@@ -32,126 +24,14 @@ let
   };
 in
 ghalib.evalWorkflow {
-  name = "CI";
+  name = "pynixd tests";
 
   on = {
     push.branches = [ "**" ];
     pull_request = null;
   };
 
-  # UMBRELLA_GIT makes the umbrella fetch each source over the git protocol,
-  # and not through api.github.com. Anonymous api.github.com allows 60 calls
-  # an hour per IP, GitHub's runners share a NAT pool, and every source a job
-  # resolves is one call. nanopynix issue #301.
-  env.UMBRELLA_GIT = "1";
-
   jobs = {
-    /*
-      One umbrella revision for the whole run.
-
-      `nix/sources.nix` resolves the umbrella from UMBRELLA_REV when it is
-      set. Without it that reference is unlocked, so every job takes the head
-      of the default branch at the moment it starts. `umbrella land` pushes
-      the working copies, which starts the run, and the umbrella lock commit
-      follows seconds later, so a run that straddles the push reads two
-      umbrellas. Measured in nixkube run 35026926963: seven seconds apart,
-      two store paths, and a later job asking for one nothing had built.
-      nanopynix issue #301.
-
-      **It resolves the umbrella that locks this commit, not the head of the
-      umbrella default branch.** The head is a moving answer: it is whatever
-      landed most recently, which for a branch nobody landed is not related
-      to this commit at all. `ci/walkback.sh` reads
-      `refs/umbrella/pynixd/<revision>` from the umbrella remote instead,
-      walking HEAD backwards to the nearest revision the umbrella has locked.
-      One `git ls-remote` and one `git rev-list`, over the git protocol,
-      which the api.github.com limit above does not count.
-    */
-    umbrella-rev = {
-      runs-on = "ubuntu-24.04";
-      timeout-minutes = 5;
-      outputs.rev = "\${{ steps.resolve.outputs.rev }}";
-      # A branch nobody landed needs its branch point, so the checkout has to
-      # reach that far back. No Nix: the script is git and sed.
-      ghanix.checkout = {
-        enable = true;
-        fetchDepth = 100;
-      };
-      # Nothing to make room for, and the step is not free: it deletes tens
-      # of gigabytes and prunes every Docker image, which is minutes. The cap
-      # above is five, and it was set for a job that takes seconds.
-      ghanix.freeDiskSpace.enable = false;
-      steps = [
-        {
-          id = "resolve";
-          name = "Resolve the umbrella revision";
-          run = "ci/walkback.sh https://github.com/nixidae/nixidae pynixd | sed 's/^/rev=/' >> \"$GITHUB_OUTPUT\"";
-        }
-      ];
-    };
-
-    docs-build = {
-      "if" = developOnly;
-      needs = "umbrella-rev";
-      env.UMBRELLA_REV = umbrellaRev;
-      runs-on = "ubuntu-24.04";
-      # Under a minute when it works. A job with no bound waits six hours.
-      timeout-minutes = 20;
-      ghanix = lib.mkMerge [
-        bootstrap
-        { nix.cachix.enable = true; }
-      ];
-      steps = [
-        {
-          name = "Build documentation";
-          run = "nix build --file . pynixd-docs --out-link result --print-build-logs --print-out-paths";
-        }
-        {
-          name = "Verify docs closure";
-          run = "nix store verify --recursive --no-trust \"$(readlink -f result)\"";
-        }
-        {
-          name = "Prepare Pages artifact";
-          run = ''
-            mkdir -p public
-            cp -r --no-preserve=mode,ownership result/. public/
-          '';
-        }
-        {
-          uses = "actions/upload-pages-artifact@v3";
-          "with".path = "public";
-        }
-      ];
-    };
-
-    docs-deploy = {
-      "if" = developOnly;
-      needs = "docs-build";
-      runs-on = "ubuntu-24.04";
-      # It deploys an artifact `docs-build` made, and installs no Nix, so it
-      # has nothing to make room for.
-      ghanix.freeDiskSpace.enable = false;
-      permissions = {
-        pages = "write";
-        id-token = "write";
-      };
-      environment = {
-        name = "github-pages";
-        url = "\${{ steps.deployment.outputs.page_url }}";
-      };
-      concurrency = {
-        group = "pages";
-        cancel-in-progress = false;
-      };
-      steps = [
-        {
-          name = "Deploy to GitHub Pages";
-          id = "deployment";
-          uses = "actions/deploy-pages@v4";
-        }
-      ];
-    };
-
     /*
       Nix's own functional suite, against a plain daemon and against pynixd.
 
@@ -188,9 +68,7 @@ ghalib.evalWorkflow {
       Issues #11 and #19.
     */
     nix-functional-tests = {
-      needs = "umbrella-rev";
       env = {
-        UMBRELLA_REV = umbrellaRev;
         NIXFT_WORK = "/tmp/nixft";
         JOBS = "4";
       };
@@ -225,8 +103,6 @@ ghalib.evalWorkflow {
     };
 
     test = {
-      needs = "umbrella-rev";
-      env.UMBRELLA_REV = umbrellaRev;
       runs-on = "ubuntu-latest";
       # **A hang here used to cost six hours, and the log came back empty.**
       # pytest printed `149 errors in 11.91s` and then did not exit, and the
@@ -263,7 +139,7 @@ ghalib.evalWorkflow {
         ])
         (pytestSuite "Protocol tests" [ "nix-daemon-protocol/tests" ])
         # The differential suite: pynixd's goal engine against Nix's own,
-        # which nanopynix calls in process. It ran nowhere until the umbrella
+        # which nanopynix calls in process. It ran nowhere until nixidae
         # supplied nanopynix to the shell, and `tests/differential/conftest.py`
         # skips the lot rather than failing where the oracle is absent -- so a
         # green run here is not proof on its own that it ran. 16 tests, 47 s.
@@ -274,12 +150,8 @@ ghalib.evalWorkflow {
         # -- and no wired path ran it. Issue #33 is the same hole one suite
         # over. 8 tests, 22 s.
         (pytestSuite "Parity tests" [ "tests/parity" ])
-        # **After the suites, because this one can be wrong about itself.**
-        # It renders with the ghanix the umbrella locks, and `walkback.sh`
-        # runs before `umbrella mark` has published the mapping for this
-        # commit -- so the first run after a land that changes ghanix renders
-        # with the previous one and reports a drift that is not there. Ahead
-        # of the suites it hid all four of them behind that. Issue #49.
+        # After the suites: a drift in the Pages render must not hide them.
+        # Issue #49.
         {
           name = "The workflow render";
           run = "nix build --file . checks.ciWorkflow --no-link --print-build-logs";

@@ -219,24 +219,31 @@ let
   # which is what lets this repository use it while pinning its own nixpkgs.
   ghalib = import sources.ghanix { inherit lib; };
 
-  # Every GitHub Actions workflow as a value, beside the file it renders to.
-  # ci/workflows/*.nix hold them and say why.
-  ciWorkflows =
-    let
-      workflow = module: committed: {
-        inherit committed;
-        # `nixVersion` is the Nix this repository pins, and the runner
-        # installs that one. ci/workflows/bootstrap.nix says what a second
-        # version on the machine cost.
-        value = import module {
-          inherit lib ghalib;
-          nixVersion = pkgs.nix.version;
-        };
-      };
-    in
-    {
-      ci = workflow ./ci/workflows/ci.nix ./.github/workflows/ci.yml;
+  # A workflow as a value. `nixVersion` is the Nix this repository pins, and
+  # the runner installs that one. ci/workflows/bootstrap.nix says what a
+  # second version on the machine cost.
+  ciWorkflowValue =
+    module:
+    import module {
+      inherit lib ghalib;
+      nixVersion = pkgs.nix.version;
     };
+
+  # The workflows of pynixd's own repository, beside the file each renders
+  # to. ci/workflows/*.nix hold them and say why.
+  ciWorkflows = {
+    pages = {
+      committed = ./.github/workflows/pages.yml;
+      value = ciWorkflowValue ./ci/workflows/pages.nix;
+    };
+  };
+
+  # The workflows that run the tests. nixidae renders each one to
+  # `.github/workflows/pynixd-<name>.yml`, with this directory as the working
+  # directory of every step.
+  ciTestWorkflows = {
+    tests = ciWorkflowValue ./ci/workflows/tests.nix;
+  };
 
   # Those values as the files GitHub reads.
   #
@@ -298,8 +305,6 @@ let
     # parser answers the boolean `true` for it, which would compare a boolean
     # key against a string one and fail every run.
     #
-    # It renders with the ghanix the umbrella locks, not a working copy. So a
-    # ghanix change reaches this check only after the umbrella lock moves.
     ciWorkflow =
       pkgs.runCommand "ci-workflow-check"
         {
@@ -337,6 +342,7 @@ package
     checks
     nixFunctionalTests
     ciWorkflows
+    ciTestWorkflows
     ciWorkflowFiles
     ci-workflow-update
     pkgs
