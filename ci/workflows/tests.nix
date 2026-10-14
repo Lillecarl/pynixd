@@ -24,7 +24,7 @@ let
   };
 in
 ghalib.evalWorkflow {
-  name = "pynixd tests";
+  name = "tests";
 
   on = {
     push.branches = [ "**" ];
