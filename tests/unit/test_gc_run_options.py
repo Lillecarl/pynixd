@@ -13,6 +13,8 @@ so they veto nothing here.
 from __future__ import annotations
 
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -77,6 +79,19 @@ class FakeLayout:
 
 
 @dataclass
+class FakeDeleteConn:
+    """One held upstream connection: the pass deletes over it alone."""
+
+    local: FakeLocal
+
+    async def call(self, request: Any, **_kwargs: Any) -> Any:
+        self.local.deleted.extend(str(path) for path in request.paths_to_delete)
+        return _Deleted(
+            set(request.paths_to_delete), bytes_freed=sum(self.local.sizes[str(p)] for p in request.paths_to_delete)
+        )
+
+
+@dataclass
 class FakeLocal:
     """A local store with two droppable paths and an open permit."""
 
@@ -124,6 +139,16 @@ class FakeLocal:
 
     async def retire_idle_connections(self) -> int:
         return 0
+
+    async def probe(self) -> None:
+        return None
+
+    def transfer_conn(self, _options: Any = None) -> Any:
+        return self._held()
+
+    @asynccontextmanager
+    async def _held(self) -> AsyncIterator[FakeDeleteConn]:
+        yield FakeDeleteConn(self)
 
     async def call(self, request: Any, **_kwargs: Any) -> Any:
         self.calls.append(f"call:{type(request).__name__}")

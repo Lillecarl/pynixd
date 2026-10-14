@@ -10,7 +10,8 @@ Nix, which is the slow path that stays correct.
 from __future__ import annotations
 
 import sqlite3
-from contextlib import closing
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, closing
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -262,12 +263,13 @@ async def test_close_batch_drops_a_live_anchored_seed(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
-async def test_delete_bisects_past_a_live_path(tmp_path: Path) -> None:
-    """One live path costs retries, not the batch.
+async def test_delete_refuses_a_live_path_without_stopping_the_rest(tmp_path: Path) -> None:
+    """One live path costs a refusal, not retries and not the batch.
 
-    The daemon throws on the first live path and deletes nothing; the retry
-    splits blindly until single live paths report refused and drop, and the
-    dead remainder deletes. Issue #70.
+    The daemon throws on a live path; with one path per request the throw
+    carries that path, so it reports refused and drops while the dead
+    remainder deletes over the same held connection. No bisection: with
+    nothing travelling together there is nothing to split. Issue #10.
     """
     first = f"/nix/store/{HASH_A}-first"
     live = f"/nix/store/{HASH_A}-live"
@@ -279,18 +281,34 @@ async def test_delete_bisects_past_a_live_path(tmp_path: Path) -> None:
         bytes_freed: int
 
     @dataclass
+    class HeldConn:
+        local: DeletingLocal
+
+        async def call(self, request: Any, **_kwargs: Any) -> Any:
+            asked = {str(path) for path in request.paths_to_delete}
+            self.local.attempts.append(frozenset(asked))
+            if live in asked:
+                raise BackendError(f"Cannot delete path '{live}' since it is still alive")
+            return _Deleted({StorePath(path) for path in asked}, 0)
+
+    @dataclass
     class DeletingLocal(FakeLocal):
         attempts: list[frozenset[str]] = field(default_factory=list)
+        acquired: int = 0
 
         async def retire_idle_connections(self) -> int:
             return 0
 
-        async def call(self, request: Any, **_kwargs: Any) -> Any:
-            asked = {str(path) for path in request.paths_to_delete}
-            self.attempts.append(frozenset(asked))
-            if live in asked:
-                raise BackendError(f"Cannot delete path '{live}' since it is still alive")
-            return _Deleted({StorePath(path) for path in asked}, 0)
+        async def probe(self) -> None:
+            return None
+
+        def transfer_conn(self, _options: Any = None) -> Any:
+            return self._held()
+
+        @asynccontextmanager
+        async def _held(self) -> AsyncIterator[HeldConn]:
+            self.acquired += 1
+            yield HeldConn(self)
 
     state, store, _a, _b = _lab(tmp_path)
     local = DeletingLocal(
@@ -304,4 +322,5 @@ async def test_delete_bisects_past_a_live_path(tmp_path: Path) -> None:
 
     assert {str(path) for path in resp.store_paths} == {first, second}
     assert any("refused" in line.text for line in lines)
-    assert len(local.attempts) > 1
+    assert local.attempts == [frozenset({first}), frozenset({live}), frozenset({second})]
+    assert local.acquired == 1

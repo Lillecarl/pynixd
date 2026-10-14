@@ -8,6 +8,8 @@ raises.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -27,6 +29,7 @@ from pynixd.daemon_extensions import (
     QueryPathInfosRequest,
     QueryPathInfosResponse,
 )
+from pynixd.exceptions import BackendError
 from pynixd.gc import Collector
 
 HELLO = "/nix/store/00000000000000000000000000000000-hello"
@@ -58,6 +61,25 @@ def _closure(seeds: Any) -> set[str]:
 
 
 @dataclass
+class FakeConn:
+    """One held upstream connection: every delete of the queue rides it."""
+
+    local: FakeLocal
+    calls: int = 0
+
+    async def call(self, request: Any, **_kwargs: Any) -> Any:
+        paths = {str(path) for path in request.paths_to_delete}
+        self.calls += 1
+        self.local.sizes.append(len(paths))
+        for path in paths:
+            if path in self.local.refuse:
+                raise BackendError(f"pynixd: fake refuses {path}")
+        kept = paths - self.local.silent
+        self.local.deleted.extend(sorted(kept))
+        return _Deleted({StorePath(path) for path in kept})
+
+
+@dataclass
 class FakeLocal:
     """The local store: it answers from `REFERENCES` and records the deletes."""
 
@@ -65,6 +87,10 @@ class FakeLocal:
     gc_defer: bool = False
     live: set[str] = field(default_factory=set)
     deleted: list[str] = field(default_factory=list)
+    refuse: set[str] = field(default_factory=set)
+    silent: set[str] = field(default_factory=set)
+    sizes: list[int] = field(default_factory=list)
+    acquired: int = 0
 
     async def execute(self, request: Any, **_kwargs: Any) -> Any:
         if isinstance(request, QueryAllValidPathsRequest):
@@ -81,6 +107,17 @@ class FakeLocal:
 
     async def retire_idle_connections(self) -> int:
         return 0
+
+    async def probe(self) -> None:
+        return None
+
+    def transfer_conn(self, _options: Any = None) -> Any:
+        return self._held()
+
+    @asynccontextmanager
+    async def _held(self) -> AsyncIterator[FakeConn]:
+        self.acquired += 1
+        yield FakeConn(self)
 
     async def call(self, request: Any, **_kwargs: Any) -> Any:
         if request.action == GCAction.RETURN_LIVE:
@@ -134,8 +171,12 @@ def _collector(
     cache: FakeCache | None,
     answers_closure: bool = True,
     live: set[str] | None = None,
+    refuse: set[str] | None = None,
+    silent: set[str] | None = None,
 ) -> tuple[Collector, FakeLocal]:
-    local = FakeLocal(answers_closure=answers_closure, live=live or set())
+    local = FakeLocal(
+        answers_closure=answers_closure, live=live or set(), refuse=refuse or set(), silent=silent or set()
+    )
     return Collector(FakeContext(local=local, cache=cache)), local  # type: ignore[arg-type] -- a fake context
 
 
@@ -186,3 +227,46 @@ async def test_no_substituter_named_drops_nothing():
 
     assert _names(await collector.plan()) == set()
     assert local.deleted == []
+
+
+@pytest.mark.anyio
+async def test_delete_sends_each_path_alone_on_one_connection():
+    """Issue #10: no single call carries the batch; one connection serves the queue."""
+    collector, local = _collector(None)
+    batch = [HELLO, GLIBC, ONLY_HERE]
+    weights = {path: (10, 0) for path in batch}
+    lines: list[Any] = []
+
+    resp = await collector._delete(batch, weights, lines, None)
+
+    assert local.deleted == batch
+    assert local.acquired == 1
+    assert local.sizes == [1, 1, 1]
+    assert _names(resp.store_paths) == set(batch)
+    assert lines[-1].text == f"deleted {len(batch)} paths, {len(batch)} bytes freed"
+
+
+@pytest.mark.anyio
+async def test_delete_refusal_mid_queue_deletes_the_rest():
+    """A live path drops without stopping the queue; the next pass re-plans it."""
+    collector, local = _collector(None, refuse={GLIBC})
+    batch = [HELLO, GLIBC, ONLY_HERE]
+    weights = {path: (10, 0) for path in batch}
+
+    resp = await collector._delete(batch, weights, [], None)
+
+    assert local.deleted == [HELLO, ONLY_HERE]
+    assert _names(resp.store_paths) == {HELLO, ONLY_HERE}
+
+
+@pytest.mark.anyio
+async def test_delete_silent_skip_stays_for_next_pass():
+    """A path the daemon skips without error is spared, not counted deleted."""
+    collector, local = _collector(None, silent={GLIBC})
+    batch = [HELLO, GLIBC, ONLY_HERE]
+    weights = {path: (10, 0) for path in batch}
+
+    resp = await collector._delete(batch, weights, [], None)
+
+    assert local.deleted == [HELLO, ONLY_HERE]
+    assert _names(resp.store_paths) == {HELLO, ONLY_HERE}

@@ -598,23 +598,21 @@ class Collector:
     async def _delete(
         self, batch: list[str], weights: dict[str, tuple[int, int]], lines: list[LogNext], client: ClientConn | None
     ) -> PynixdCollectGarbageResponse:
-        """Delete *batch* through the daemon, narrating each path on the wire.
+        """Delete *batch* through the daemon, one path per request.
 
-        One request carries the whole batch: the set is closed under
-        referrers, and only a set that travels together passes the check at
-        `gc.cc:653`. Each `deleting` line goes out before its path is asked
-        for, the way `gc.cc:574` prints before it unlinks, so a refused
-        batch leaves lines for paths that stayed. The outcome line says
-        which one happened; the buffered lines travel in the response
-        either way.
+        One connection stays up for the whole queue: it is checked out
+        once, each path travels as its own `DELETE_SPECIFIC`, and it goes
+        back when the queue is empty. No single call can then go silent
+        for minutes the way one request for the whole batch could, and
+        each path reports progress on the wire as it leaves. Issue #10.
 
-        A refusal no longer abandons the batch. `gc.cc:778` throws on the
-        first live path and deletes nothing, but it names no names, so the
-        retry bisects blindly: halves that pass delete, halves that refuse
-        split again, down to single paths that report refused and drop.
-        Desync is expected -- a root that arrived after the plan -- which is
-        why Nix does the removing, and the pass deletes what it validly can
-        instead of nothing. Issue #70.
+        A refused path drops and stays for the next pass, which re-plans
+        from the new state. The daemon throws on the first live path in
+        the request (`gc.cc:778`), and with one path per request the throw
+        carries that path, so the blind bisection the whole-batch request
+        needed has nothing left to do. Desync is expected -- a root that
+        arrived after the plan -- which is why Nix does the removing, and
+        the pass deletes what it validly can instead of nothing.
         """
         local = self.ctx.local_store
         # A pooled connection keeps a worker of the daemon alive, and that
@@ -638,42 +636,33 @@ class Collector:
             if client is not None:
                 await client.send(line)
 
-        for path in batch:
-            await say(f"deleting '{path}'")
-
+        await local.probe()
         deleted: set[str] = set()
         freed = 0
         refused = 0
-        pending = [list(batch)]
-        while pending:
-            current = pending.pop()
-            if not current:
-                continue
-            try:
-                resp = await local.call(
-                    _request(GCAction.DELETE_SPECIFIC, {StorePath(path) for path in current}),
-                    raise_on_error=True,
-                )
-            except BackendError as exc:
-                if len(current) == 1:
-                    log.warning("gc_path_refused", path=current[0], reason=str(exc))
+        spared = 0
+        async with local.transfer_conn() as conn:
+            for path in batch:
+                await say(f"deleting '{path}'")
+                try:
+                    resp = await conn.call(
+                        _request(GCAction.DELETE_SPECIFIC, {StorePath(path)}),
+                        raise_on_error=True,
+                    )
+                except BackendError as exc:
+                    log.warning("gc_path_refused", path=path, reason=str(exc))
                     refused += 1
                     continue
-                log.warning("gc_batch_refused", asked=len(current), reason=str(exc))
-                middle = len(current) // 2
-                pending.append(current[:middle])
-                pending.append(current[middle:])
-                continue
-            got = {str(path) for path in resp.paths_deleted}
-            deleted |= got
-            freed += resp.bytes_freed
-            left = set(current) - got
-            if left:
-                # Asked and abandoned without error: a root arrived for
-                # these mid-pass (a temp root lands silently, `gc.cc`
-                # skips it in the deletion loop). They stay for the next
-                # pass, which re-plans from the new state.
-                log.warning("gc_pass_partial", asked=len(current), left=len(left))
+                got = {str(deleted_path) for deleted_path in resp.paths_deleted}
+                deleted |= got
+                freed += resp.bytes_freed
+                if path not in got:
+                    # Asked and abandoned without error: a root arrived for
+                    # this one mid-pass (a temp root lands silently, `gc.cc`
+                    # skips it in the deletion loop). It stays for the next
+                    # pass, which re-plans from the new state.
+                    log.warning("gc_path_spared", path=path)
+                    spared += 1
 
         if physical is not None and deleted == set(batch):
             # The whole batch went, so the walked blocks are what left the
@@ -681,9 +670,9 @@ class Collector:
             # attribution of shared blocks has no exact answer, and the
             # logical sum stays an upper bound either way.
             freed = physical
-        log.info("gc_pass_done", deleted=len(deleted), refused=refused, bytes=freed)
-        if refused:
-            await say(f"delete refused for {refused} live paths, deleted the rest")
+        log.info("gc_pass_done", deleted=len(deleted), refused=refused, spared=spared, bytes=freed)
+        if refused or spared:
+            await say(f"delete refused for {refused} live paths, {spared} spared, deleted the rest")
         await say(f"deleted {len(deleted)} paths, {freed} bytes freed")
         return self._answered(
             PynixdCollectGarbageResponse(store_paths={StorePath(path) for path in deleted}, bytes=freed),

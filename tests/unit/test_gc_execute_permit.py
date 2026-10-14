@@ -10,6 +10,8 @@ of it.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -60,6 +62,20 @@ def _weighed(path: str, nar_size: int) -> ValidPathInfo:
 
 
 @dataclass
+class FakeDeleteConn:
+    """One held upstream connection: the pass deletes over it alone."""
+
+    local: FakeLocal
+    calls: int = 0
+
+    async def call(self, request: Any, **_kwargs: Any) -> Any:
+        self.calls += 1
+        self.local.calls.append(f"held:{type(request).__name__}")
+        self.local.deleted.extend(str(path) for path in request.paths_to_delete)
+        return _Deleted(set(request.paths_to_delete))
+
+
+@dataclass
 class FakeLocal:
     """A local store with one droppable path and an unset permit."""
 
@@ -68,6 +84,7 @@ class FakeLocal:
     live: set[str] = field(default_factory=set)
     calls: list[str] = field(default_factory=list)
     deleted: list[str] = field(default_factory=list)
+    acquired: int = 0
 
     async def execute(self, request: Any, **_kwargs: Any) -> Any:
         self.calls.append(type(request).__name__)
@@ -88,6 +105,17 @@ class FakeLocal:
 
     async def retire_idle_connections(self) -> int:
         return 0
+
+    async def probe(self) -> None:
+        return None
+
+    def transfer_conn(self, _options: Any = None) -> Any:
+        return self._held()
+
+    @asynccontextmanager
+    async def _held(self) -> AsyncIterator[FakeDeleteConn]:
+        self.acquired += 1
+        yield FakeDeleteConn(self)
 
     async def call(self, request: Any, **_kwargs: Any) -> Any:
         self.calls.append(f"call:{type(request).__name__}")
@@ -162,6 +190,7 @@ async def test_execute_with_permit_deletes():
 
     assert {str(path) for path in resp.store_paths} == {A}
     assert local.deleted == [A]
+    assert local.acquired == 1
 
 
 @pytest.mark.anyio
