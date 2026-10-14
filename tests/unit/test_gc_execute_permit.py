@@ -86,6 +86,9 @@ class FakeLocal:
     deleted: list[str] = field(default_factory=list)
     acquired: int = 0
 
+    def forget_path_info(self, path: str) -> None:
+        return None
+
     async def execute(self, request: Any, **_kwargs: Any) -> Any:
         self.calls.append(type(request).__name__)
         if isinstance(request, QueryAllValidPathsRequest):

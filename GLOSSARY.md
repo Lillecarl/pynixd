@@ -52,6 +52,13 @@ It asks the daemon for `RETURN_LIVE` only when Python resolution is unavailable.
 The background watch refreshes Python state without daemon comparisons.
 The daemon performs deletions and checks liveness again to protect roots created after planning.
 
+### GC Delete Group
+The collector sends at most 100 paths per daemon deletion request over one held connection.
+A failed request can delete some paths without returning their names.
+The collector rechecks validity directly with the daemon, then splits the remaining group to isolate refusals.
+Refused paths get one final retry after later groups release their references.
+Timed-out groups receive no further deletion requests during that run.
+
 ### Three-Tier Execution
 The pattern used to separate protocol IO from logic:
 1. **Server Dispatch** (`handle`): Entry point that decodes from the client wire.

@@ -9,14 +9,17 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from aiohttp import web
 
+from nix_daemon_protocol import CollectGarbageRequest
 from nix_daemon_protocol.ids import StoreId
+from nix_daemon_protocol.wire_ops import WireRequest
 from pynixd import Server
 from pynixd.config import HTTPBinaryCacheSpec
+from pynixd.connection import Connection
 from pynixd.daemon_extensions import PynixdGCAction
 from pynixd.gc import Collector
 from pynixd.store import LocalDBStore, Store
@@ -207,3 +210,53 @@ async def test_a_substituter_nobody_deferred_to_drops_nothing(lab: _Lab) -> None
 
     assert resp.store_paths == set()
     assert await _valid(lab.store_path) == valid
+
+
+async def test_chunk_refusals_keep_roots_and_release_cross_chunk_references(
+    lab: _Lab,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #12: one rooted path cannot prevent the rest of a group leaving."""
+    monkeypatch.setattr("pynixd.gc._DELETE_BATCH_SIZE", 2)
+    root = lab.store_path / "nix/var/nix/gcroots/chunk-test"
+    root.symlink_to(lab.unique)  # noqa: ASYNC240 -- test setup
+    async with _pynixd(lab, None) as server:
+        response = await Collector(server.ctx)._delete(
+            [lab.child, lab.unique, lab.parent, lab.spare],
+            {},
+            [],
+            None,
+        )
+    assert {str(path) for path in response.store_paths} == {lab.child, lab.parent, lab.spare}
+    assert await _valid(lab.store_path) == {lab.unique}
+    assert response.bytes > 0
+
+
+async def test_real_daemon_deletes_205_paths_in_three_requests(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store_path = tmp_path / "chunk-store"
+    store_path.mkdir()  # noqa: ASYNC240 -- test setup
+    paths = []
+    for i in range(205):
+        source = tmp_path / f"chunk-{i}"
+        source.write_text(f"chunk test {i}\n")  # noqa: ASYNC240 -- test setup
+        _rc, stdout, _stderr, _both = await run_subproc(
+            [str(NIX_BIN), "store", "add-path", "--store", str(store_path), str(source)],
+            verbose=False,
+        )
+        paths.append(stdout.strip())
+    assert len(paths) == 205
+    lab = _Lab(store_path, tmp_path / "cache", "", "", "", "")
+    calls: list[int] = []
+    original = Connection.call
+
+    async def record(self: Connection, request: WireRequest, **kwargs: Any) -> Any:
+        if isinstance(request, CollectGarbageRequest):
+            calls.append(len(request.paths_to_delete))
+        return await original(self, request, **kwargs)
+
+    monkeypatch.setattr(Connection, "call", record)
+    async with _pynixd(lab, None) as server:
+        response = await Collector(server.ctx)._delete(paths, {}, [], None)
+    assert {str(path) for path in response.store_paths} == set(paths)
+    assert calls == [100, 100, 5]
+    assert await _valid(store_path) == set()

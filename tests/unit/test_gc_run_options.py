@@ -106,6 +106,9 @@ class FakeLocal:
     marks: list[tuple[str, bool]] = field(default_factory=list)
     deleted: list[str] = field(default_factory=list)
 
+    def forget_path_info(self, path: str) -> None:
+        return None
+
     async def execute(self, request: Any, **_kwargs: Any) -> Any:
         self.calls.append(type(request).__name__)
         self.marks.append((type(request).__name__, bool(_kwargs.get("mark", True))))

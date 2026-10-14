@@ -22,6 +22,8 @@ from nix_daemon_protocol import (
     GCAction,
     QueryAllValidPathsRequest,
     QueryAllValidPathsResponse,
+    QueryValidPathsRequest,
+    QueryValidPathsResponse,
 )
 from nix_daemon_protocol.store_path import StorePath
 from pynixd.db_migrations import LIVENESS_ROOT_TABLE, apply_migrations
@@ -65,6 +67,9 @@ class FakeLocal:
     gc_max_age: int | None = 86400
     gc_allow_execute: bool = True
     calls: list[str] = field(default_factory=list)
+
+    def forget_path_info(self, path: str) -> None:
+        return None
 
     async def execute(self, request: Any, **_kwargs: Any) -> Any:
         if isinstance(request, QueryAllValidPathsRequest):
@@ -264,14 +269,7 @@ async def test_close_batch_drops_a_live_anchored_seed(tmp_path: Path) -> None:
 
 @pytest.mark.anyio
 async def test_delete_refuses_a_live_path_without_stopping_the_rest(tmp_path: Path) -> None:
-    """One live path costs two refusals, not the batch.
-
-    The daemon throws on a live path; with one path per request the throw
-    carries that path, so it reports refused while the dead remainder
-    deletes over the same held connection, and the retry lap asks for it
-    once more before it stays for the next pass. No bisection: with
-    nothing travelling together there is nothing to split. Issue #10.
-    """
+    """A live path is isolated while the rest of its group is deleted."""
     first = f"/nix/store/{HASH_A}-first"
     live = f"/nix/store/{HASH_A}-live"
     second = f"/nix/store/{HASH_B}-second"
@@ -286,6 +284,8 @@ async def test_delete_refuses_a_live_path_without_stopping_the_rest(tmp_path: Pa
         local: DeletingLocal
 
         async def call(self, request: Any, **_kwargs: Any) -> Any:
+            if isinstance(request, QueryValidPathsRequest):
+                return QueryValidPathsResponse(paths=request.paths)
             asked = {str(path) for path in request.paths_to_delete}
             self.local.attempts.append(frozenset(asked))
             if live in asked:
@@ -323,5 +323,12 @@ async def test_delete_refuses_a_live_path_without_stopping_the_rest(tmp_path: Pa
 
     assert {str(path) for path in resp.store_paths} == {first, second}
     assert any("refused" in line.text for line in lines)
-    assert local.attempts == [frozenset({first}), frozenset({live}), frozenset({second}), frozenset({live})]
+    assert local.attempts == [
+        frozenset({first, live, second}),
+        frozenset({first}),
+        frozenset({live, second}),
+        frozenset({live}),
+        frozenset({second}),
+        frozenset({live}),
+    ]
     assert local.acquired == 2
