@@ -51,7 +51,7 @@ let
   };
   vivarium-runner = (import (sources.vivarium + "/lib.nix") { inherit pkgs; }).runner;
 
-  nanopynix = import sources.nanopynix { };
+  nanopynix = import sources.nanopynix { inherit sources; };
 
   /*
     The interpreter of the development shell, resolved by pyproject.nix.
