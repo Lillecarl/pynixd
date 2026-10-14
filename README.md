@@ -1,6 +1,6 @@
 # pynixd
 
-[![Documentation](https://img.shields.io/badge/docs-lillecarl.github.io-blue)](https://nixidae.github.io/pynixd/)
+[![Documentation](https://img.shields.io/badge/docs-nixidae.github.io-blue)](https://nixidae.github.io/pynixd/)
 
 > Built by me with a bunch of AI models
 
