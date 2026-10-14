@@ -264,11 +264,12 @@ async def test_close_batch_drops_a_live_anchored_seed(tmp_path: Path) -> None:
 
 @pytest.mark.anyio
 async def test_delete_refuses_a_live_path_without_stopping_the_rest(tmp_path: Path) -> None:
-    """One live path costs a refusal, not retries and not the batch.
+    """One live path costs two refusals, not the batch.
 
     The daemon throws on a live path; with one path per request the throw
-    carries that path, so it reports refused and drops while the dead
-    remainder deletes over the same held connection. No bisection: with
+    carries that path, so it reports refused while the dead remainder
+    deletes over the same held connection, and the retry lap asks for it
+    once more before it stays for the next pass. No bisection: with
     nothing travelling together there is nothing to split. Issue #10.
     """
     first = f"/nix/store/{HASH_A}-first"
@@ -322,5 +323,5 @@ async def test_delete_refuses_a_live_path_without_stopping_the_rest(tmp_path: Pa
 
     assert {str(path) for path in resp.store_paths} == {first, second}
     assert any("refused" in line.text for line in lines)
-    assert local.attempts == [frozenset({first}), frozenset({live}), frozenset({second})]
+    assert local.attempts == [frozenset({first}), frozenset({live}), frozenset({second}), frozenset({live})]
     assert local.acquired == 1

@@ -74,6 +74,9 @@ class FakeConn:
         for path in paths:
             if path in self.local.refuse:
                 raise BackendError(f"pynixd: fake refuses {path}")
+            blocker = self.local.refuse_until_gone.get(path)
+            if blocker is not None and blocker not in self.local.deleted:
+                raise BackendError(f"pynixd: fake refuses {path} while {blocker} stands")
         kept = paths - self.local.silent
         self.local.deleted.extend(sorted(kept))
         return _Deleted({StorePath(path) for path in kept})
@@ -88,6 +91,7 @@ class FakeLocal:
     live: set[str] = field(default_factory=set)
     deleted: list[str] = field(default_factory=list)
     refuse: set[str] = field(default_factory=set)
+    refuse_until_gone: dict[str, str] = field(default_factory=dict)
     silent: set[str] = field(default_factory=set)
     sizes: list[int] = field(default_factory=list)
     acquired: int = 0
@@ -172,10 +176,15 @@ def _collector(
     answers_closure: bool = True,
     live: set[str] | None = None,
     refuse: set[str] | None = None,
+    refuse_until_gone: dict[str, str] | None = None,
     silent: set[str] | None = None,
 ) -> tuple[Collector, FakeLocal]:
     local = FakeLocal(
-        answers_closure=answers_closure, live=live or set(), refuse=refuse or set(), silent=silent or set()
+        answers_closure=answers_closure,
+        live=live or set(),
+        refuse=refuse or set(),
+        refuse_until_gone=refuse_until_gone or {},
+        silent=silent or set(),
     )
     return Collector(FakeContext(local=local, cache=cache)), local  # type: ignore[arg-type] -- a fake context
 
@@ -256,7 +265,26 @@ async def test_delete_refusal_mid_queue_deletes_the_rest():
     resp = await collector._delete(batch, weights, [], None)
 
     assert local.deleted == [HELLO, ONLY_HERE]
+    assert local.sizes == [1, 1, 1, 1]
     assert _names(resp.store_paths) == {HELLO, ONLY_HERE}
+
+
+@pytest.mark.anyio
+async def test_delete_retries_a_path_its_referrer_blocked():
+    """A child refused while its referrer stands goes on the retry lap.
+
+    One request for the whole batch deleted referrer and reference
+    together; one request per path meets the child first and the daemon
+    refuses it as alive. The second lap finds the referrer gone.
+    """
+    collector, local = _collector(None, refuse_until_gone={GLIBC: HELLO})
+    batch = [GLIBC, HELLO]
+    weights = {path: (10, 0) for path in batch}
+
+    resp = await collector._delete(batch, weights, [], None)
+
+    assert sorted(local.deleted) == sorted([GLIBC, HELLO])
+    assert _names(resp.store_paths) == {GLIBC, HELLO}
 
 
 @pytest.mark.anyio

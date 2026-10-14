@@ -606,13 +606,18 @@ class Collector:
         for minutes the way one request for the whole batch could, and
         each path reports progress on the wire as it leaves. Issue #10.
 
-        A refused path drops and stays for the next pass, which re-plans
-        from the new state. The daemon throws on the first live path in
-        the request (`gc.cc:778`), and with one path per request the throw
-        carries that path, so the blind bisection the whole-batch request
-        needed has nothing left to do. Desync is expected -- a root that
-        arrived after the plan -- which is why Nix does the removing, and
-        the pass deletes what it validly can instead of nothing.
+        A refused path gets one more lap at the end of the queue, over the
+        same held connection: mid-queue "still alive" often means "a
+        referrer later in this same queue still holds it", and a single
+        request for the whole batch deleted those together. A path that
+        is still refused after the second lap drops and stays for the
+        next pass, which re-plans from the new state. The daemon throws
+        on the first live path in the request (`gc.cc:778`), and with one
+        path per request the throw carries that path, so the blind
+        bisection the whole-batch request needed has nothing left to do.
+        Desync is expected -- a root that arrived after the plan -- which
+        is why Nix does the removing, and the pass deletes what it
+        validly can instead of nothing.
         """
         local = self.ctx.local_store
         # A pooled connection keeps a worker of the daemon alive, and that
@@ -642,27 +647,36 @@ class Collector:
         refused = 0
         spared = 0
         async with local.transfer_conn() as conn:
-            for path in batch:
-                await say(f"deleting '{path}'")
-                try:
-                    resp = await conn.call(
-                        _request(GCAction.DELETE_SPECIFIC, {StorePath(path)}),
-                        raise_on_error=True,
-                    )
-                except BackendError as exc:
-                    log.warning("gc_path_refused", path=path, reason=str(exc))
-                    refused += 1
-                    continue
-                got = {str(deleted_path) for deleted_path in resp.paths_deleted}
-                deleted |= got
-                freed += resp.bytes_freed
-                if path not in got:
-                    # Asked and abandoned without error: a root arrived for
-                    # this one mid-pass (a temp root lands silently, `gc.cc`
-                    # skips it in the deletion loop). It stays for the next
-                    # pass, which re-plans from the new state.
-                    log.warning("gc_path_spared", path=path)
-                    spared += 1
+            pending = list(batch)
+            for lap in (1, 2):
+                if not pending:
+                    break
+                if lap == 2:
+                    log.info("gc_delete_retry", paths=len(pending))
+                still: list[str] = []
+                for path in pending:
+                    await say(f"deleting '{path}'")
+                    try:
+                        resp = await conn.call(
+                            _request(GCAction.DELETE_SPECIFIC, {StorePath(path)}),
+                            raise_on_error=True,
+                        )
+                    except BackendError as exc:
+                        log.warning("gc_path_refused", path=path, reason=str(exc))
+                        still.append(path)
+                        continue
+                    got = {str(deleted_path) for deleted_path in resp.paths_deleted}
+                    deleted |= got
+                    freed += resp.bytes_freed
+                    if path not in got:
+                        # Asked and abandoned without error: a root arrived for
+                        # this one mid-pass (a temp root lands silently, `gc.cc`
+                        # skips it in the deletion loop). It stays for the next
+                        # pass, which re-plans from the new state.
+                        log.warning("gc_path_spared", path=path)
+                        spared += 1
+                pending = still
+            refused = len(pending)
 
         if physical is not None and deleted == set(batch):
             # The whole batch went, so the walked blocks are what left the
