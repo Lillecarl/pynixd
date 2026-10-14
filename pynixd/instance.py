@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
-import shutil
 import sys
 import time
 from pathlib import Path
@@ -22,7 +21,7 @@ from . import _optional, metrics, wire
 from .config import ExternalUnixStoreSpec, HTTPBinaryCacheSpec, LocalSocketStoreSpec, PynixdSettings
 from .context import PynixdContext
 from .exceptions import GCNotPermittedError
-from .gc import Collector, LivenessWatch, _trace_due
+from .gc import Collector, LivenessWatch, _pressure_usage, _trace_due
 from .health import HealthReport, LoopLagMonitor, StallWatchdog
 from .liveness_watch import DirtyFlag, StableRootsWatch
 from .scheduler import Scheduler
@@ -426,11 +425,11 @@ class Server:
             return False
         try:
             directory = self.ctx.local_store.layout.real_store_dir
-            usage = shutil.disk_usage(directory)
+            used, total = _pressure_usage(directory)
         except Exception:
             log.warning("gc_watch_usage_failed", exc_info=True)
             return False
-        return usage.used / usage.total > watermark
+        return used / total > watermark
 
     async def _gc_pass(self, reason: str) -> PynixdCollectGarbageResponse | None:
         """One EXECUTE pass, with the metrics the loop always reports.

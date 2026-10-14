@@ -17,7 +17,7 @@ pass by pressure instead of emptying the plan at once.
 
 from __future__ import annotations
 
-import shutil
+import os
 import stat
 import time
 from collections import deque
@@ -727,16 +727,30 @@ class Collector:
 
     @staticmethod
     def _disk_usage(local: Store) -> tuple[int, int] | None:
-        """`(used, total)` bytes of the filesystem holding the store."""
+        """`(used, total)` bytes of pressure on the filesystem holding the store."""
         try:
             directory = getattr(getattr(local, "layout", None), "real_store_dir", None)
             if directory is None:
                 return None
-            usage = shutil.disk_usage(directory)
-            return (usage.used, usage.total)
+            return _pressure_usage(directory)
         except Exception:
             log.warning("gc_disk_usage_failed", exc_info=True)
             return None
+
+
+def _pressure_usage(directory: str | Path) -> tuple[int, int]:
+    """`(used, total)` bytes with pressure measured the way `df` measures it.
+
+    `shutil.disk_usage` counts `bfree` (blocks free to anyone, root
+    included) as free, but a writer that is not root can only spend
+    `bavail`. On btrfs the two diverge by tens of percent of the disk,
+    so a `bfree` gauge reads relief long before `df` -- and kubelet --
+    agree. Read `statvfs` directly and count everything but `bavail` as
+    used. Issue nixidae/nixidae#11.
+    """
+    stat = os.statvfs(directory)
+    total = stat.f_blocks * stat.f_frsize
+    return ((stat.f_blocks - stat.f_bavail) * stat.f_frsize, total)
 
 
 def _trace_due(last_check: float, now: float, interval: float) -> bool:
