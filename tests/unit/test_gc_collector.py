@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
+import anyio
 import pytest
 
 from nix_daemon_protocol import (
@@ -77,6 +78,8 @@ class FakeConn:
             blocker = self.local.refuse_until_gone.get(path)
             if blocker is not None and blocker not in self.local.deleted:
                 raise BackendError(f"pynixd: fake refuses {path} while {blocker} stands")
+            if path in self.local.hang:
+                await anyio.sleep(3600)
         kept = paths - self.local.silent
         self.local.deleted.extend(sorted(kept))
         return _Deleted({StorePath(path) for path in kept})
@@ -92,6 +95,7 @@ class FakeLocal:
     deleted: list[str] = field(default_factory=list)
     refuse: set[str] = field(default_factory=set)
     refuse_until_gone: dict[str, str] = field(default_factory=dict)
+    hang: set[str] = field(default_factory=set)
     silent: set[str] = field(default_factory=set)
     sizes: list[int] = field(default_factory=list)
     acquired: int = 0
@@ -177,6 +181,7 @@ def _collector(
     live: set[str] | None = None,
     refuse: set[str] | None = None,
     refuse_until_gone: dict[str, str] | None = None,
+    hang: set[str] | None = None,
     silent: set[str] | None = None,
 ) -> tuple[Collector, FakeLocal]:
     local = FakeLocal(
@@ -184,6 +189,7 @@ def _collector(
         live=live or set(),
         refuse=refuse or set(),
         refuse_until_gone=refuse_until_gone or {},
+        hang=hang or set(),
         silent=silent or set(),
     )
     return Collector(FakeContext(local=local, cache=cache)), local  # type: ignore[arg-type] -- a fake context
@@ -266,6 +272,7 @@ async def test_delete_refusal_mid_queue_deletes_the_rest():
 
     assert local.deleted == [HELLO, ONLY_HERE]
     assert local.sizes == [1, 1, 1, 1]
+    assert local.acquired == 2
     assert _names(resp.store_paths) == {HELLO, ONLY_HERE}
 
 
@@ -284,7 +291,29 @@ async def test_delete_retries_a_path_its_referrer_blocked():
     resp = await collector._delete(batch, weights, [], None)
 
     assert sorted(local.deleted) == sorted([GLIBC, HELLO])
+    assert local.acquired == 2
     assert _names(resp.store_paths) == {GLIBC, HELLO}
+
+
+@pytest.mark.anyio
+async def test_delete_timeout_skips_the_path_and_keeps_the_queue(monkeypatch: pytest.MonkeyPatch):
+    """A call past the deadline abandons its connection, not the queue.
+
+    The timed-out path sits out the rest of the pass; the lap resumes
+    over a fresh connection, because a read cancelled mid-response
+    leaves its connection suspect. The deadline is patched down so the
+    test does not wait out the minute.
+    """
+    monkeypatch.setattr("pynixd.gc._DELETE_TIMEOUT_S", 0.05)
+    collector, local = _collector(None, hang={GLIBC})
+    batch = [GLIBC, HELLO, ONLY_HERE]
+    weights = {path: (10, 0) for path in batch}
+
+    resp = await collector._delete(batch, weights, [], None)
+
+    assert sorted(local.deleted) == sorted([HELLO, ONLY_HERE])
+    assert local.acquired == 2
+    assert _names(resp.store_paths) == {HELLO, ONLY_HERE}
 
 
 @pytest.mark.anyio

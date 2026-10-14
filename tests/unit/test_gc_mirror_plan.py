@@ -324,4 +324,4 @@ async def test_delete_refuses_a_live_path_without_stopping_the_rest(tmp_path: Pa
     assert {str(path) for path in resp.store_paths} == {first, second}
     assert any("refused" in line.text for line in lines)
     assert local.attempts == [frozenset({first}), frozenset({live}), frozenset({second}), frozenset({live})]
-    assert local.acquired == 1
+    assert local.acquired == 2

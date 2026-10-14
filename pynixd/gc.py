@@ -24,6 +24,7 @@ from collections import deque
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import anyio
 import structlog
 from anyio.to_thread import run_sync
 
@@ -58,6 +59,16 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 _MAX_FREED = 2**63 - 1
+
+_DELETE_TIMEOUT_S = 60
+"""A single-path delete never waits longer than this.
+
+The daemon walks every root and takes the global GC lock per
+`collectGarbage` call, so one call can stall for minutes on a loaded
+machine -- and a stalled call wedges the whole queue behind it. Past
+the deadline the path stays for the next pass and the queue moves on
+over a fresh connection.
+"""
 
 
 def _physical_batch_total(top_paths: Iterable[str], store_dir: Path | None) -> int | None:
@@ -611,7 +622,13 @@ class Collector:
         referrer later in this same queue still holds it", and a single
         request for the whole batch deleted those together. A path that
         is still refused after the second lap drops and stays for the
-        next pass, which re-plans from the new state. The daemon throws
+        next pass, which re-plans from the new state.
+
+        Each call carries a deadline (`_DELETE_TIMEOUT_S`): past it the
+        path stays for the next pass and the rest of the lap rides a
+        fresh connection, because a read cancelled mid-response leaves
+        its connection suspect and the pool discards it dirty. A stalled
+        delete then costs a minute, never the queue. The daemon throws
         on the first live path in the request (`gc.cc:778`), and with one
         path per request the throw carries that path, so the blind
         bisection the whole-batch request needed has nothing left to do.
@@ -646,21 +663,34 @@ class Collector:
         freed = 0
         refused = 0
         spared = 0
-        async with local.transfer_conn() as conn:
-            pending = list(batch)
-            for lap in (1, 2):
-                if not pending:
-                    break
-                if lap == 2:
-                    log.info("gc_delete_retry", paths=len(pending))
-                still: list[str] = []
-                for path in pending:
+        timed_out = 0
+        pending = list(batch)
+        timed_out_paths: set[str] = set()
+        for lap in (1, 2):
+            if not pending:
+                break
+            if lap == 2:
+                log.info("gc_delete_retry", paths=len(pending))
+            still: list[str] = []
+            async with local.transfer_conn() as conn:
+                for i, path in enumerate(pending):
+                    if path in timed_out_paths:
+                        still.append(path)
+                        continue
                     await say(f"deleting '{path}'")
                     try:
-                        resp = await conn.call(
-                            _request(GCAction.DELETE_SPECIFIC, {StorePath(path)}),
-                            raise_on_error=True,
-                        )
+                        with anyio.fail_after(_DELETE_TIMEOUT_S):
+                            resp = await conn.call(
+                                _request(GCAction.DELETE_SPECIFIC, {StorePath(path)}),
+                                raise_on_error=True,
+                            )
+                    except TimeoutError:
+                        log.warning("gc_path_timeout", path=path, timeout_s=_DELETE_TIMEOUT_S)
+                        timed_out += 1
+                        timed_out_paths.add(path)
+                        still.append(path)
+                        still.extend(pending[i + 1 :])
+                        break
                     except BackendError as exc:
                         log.warning("gc_path_refused", path=path, reason=str(exc))
                         still.append(path)
@@ -675,8 +705,8 @@ class Collector:
                         # pass, which re-plans from the new state.
                         log.warning("gc_path_spared", path=path)
                         spared += 1
-                pending = still
-            refused = len(pending)
+            pending = still
+        refused = len(pending)
 
         if physical is not None and deleted == set(batch):
             # The whole batch went, so the walked blocks are what left the
@@ -684,9 +714,11 @@ class Collector:
             # attribution of shared blocks has no exact answer, and the
             # logical sum stays an upper bound either way.
             freed = physical
-        log.info("gc_pass_done", deleted=len(deleted), refused=refused, spared=spared, bytes=freed)
-        if refused or spared:
-            await say(f"delete refused for {refused} live paths, {spared} spared, deleted the rest")
+        log.info("gc_pass_done", deleted=len(deleted), refused=refused, spared=spared, timed_out=timed_out, bytes=freed)
+        if refused or spared or timed_out:
+            await say(
+                f"delete refused for {refused} live paths, {spared} spared, {timed_out} timed out, deleted the rest"
+            )
         await say(f"deleted {len(deleted)} paths, {freed} bytes freed")
         return self._answered(
             PynixdCollectGarbageResponse(store_paths={StorePath(path) for path in deleted}, bytes=freed),
