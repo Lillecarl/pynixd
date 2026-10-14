@@ -45,6 +45,13 @@ A Nix-native concept for "unknown output" building (common in CA derivations). I
 
 ## pynixd Architecture
 
+### Python GC Liveness
+`RootsTracker` reads stable roots, temporary roots, and process roots, then resolves their reference closure through SQLite.
+The collector refreshes this state before planning deletions.
+It asks the daemon for `RETURN_LIVE` only when Python resolution is unavailable.
+The background watch refreshes Python state without daemon comparisons.
+The daemon performs deletions and checks liveness again to protect roots created after planning.
+
 ### Three-Tier Execution
 The pattern used to separate protocol IO from logic:
 1. **Server Dispatch** (`handle`): Entry point that decodes from the client wire.

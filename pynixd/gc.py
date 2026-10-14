@@ -37,7 +37,6 @@ from nix_daemon_protocol import (
     StorePath,
 )
 
-from . import metrics
 from .daemon_extensions import (
     PynixdCollectGarbageResponse,
     PynixdGCAction,
@@ -45,7 +44,7 @@ from .daemon_extensions import (
     QueryPathInfosRequest,
 )
 from .exceptions import BackendError, GCNotPermittedError
-from .liveness import RootsTracker, Streak, record_check, walk_volatile
+from .liveness import RootsTracker, walk_volatile
 from .local_store_db import resolve_db_path
 from .store import is_http_binary_cache
 
@@ -189,12 +188,8 @@ class Collector:
     ) -> PynixdCollectGarbageResponse:
         """Plan a pass, and run it when *action* says to.
 
-        A plan reads liveness from the mirror when the store has one --
-        refreshed just now, recomputed only when something moved -- and
-        asks Nix, which traces the roots under the garbage collector lock,
-        only when there is no mirror to read. So `pynixd gc` without
-        `--execute` still holds up a build for as long as a trace takes on
-        a store the mirror cannot cover, and costs almost nothing elsewhere.
+        A plan refreshes Python liveness before selecting paths.
+        Only an unavailable Python resolver falls back to a daemon trace.
 
         Before planning, the pass re-walks the volatile roots fresh -- the
         living half no watch covers -- and vetoes them and their reference
@@ -396,12 +391,7 @@ class Collector:
         taking ownership of the store's old paths, and the default keeps the
         cache behaviour.
 
-        Both rules read liveness from the mirror when the store has one: the
-        tracker refreshes it just now -- walks plus sqlite, no locks -- and
-        the closure recomputes only when something moved. A store without a
-        mirror, or a refresh that fails, falls back to asking Nix, which
-        traces under the garbage collector lock. The slow path stays correct;
-        the fast path just stops paying it.
+        Both rules refresh Python liveness, falling back to Nix only when unavailable.
         """
         local = self.ctx.local_store
         max_age = getattr(local, "gc_max_age", None)
@@ -412,14 +402,8 @@ class Collector:
     async def _mirror_live(self, local: Store) -> set[str] | None:
         """The tracker's live set, refreshed just now, or `None` with no mirror.
 
-        A store whose layout pynixd can read answers liveness from its own
-        tables. The refresh fills them fully when they are behind -- roots
-        rediffed, volatile rewalked, closure recomputed on change -- the way
-        Nix finds roots fresh on every call, except the indexed short-circuit
-        skips the recompute when nothing moved. Anything else -- no layout,
-        no database, a refresh that fails -- answers `None`, and the caller
-        asks Nix instead. Failing closed twice: the mirror never plans from
-        a half-built state, and no mirror never stops a plan.
+        The tracker reads roots and SQLite in a worker thread.
+        Missing state or a failed refresh returns `None`; callers then ask Nix.
         """
         try:
             layout = getattr(local, "layout", None)
@@ -446,10 +430,7 @@ class Collector:
         `gc.cc:653` refuses a named path whose referrer is not named in the
         same request, so the set travels together.
 
-        Nix says which paths are alive, and this asks it rather than reading
-        the roots itself. `LocalStore::findRuntimeRoots` (`gc.cc:332`) reads
-        `/proc` of the whole machine, so a library a process of the host has
-        mapped is a root of any store that keeps the `/nix/store` prefix.
+        Python resolves roots and their reference closure before selecting paths.
         """
         stores = [store for store in self.ctx.stores.values() if store.gc_defer]
         if not stores:
@@ -487,9 +468,8 @@ class Collector:
     async def _plan_lru(self, local: Store, max_age: int) -> set[StorePath]:
         """The dead paths nothing referenced for `max_age` seconds.
 
-        `PynixdPathAccess` says when pynixd last saw each path, and Nix says
-        which paths are alive; the plan is the intersection. A path with no
-        access row stays: "never seen" is not "seen long ago". The set is
+        `PynixdPathAccess` dates each path. Python resolves the live set.
+        A path with no access row stays: "never seen" is not "seen long ago". The set is
         closed under referrers so Nix accepts it (`gc.cc:653`), which pulls
         in dead referrers even when they are fresh — deleting a path takes
         what still names it. A failure anywhere plans nothing: an LRU pass
@@ -785,33 +765,11 @@ def _pressure_usage(directory: str | Path) -> tuple[int, int]:
     return ((stat.f_blocks - stat.f_bavail) * stat.f_frsize, total)
 
 
-def _trace_due(last_check: float, now: float, interval: float) -> bool:
-    """A Nix trace is due when the last one is older than the interval.
-
-    Refreshes run on every wake and cost nothing; traces hold the garbage
-    collector lock for minutes, so they run at most this often no matter
-    how the links flap.
-    """
-    return now - last_check >= interval
-
-
 class LivenessWatch:
-    """The cutover evidence, gathered one slow pass at a time.
+    """Refresh Python liveness without taking the daemon GC lock."""
 
-    Each `check` refreshes the mirror in a worker thread -- the walks are
-    sync filesystem reads and the closure is sqlite, so neither belongs on
-    the event loop -- asks Nix what is alive, logs the differential, and
-    files the verdict in the streak table. Agreement is the gate: sustained
-    empty differentials are what `gc_allow_execute` waits on, and the streak
-    is what "sustained" reads as. Nothing here plans or deletes; the
-    expensive half is the question to Nix, which traces the roots under
-    the garbage collector lock like any dry-run, and that is why the
-    daemon runs this on `gc_liveness_interval`, not on the poll.
-    """
-
-    def __init__(self, tracker: RootsTracker, local: Store) -> None:
+    def __init__(self, tracker: RootsTracker) -> None:
         self.tracker = tracker
-        self.local = local
 
     @classmethod
     def from_local(cls, local: Store) -> LivenessWatch | None:
@@ -828,67 +786,11 @@ class LivenessWatch:
         db_path = resolve_db_path(layout)
         if db_path is None:
             return None
-        return cls(RootsTracker(layout.state_dir, str(layout.store_dir), db_path), local)
+        return cls(RootsTracker(layout.state_dir, str(layout.store_dir), db_path))
 
     async def refresh(self) -> set[str]:
         """Refresh the mirror without asking Nix anything.
 
-        Walks plus sqlite: no locks, no trace, seconds at most. The tick
-        runs this on every wake, so the roots table and the live snapshot
-        stay current even when traces are rare. The planner will read from
-        this instead of tracing when the mirror is proven; until then it is
-        what the traces compare against.
+        Stable-root changes and the configured interval trigger refreshes.
         """
         return await run_sync(self.tracker.refresh)
-
-    async def check(self) -> bool:
-        """Refresh the mirror, ask Nix, log the differential, file the streak.
-
-        True when they agree. The journal carries both outcomes -- an
-        agreement is the evidence, and a divergence names its samples --
-        so the cutover decision reads a log, not a dashboard. The streak
-        table carries the count across restarts.
-        """
-        live = await self.refresh()
-        theirs = await self._nix_live()
-        only_mine, only_theirs = self.tracker.differential(theirs)
-        agreed = not only_mine and not only_theirs
-        streak = self._record(agreed, live)
-        if streak is not None:
-            metrics.GC_LIVENESS_STREAK.set(streak.agreements)
-        if agreed:
-            if streak is None:
-                log.info("gc_liveness_agreement", live=len(live))
-            else:
-                log.info(
-                    "gc_liveness_agreement",
-                    live=len(live),
-                    streak=streak.agreements,
-                    checks=streak.checks,
-                )
-            return True
-        log.warning(
-            "gc_liveness_divergence",
-            live=len(live),
-            only_tracker=len(only_mine),
-            only_nix=len(only_theirs),
-            tracker_sample=sorted(only_mine)[:10],
-            nix_sample=sorted(only_theirs)[:10],
-        )
-        return False
-
-    def _record(self, agreed: bool, live: set[str]) -> Streak | None:
-        """File the verdict where the tracker keeps its database, if it has one.
-
-        A tracker without a database -- the unit stub -- still answers, it
-        just files nothing.
-        """
-        db_path = getattr(self.tracker, "db_path", None)
-        if db_path is None:
-            return None
-        return record_check(Path(db_path), agreed, live)
-
-    async def _nix_live(self) -> set[str]:
-        """What Nix calls alive: the same trace a dry-run pays for."""
-        resp = await self.local.call(_request(GCAction.RETURN_LIVE, set()))
-        return {str(path) for path in resp.paths_deleted}

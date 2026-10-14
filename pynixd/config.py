@@ -832,17 +832,10 @@ class PynixdSettings(BaseSettings):
     hour. Zero disables it, and every due trigger fires.
     """
     gc_liveness_interval: float | None = None
-    """Seconds between liveness differential checks. `None` gathers no evidence.
+    """Seconds between Python liveness refreshes. `None` disables the background watch.
 
-    Each check refreshes the mirror -- cheap, no locks -- and asks Nix what
-    is alive, which traces the roots under the garbage collector lock like a
-    dry-run. At most one trace runs per interval no matter how the links
-    flap, and every wake refreshes the mirror either way. One trace buys
-    one agreement data point, logged as `gc_liveness_agreement` or
-    `gc_liveness_divergence` and filed in the streak table, and sustained
-    agreement is what `gc_allow_execute` on the store waits on. Off by
-    default: a trace an operator did not ask for is a stall they did not
-    agree to.
+    Stable-root changes also trigger refreshes. Each collection refreshes liveness
+    before planning, whether or not the background watch runs.
     """
 
     # Scheduling & Telemetry

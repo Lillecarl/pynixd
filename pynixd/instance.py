@@ -21,7 +21,7 @@ from . import _optional, metrics, wire
 from .config import ExternalUnixStoreSpec, HTTPBinaryCacheSpec, LocalSocketStoreSpec, PynixdSettings
 from .context import PynixdContext
 from .exceptions import GCNotPermittedError
-from .gc import Collector, LivenessWatch, _pressure_usage, _trace_due
+from .gc import Collector, LivenessWatch, _pressure_usage
 from .health import HealthReport, LoopLagMonitor, StallWatchdog
 from .liveness_watch import DirtyFlag, StableRootsWatch
 from .scheduler import Scheduler
@@ -487,28 +487,14 @@ class Server:
             warned = live
 
     async def _liveness_tick(self, watch: LivenessWatch, interval: float, dirty: DirtyFlag) -> None:
-        """Refresh the mirror on every wake, trace at most hourly.
-
-        The watch wakes this as soon as a stable link moves; the refresh
-        that follows is walks plus sqlite, so flapping links cost nothing
-        and the mirror stays current. The Nix trace runs only when the
-        last one is older than the interval: it holds the garbage
-        collector lock for minutes, and generation churn already guarantees
-        every comparison races a switch without help from the schedule.
-        """
+        """Refresh Python liveness after root changes and at each interval."""
         log.info("gc_liveness_watch_started", interval=interval)
-        last_check = 0.0
         while True:
             with anyio.move_on_after(interval):
                 await dirty.wait()
             dirty.clear()
             try:
-                now = time.monotonic()
-                if _trace_due(last_check, now, interval):
-                    last_check = now
-                    await watch.check()
-                else:
-                    await watch.refresh()
+                await watch.refresh()
             except anyio.get_cancelled_exc_class():
                 raise
             except Exception:
