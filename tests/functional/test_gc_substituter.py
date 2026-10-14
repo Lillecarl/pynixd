@@ -10,12 +10,14 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock
 
 import pytest
 from aiohttp import web
 
 from nix_daemon_protocol import CollectGarbageRequest
 from nix_daemon_protocol.ids import StoreId
+from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.wire_ops import WireRequest
 from pynixd import Server
 from pynixd.config import HTTPBinaryCacheSpec
@@ -260,3 +262,23 @@ async def test_real_daemon_deletes_205_paths_in_three_requests(tmp_path: Path, m
     assert {str(path) for path in response.store_paths} == set(paths)
     assert calls == [100, 100, 5]
     assert await _valid(store_path) == set()
+
+
+async def test_execute_orders_cross_group_referrers_before_deletion(lab: _Lab, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("pynixd.gc._DELETE_BATCH_SIZE", 1)
+    monkeypatch.setattr("pynixd.gc._by_weight", lambda weights, pressure: [lab.child, lab.parent])
+    calls: list[set[str]] = []
+    original = Connection.call
+
+    async def record(self: Connection, request: WireRequest, **kwargs: Any) -> Any:
+        if isinstance(request, CollectGarbageRequest):
+            calls.append({str(path) for path in request.paths_to_delete})
+        return await original(self, request, **kwargs)
+
+    monkeypatch.setattr(Connection, "call", record)
+    async with _pynixd(lab, None) as server:
+        collector = Collector(server.ctx)
+        monkeypatch.setattr(collector, "plan", AsyncMock(return_value={StorePath(lab.child), StorePath(lab.parent)}))
+        response = await collector.run(PynixdGCAction.EXECUTE)
+    assert {str(path) for path in response.store_paths} == {lab.child, lab.parent}
+    assert calls == [{lab.parent}, {lab.child}]

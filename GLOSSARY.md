@@ -54,6 +54,8 @@ The daemon performs deletions and checks liveness again to protect roots created
 
 ### GC Delete Group
 The collector sends at most 100 paths per daemon deletion request over one held connection.
+Python orders the whole delete set with referrers first before dividing it into groups.
+This prevents later groups from blocking earlier groups during normal deletion.
 A failed request can delete some paths without returning their names.
 The collector rechecks validity directly with the daemon, then splits the remaining group to isolate refusals.
 Refused paths get one final retry after later groups release their references.

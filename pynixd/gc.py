@@ -21,6 +21,7 @@ import os
 import stat
 import time
 from collections import deque
+from heapq import heappop, heappush
 from itertools import batched
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -168,6 +169,32 @@ def _take_until_below_target(ordered: Sequence[tuple[str, int]], used: int, tota
     return batch
 
 
+def _referrer_first(ordered: Sequence[str], references: Mapping[str, set[str]]) -> list[str]:
+    """Order referrers before references, with weight order breaking ties."""
+    rank = {path: index for index, path in enumerate(dict.fromkeys(ordered))}
+    paths = list(rank)
+    children = {path: references.get(path, set()) & rank.keys() - {path} for path in paths}
+    waiting = dict.fromkeys(paths, 0)
+    for refs in children.values():
+        for ref in refs:
+            waiting[ref] += 1
+    ready: list[int] = []
+    for path, count in waiting.items():
+        if count == 0:
+            heappush(ready, rank[path])
+    result = []
+    while ready:
+        path = paths[heappop(ready)]
+        result.append(path)
+        for ref in children[path]:
+            waiting[ref] -= 1
+            if waiting[ref] == 0:
+                heappush(ready, rank[ref])
+    if len(result) != len(paths):
+        log.warning("gc_delete_order_blocked", paths=len(paths) - len(result))
+    return result
+
+
 class Collector:
     """Chooses what leaves the local store, and asks Nix to delete it."""
 
@@ -275,6 +302,7 @@ class Collector:
                 ),
                 lines,
             )
+        batch = await self._order_batch(self.ctx.local_store, batch)
         return await self._delete(batch, weights, lines, client)
 
     @staticmethod
@@ -560,6 +588,22 @@ class Collector:
         order = {path: index for index, path in enumerate(batch)}
         return sorted(kept, key=lambda path: (0, order[path]) if path in order else (1, path))
 
+    async def _order_batch(self, local: Store, batch: list[str]) -> list[str]:
+        """Resolve the whole graph in Python before dividing it into delete groups."""
+        if not batch:
+            return []
+        try:
+            execute = getattr(local, "execute")
+            response = await execute(QueryPathInfosRequest(paths={StorePath(path) for path in batch}), mark=False)
+        except Exception:
+            log.warning("gc_delete_order_failed", exc_info=True)
+            return []
+        references = {str(info.path): {str(ref) for ref in info.info.references} for info in response.infos}
+        if not set(batch) <= references.keys():
+            log.warning("gc_delete_order_incomplete", asked=len(batch), answered=len(references))
+            return []
+        return _referrer_first(batch, references)
+
     async def _held_by(self, store: Store, paths: set[StorePath]) -> set[StorePath]:
         """The paths of *paths* that *store* confirms it has.
 
@@ -678,6 +722,7 @@ class Collector:
                         deleted.update(got)
                         freed += response.bytes_freed
                         spared.update(set(group) - got)
+                        log.info("gc_chunk_deleted", requested=len(group), deleted=len(got), total=len(deleted))
                         await say(f"deleted {len(got)} paths, {len(deleted)} total")
             pending = [path for path in retry if path not in deleted]
 
