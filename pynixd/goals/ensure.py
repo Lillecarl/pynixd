@@ -473,6 +473,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         # content-addressed input, which carries a placeholder as well.
         domain_drv_path = StorePath(str(drv_path))
         if parsed.dynamic_input_drvs and dynamic_paths:
+            dynamic_paths = await self._input_paths(parsed, dynamic_paths)
             basic = resolve_dynamic_derivation(parsed, domain_drv_path, dynamic_paths)
         elif parsed.input_drvs:
             basic = resolve_derivation(parsed, domain_drv_path, await self._input_paths(parsed, dynamic_paths))
